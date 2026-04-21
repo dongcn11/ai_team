@@ -39,6 +39,7 @@ async def run_claude(prompt: str, work_dir: Path) -> str:
         f"Read the instructions at {prompt_file} and follow them exactly.",
         "--allowedTools", "Read,Write,Edit,Bash",
         "--output-format", "text",
+        "--dangerously-skip-permissions",
     ]
 
     proc = await asyncio.create_subprocess_exec(
