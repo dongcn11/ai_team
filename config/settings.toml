@@ -1,0 +1,49 @@
+# AI Team Configuration
+# =====================
+# Sửa file này để thay đổi model, Slack, output directory
+# Không cần sửa code trong ai_team/
+
+[agents]
+# Tool cho từng agent: "claude" hoặc "opencode"
+# Model format: provider/model-name (xem: opencode models)
+
+pm_tool     = "claude"
+pm_model    = ""                              # claude dùng account đăng nhập
+
+scrum_tool  = "claude"
+scrum_model = ""
+
+analyst_tool  = "claude"
+analyst_model = ""
+
+be1_tool  = "opencode"
+be1_model = "anthropic/claude-sonnet-4-5"    # Claude Pro account
+
+be2_tool  = "opencode"
+be2_model = "google/gemini-2.0-flash"        # Gemini free tier
+
+fe1_tool  = "opencode"
+fe1_model = "ollama/qwen2.5-coder:7b"        # Local, free
+
+fe2_tool  = "opencode"
+fe2_model = "ollama/qwen2.5-coder:7b"        # Local, free
+
+[slack]
+# Điền token sau khi tạo Slack App
+# Hướng dẫn: xem README.md phần Slack Setup
+bot_token = "xoxb-your-token-here"
+channel   = "#ai-team"
+
+[output]
+# Thư mục lưu project được tạo ra
+directory = "./output"
+
+[timeouts]
+# Giây — tăng nếu model chậm hoặc task phức tạp
+claude_code = 600
+opencode    = 600
+
+[tech_stack]
+# Tech stack mặc định cho coding agents
+backend  = "Python FastAPI + SQLModel + SQLite"
+frontend = "React + TypeScript + Vite + TailwindCSS"
