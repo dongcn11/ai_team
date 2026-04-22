@@ -17,16 +17,16 @@ analyst_tool  = "claude"
 analyst_model = ""
 
 be1_tool  = "opencode"
-be1_model = "anthropic/claude-sonnet-4-5"    # Claude Pro account
+be1_model = "opencode/qwen3.6-plus"     # Go plan: 3,300 credits
 
 be2_tool  = "opencode"
-be2_model = "google/gemini-2.0-flash"        # Gemini free tier
+be2_model = "opencode/minimax-m2.7"     # Go plan: 3,400 credits
 
 fe1_tool  = "opencode"
-fe1_model = "ollama/qwen2.5-coder:7b"        # Local, free
+fe1_model = "opencode/qwen3.5-plus"     # Go plan: 10,200 credits
 
 fe2_tool  = "opencode"
-fe2_model = "ollama/qwen2.5-coder:7b"        # Local, free
+fe2_model = "opencode/qwen3.5-plus"     # Go plan: 10,200 credits
 
 [slack]
 # Điền token sau khi tạo Slack App

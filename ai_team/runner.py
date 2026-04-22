@@ -80,9 +80,12 @@ async def run_opencode(model: str, prompt: str, work_dir: Path) -> str:
     )
     prompt_file.unlink(missing_ok=True)
 
-    if proc.returncode != 0:
-        raise RuntimeError(stderr.decode("utf-8", errors="replace")[:400])
-    return stdout.decode("utf-8", errors="replace")
+    stderr_text = stderr.decode("utf-8", errors="replace")
+    stdout_text = stdout.decode("utf-8", errors="replace")
+    # opencode exits 0 even on fatal errors — detect via stderr content
+    if proc.returncode != 0 or ("Error:" in stderr_text and not stdout_text.strip()):
+        raise RuntimeError(stderr_text[:500])
+    return stdout_text
 
 
 async def run(role: str, prompt: str, work_dir: Path) -> str:
