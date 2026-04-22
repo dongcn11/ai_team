@@ -1,0 +1,35 @@
+# AI Team Profiles
+# =================
+# Định nghĩa các team composition cho từng loại dự án.
+# Dùng trong settings.toml: [project] profile = "fullstack"
+# Hoặc dùng CLI: python main.py --profile backend_only
+
+profiles:
+
+  fullstack:
+    label: "Full-stack Web"
+    agents: [pm, scrum, analyst, be1, be2, fe1, fe2, leader]
+
+  backend_only:
+    label: "Backend Only"
+    agents: [pm, scrum, analyst, be1, be2, leader]
+
+  api_only:
+    label: "API Only (lean)"
+    agents: [pm, analyst, be1, leader]
+
+  mobile_app:
+    label: "Mobile + Backend"
+    agents: [pm, scrum, analyst, be1, be2, fe1, fe2, leader]
+
+  frontend_only:
+    label: "Frontend Only"
+    agents: [pm, scrum, analyst, fe1, fe2, leader]
+
+  solo_backend:
+    label: "Solo Backend"
+    agents: [pm, analyst, be1, leader]
+
+  solo_fullstack:
+    label: "Solo Full-stack"
+    agents: [pm, analyst, be1, fe1, leader]

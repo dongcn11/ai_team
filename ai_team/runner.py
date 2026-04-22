@@ -53,8 +53,9 @@ async def run_claude(prompt: str, work_dir: Path) -> str:
     prompt_file.unlink(missing_ok=True)
 
     if proc.returncode != 0:
-        raise RuntimeError(stderr.decode("utf-8", errors="replace")[:400])
-    return stdout.decode("utf-8", errors="replace")
+        out_text = stdout.decode("utf-8", errors="replace")[:200]
+        err_text = stderr.decode("utf-8", errors="replace")[:400]
+        raise RuntimeError(err_text or out_text or f"exit code {proc.returncode}")
 
 
 async def run_opencode(model: str, prompt: str, work_dir: Path) -> str:
@@ -84,7 +85,7 @@ async def run_opencode(model: str, prompt: str, work_dir: Path) -> str:
     stdout_text = stdout.decode("utf-8", errors="replace")
     # opencode exits 0 even on fatal errors — detect via stderr content
     if proc.returncode != 0 or ("Error:" in stderr_text and not stdout_text.strip()):
-        raise RuntimeError(stderr_text[:500])
+        raise RuntimeError(stderr_text[:500] or stdout_text[:200] or f"exit code {proc.returncode}")
     return stdout_text
 
 

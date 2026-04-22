@@ -1,0 +1,46 @@
+# Project: Example Fullstack
+# Profile: fullstack (PM + Scrum + Analyst + BE1 + BE2 + FE1 + FE2 + Leader)
+
+[project]
+name    = "Example Fullstack"
+profile = "fullstack"
+
+[agents]
+pm_tool     = "claude"
+pm_model    = ""
+
+scrum_tool  = "claude"
+scrum_model = ""
+
+analyst_tool  = "claude"
+analyst_model = ""
+
+be1_tool  = "opencode"
+be1_model = "opencode/qwen3.6-plus"
+
+be2_tool  = "opencode"
+be2_model = "opencode/minimax-m2.7"
+
+fe1_tool  = "opencode"
+fe1_model = "opencode/qwen3.5-plus"
+
+fe2_tool  = "opencode"
+fe2_model = "opencode/qwen3.5-plus"
+
+leader_tool  = "claude"
+leader_model = ""
+
+[slack]
+bot_token = "xoxb-your-token-here"
+channel   = "#ai-team"
+
+[output]
+directory = "./clients/example_fullstack/output"
+
+[timeouts]
+claude_code = 600
+opencode    = 600
+
+[tech_stack]
+backend  = "Python FastAPI + SQLModel + SQLite"
+frontend = "React + TypeScript + Vite + TailwindCSS"

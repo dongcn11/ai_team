@@ -1,8 +1,7 @@
 # AI Team Orchestrator — Python dependencies
 # Cài đặt: pip install -r requirements.txt
 
-# Không cần package ngoài — dùng stdlib hoàn toàn:
-# asyncio, json, subprocess, tomllib (Python 3.11+), urllib
+pyyaml>=6.0       # đọc profiles.yaml
 
 # Nếu dùng Python < 3.11, cần thêm:
 # tomli>=2.0.0   # thay thế tomllib

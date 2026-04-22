@@ -2,7 +2,7 @@
 Orchestrator
 ============
 Logic điều phối toàn bộ AI team.
-Stage 1: PM → Stage 2: Scrum → Stage 3: Analyst → Stage 4: BE+FE
+Stage 1: PM → Stage 2: Scrum (optional) → Stage 3: Analyst → Stage 4: BE+FE → Stage 5: Leader Review
 """
 
 import asyncio
@@ -31,6 +31,10 @@ def _new_files(work_dir: Path, before: set) -> list[str]:
     return sorted(after - before)
 
 
+def _enabled(role: str) -> bool:
+    return role in get_config().enabled_agents
+
+
 # ── Stage agents ──────────────────────────────────────────────────────────────
 
 async def _run_stage(role: str, prompt: str, work_dir: Path, summary: str):
@@ -53,9 +57,10 @@ async def _run_stage(role: str, prompt: str, work_dir: Path, summary: str):
         slack.post_done(thread_ts, role, new_files, duration)
         print(f"  [{role}] ✅ Xong! ({duration}s)")
     except Exception as e:
-        tm.set_failed(role, str(e))
-        slack.post_failed(thread_ts, role, str(e))
-        print(f"  [{role}] ❌ {e}")
+        err = str(e) or type(e).__name__
+        tm.set_failed(role, err)
+        slack.post_failed(thread_ts, role, err)
+        print(f"  [{role}] ❌ {err}")
 
 
 # ── Coding agents ─────────────────────────────────────────────────────────────
@@ -101,7 +106,6 @@ Yêu cầu:
      {{"issues": [{{"severity": "high/medium/low", "description": "...", "suggestion": "..."}}]}}
 - Không hỏi lại, implement thẳng"""
 
-    # Inject skills vào đầu prompt
     skills = load_skills(role)
     prompt = (skills + "\n" + task_prompt) if skills else task_prompt
 
@@ -110,7 +114,6 @@ Yêu cầu:
         duration  = int(time.time() - start)
         new_files = _new_files(work_dir, before)
 
-        # Xử lý issue nếu agent report
         if issue_file.exists():
             try:
                 issues = json.loads(issue_file.read_text())["issues"]
@@ -134,9 +137,104 @@ Yêu cầu:
         print(f"  [{role}] ✅ Xong! ({duration}s, {len(code_files)} files)")
 
     except Exception as e:
-        tm.set_failed(role, str(e))
-        slack.post_failed(thread_ts, role, str(e))
-        print(f"  [{role}] ❌ {e}")
+        err = str(e) or type(e).__name__
+        tm.set_failed(role, err)
+        slack.post_failed(thread_ts, role, err)
+        print(f"  [{role}] ❌ {err}")
+
+    tm.print_status()
+
+
+# ── Leader / Review agent ─────────────────────────────────────────────────────
+
+async def _review_agent(output_dir: str):
+    cfg       = get_config()
+    role      = "Leader Agent"
+    agent_cfg = cfg.agents[role]
+    out       = Path(output_dir)
+    docs_dir  = out / "docs"
+
+    api_contract = _read_doc(output_dir, "api_contract.md")
+    data_models  = _read_doc(output_dir, "data_models.md")
+    user_stories = _read_doc(output_dir, "user_stories.md")
+
+    def _collect_code(subdir: str) -> str:
+        target = out / subdir
+        if not target.exists():
+            return f"(thư mục {subdir} không tồn tại)"
+        parts = []
+        for f in sorted(target.rglob("*")):
+            if f.is_file() and f.suffix in {".py", ".ts", ".tsx", ".js", ".json", ".toml", ".yaml"}:
+                rel = f.relative_to(out)
+                try:
+                    content = f.read_text(encoding="utf-8")
+                    parts.append(f"### {rel}\n```\n{content}\n```")
+                except Exception:
+                    pass
+        return "\n\n".join(parts) if parts else f"(không có file code trong {subdir})"
+
+    # Chỉ thu thập code từ agents đang enabled
+    code_sections = []
+    if _enabled("BE Agent 1"):
+        code_sections.append(f"CODE BE AGENT 1 (backend/be1/):\n{_collect_code('backend/be1')}")
+    if _enabled("BE Agent 2"):
+        code_sections.append(f"CODE BE AGENT 2 (backend/be2/):\n{_collect_code('backend/be2')}")
+    if _enabled("FE Agent 1"):
+        code_sections.append(f"CODE FE AGENT 1 (frontend/fe1/):\n{_collect_code('frontend/fe1')}")
+    if _enabled("FE Agent 2"):
+        code_sections.append(f"CODE FE AGENT 2 (frontend/fe2/):\n{_collect_code('frontend/fe2')}")
+
+    code_block = "\n\n---\n\n".join(code_sections) if code_sections else "(không có code để review)"
+
+    summary = "Review toàn bộ code của các coding agents"
+    print(f"\n[{role} / {agent_cfg.label}] Bắt đầu review code...")
+    tm.set_running(role)
+
+    thread_ts = slack.create_task_thread(role, summary, agent_cfg.label)
+    slack.post_to_thread(thread_ts, role, "Đang đọc và review code từ tất cả agents...")
+
+    start  = time.time()
+    before = {str(f.relative_to(docs_dir)) for f in docs_dir.rglob("*") if f.is_file()}
+
+    task_prompt = f"""Bạn là Leader Agent — Tech Lead review toàn bộ code của AI development team.
+
+USER STORIES:
+{user_stories}
+
+API CONTRACT:
+{api_contract}
+
+DATA MODELS:
+{data_models}
+
+---
+
+{code_block}
+
+---
+
+Yêu cầu:
+- Review kỹ từng agent theo skill guidelines
+- Đánh giá sự nhất quán giữa các agents (API calls, data types, error handling)
+- Tạo file docs/review_report.md theo đúng format trong skill
+- Không sửa code, chỉ báo cáo
+- Không hỏi lại"""
+
+    skills = load_skills(role)
+    prompt = (skills + "\n" + task_prompt) if skills else task_prompt
+
+    try:
+        await run(role, prompt, docs_dir)
+        duration  = int(time.time() - start)
+        new_files = _new_files(docs_dir, before)
+        tm.set_done(role)
+        slack.post_done(thread_ts, role, new_files, duration)
+        print(f"  [{role}] ✅ Xong! ({duration}s)")
+    except Exception as e:
+        err = str(e) or type(e).__name__
+        tm.set_failed(role, err)
+        slack.post_failed(thread_ts, role, err)
+        print(f"  [{role}] ❌ {err}")
 
     tm.print_status()
 
@@ -147,37 +245,39 @@ async def orchestrate(prd: str, output_dir: str = "./output"):
     cfg      = get_config()
     out      = Path(output_dir)
     docs_dir = out / "docs"
-    be1_dir  = out / "backend" / "be1"
-    be2_dir  = out / "backend" / "be2"
-    fe1_dir  = out / "frontend" / "fe1"
-    fe2_dir  = out / "frontend" / "fe2"
 
     out.mkdir(parents=True, exist_ok=True)
     docs_dir.mkdir(parents=True, exist_ok=True)
 
     print("=" * 60)
     print("AI TEAM ORCHESTRATOR")
+    print(f"Profile: {cfg.profile}")
     print("-" * 60)
     for role, a in cfg.agents.items():
-        print(f"  {role:14} → {a.label}")
+        status = "✅" if role in cfg.enabled_agents else "⏭️  (skip)"
+        print(f"  {role:14} → {a.label:30} {status}")
     slack_st = "✅ Connected" if cfg.slack_enabled else "⚠️  Offline (điền token để bật)"
     print(f"\nSlack:  {slack_st}")
     print(f"Output: {out.resolve()}")
     print("=" * 60)
 
-    tm.init({
-        "PM Agent":     "Viết user stories và acceptance criteria",
-        "Scrum Master": "Tạo backlog và sprint plan",
-        "Analyst":      "Thiết kế API, data model, chia task",
-        "BE Agent 1":   "Implement backend theo be1_task.md",
-        "BE Agent 2":   "Implement backend theo be2_task.md",
-        "FE Agent 1":   "Implement frontend theo fe1_task.md",
-        "FE Agent 2":   "Implement frontend theo fe2_task.md",
-    })
+    # Khởi tạo task manager chỉ với enabled agents
+    tasks = {}
+    if _enabled("PM Agent"):      tasks["PM Agent"]     = "Viết user stories và acceptance criteria"
+    if _enabled("Scrum Master"):  tasks["Scrum Master"] = "Tạo backlog và sprint plan"
+    if _enabled("Analyst"):       tasks["Analyst"]      = "Thiết kế API, data model, chia task"
+    if _enabled("BE Agent 1"):    tasks["BE Agent 1"]   = "Implement backend theo be1_task.md"
+    if _enabled("BE Agent 2"):    tasks["BE Agent 2"]   = "Implement backend theo be2_task.md"
+    if _enabled("FE Agent 1"):    tasks["FE Agent 1"]   = "Implement frontend theo fe1_task.md"
+    if _enabled("FE Agent 2"):    tasks["FE Agent 2"]   = "Implement frontend theo fe2_task.md"
+    if _enabled("Leader Agent"):  tasks["Leader Agent"] = "Review toàn bộ code"
+
+    tm.init(tasks)
     tm.print_status()
 
     # Stage 1: PM
-    await _run_stage("PM Agent", f"""Bạn là Product Manager AI.
+    if _enabled("PM Agent"):
+        await _run_stage("PM Agent", f"""Bạn là Product Manager AI.
 
 PRD:
 {prd}
@@ -185,11 +285,12 @@ PRD:
 Tạo 2 file trong docs/:
 1. docs/user_stories.md — User stories: As a/I want/So that + story points
 2. docs/acceptance.md   — Acceptance criteria: Given/When/Then""",
-        out, "Viết user stories từ PRD")
-    tm.print_status()
+            out, "Viết user stories từ PRD")
+        tm.print_status()
 
-    # Stage 2: Scrum
-    await _run_stage("Scrum Master", f"""Bạn là Scrum Master AI.
+    # Stage 2: Scrum (optional)
+    if _enabled("Scrum Master"):
+        await _run_stage("Scrum Master", f"""Bạn là Scrum Master AI.
 
 USER STORIES:
 {_read_doc(output_dir, 'user_stories.md')}
@@ -200,43 +301,72 @@ ACCEPTANCE:
 Tạo 2 file trong docs/:
 1. docs/backlog.md      — Backlog có priority, points, assignee (BE1/BE2/FE1/FE2)
 2. docs/sprint_plan.md  — Sprint plan chia task chi tiết cho từng agent""",
-        out, "Tạo backlog và sprint plan")
-    tm.print_status()
+            out, "Tạo backlog và sprint plan")
+        tm.print_status()
 
     # Stage 3: Analyst
-    await _run_stage("Analyst", f"""Bạn là Tech Lead AI.
+    if _enabled("Analyst"):
+        has_scrum   = _enabled("Scrum Master")
+        has_fe      = _enabled("FE Agent 1") or _enabled("FE Agent 2")
+        be_agents   = [r for r in ["BE Agent 1", "BE Agent 2"] if _enabled(r)]
+        fe_agents   = [r for r in ["FE Agent 1", "FE Agent 2"] if _enabled(r)]
+
+        task_files = []
+        for r in be_agents:
+            key = r.lower().replace(" ", "").replace("agent", "_agent_")  # be_agent_1
+            key = r.replace(" ", "").lower()  # beagent1
+            num = r.split()[-1]
+            task_files.append(f"- docs/be{num}_task.md — Task cho {r}")
+        for r in fe_agents:
+            num = r.split()[-1]
+            task_files.append(f"- docs/fe{num}_task.md — Task cho {r}")
+
+        plan_section = f"""SPRINT PLAN:
+{_read_doc(output_dir, 'sprint_plan.md')}""" if has_scrum else ""
+
+        analyst_prompt = f"""Bạn là Tech Lead AI.
 
 USER STORIES:
 {_read_doc(output_dir, 'user_stories.md')}
 
-SPRINT PLAN:
-{_read_doc(output_dir, 'sprint_plan.md')}
+{plan_section}
 
-Tech stack: {cfg.tech_backend} / {cfg.tech_frontend}
+Tech stack: {cfg.tech_backend}{' / ' + cfg.tech_frontend if has_fe else ''}
 
 Tạo trong docs/:
 - docs/api_contract.md  — Tất cả endpoints, request/response schema
 - docs/data_models.md   — Database schema đầy đủ
-- docs/be1_task.md      — Task chi tiết BE Agent 1
-- docs/be2_task.md      — Task chi tiết BE Agent 2
-- docs/fe1_task.md      — Task chi tiết FE Agent 1
-- docs/fe2_task.md      — Task chi tiết FE Agent 2""",
-        out, "Thiết kế kỹ thuật và chia task")
-    tm.print_status()
+{chr(10).join(task_files)}"""
 
-    # Stage 4a: BE song song
-    print("\n[Orchestrator] Stage 4a — BE agents song song...")
-    await asyncio.gather(
-        _coding_agent("BE Agent 1", "be1_task.md", be1_dir, output_dir),
-        _coding_agent("BE Agent 2", "be2_task.md", be2_dir, output_dir),
-    )
+        await _run_stage("Analyst", analyst_prompt, out, "Thiết kế kỹ thuật và chia task")
+        tm.print_status()
 
-    # Stage 4b: FE song song
-    print("\n[Orchestrator] Stage 4b — FE agents song song...")
-    await asyncio.gather(
-        _coding_agent("FE Agent 1", "fe1_task.md", fe1_dir, output_dir),
-        _coding_agent("FE Agent 2", "fe2_task.md", fe2_dir, output_dir),
-    )
+    # Stage 4a: BE agents
+    be_tasks = []
+    if _enabled("BE Agent 1"):
+        be_tasks.append(_coding_agent("BE Agent 1", "be1_task.md", out / "backend" / "be1", output_dir))
+    if _enabled("BE Agent 2"):
+        be_tasks.append(_coding_agent("BE Agent 2", "be2_task.md", out / "backend" / "be2", output_dir))
+
+    if be_tasks:
+        print("\n[Orchestrator] Stage 4a — BE agents...")
+        await asyncio.gather(*be_tasks)
+
+    # Stage 4b: FE agents
+    fe_tasks = []
+    if _enabled("FE Agent 1"):
+        fe_tasks.append(_coding_agent("FE Agent 1", "fe1_task.md", out / "frontend" / "fe1", output_dir))
+    if _enabled("FE Agent 2"):
+        fe_tasks.append(_coding_agent("FE Agent 2", "fe2_task.md", out / "frontend" / "fe2", output_dir))
+
+    if fe_tasks:
+        print("\n[Orchestrator] Stage 4b — FE agents...")
+        await asyncio.gather(*fe_tasks)
+
+    # Stage 5: Leader review
+    if _enabled("Leader Agent"):
+        print("\n[Orchestrator] Stage 5 — Leader Agent review code...")
+        await _review_agent(output_dir)
 
     # Sprint summary
     all_files  = [f for f in out.rglob("*") if f.is_file()]

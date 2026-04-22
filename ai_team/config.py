@@ -1,15 +1,28 @@
 """
 Config Loader
 =============
-Đọc settings từ config/settings.toml.
-Dùng ở khắp nơi trong project.
+Đọc settings từ config/settings.toml (hoặc custom path).
+Hỗ trợ profile-based agent selection qua profiles.yaml.
 """
 
 import tomllib
+import yaml
 from pathlib import Path
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
-CONFIG_PATH = Path(__file__).parent.parent / "config" / "settings.toml"
+DEFAULT_CONFIG = Path(__file__).parent.parent / "config" / "settings.toml"
+PROFILES_PATH  = Path(__file__).parent.parent / "profiles.yaml"
+
+AGENT_KEYS = {
+    "pm":      "PM Agent",
+    "scrum":   "Scrum Master",
+    "analyst": "Analyst",
+    "be1":     "BE Agent 1",
+    "be2":     "BE Agent 2",
+    "fe1":     "FE Agent 1",
+    "fe2":     "FE Agent 2",
+    "leader":  "Leader Agent",
+}
 
 
 @dataclass
@@ -21,24 +34,42 @@ class AgentCfg:
 
 @dataclass
 class Config:
-    agents:     dict[str, AgentCfg]
-    slack_token: str
-    slack_channel: str
-    output_dir:  str
-    timeout_claude: int
+    agents:           dict[str, AgentCfg]
+    enabled_agents:   set[str]
+    profile:          str
+    slack_token:      str
+    slack_channel:    str
+    output_dir:       str
+    timeout_claude:   int
     timeout_opencode: int
-    tech_backend:  str
-    tech_frontend: str
-    slack_enabled: bool
+    tech_backend:     str
+    tech_frontend:    str
+    slack_enabled:    bool
 
 
-def load() -> Config:
-    with open(CONFIG_PATH, "rb") as f:
+def _load_profiles() -> dict:
+    if not PROFILES_PATH.exists():
+        return {}
+    with open(PROFILES_PATH, "r", encoding="utf-8") as f:
+        return yaml.safe_load(f).get("profiles", {})
+
+
+def _resolve_enabled(profile_name: str, profiles: dict) -> set[str]:
+    if not profile_name or profile_name not in profiles:
+        # Mặc định: tất cả agents
+        return set(AGENT_KEYS.values())
+    keys = profiles[profile_name].get("agents", list(AGENT_KEYS.keys()))
+    return {AGENT_KEYS[k] for k in keys if k in AGENT_KEYS}
+
+
+def load(config_path: Path | None = None, profile_override: str | None = None) -> Config:
+    path = config_path or DEFAULT_CONFIG
+    with open(path, "rb") as f:
         raw = tomllib.load(f)
 
     a = raw["agents"]
 
-    def make_agent(tool_key, model_key) -> AgentCfg:
+    def make_agent(tool_key: str, model_key: str) -> AgentCfg:
         tool  = a[tool_key]
         model = a[model_key]
         if tool == "claude":
@@ -48,18 +79,24 @@ def load() -> Config:
             label = f"OpenCode + {provider.title()}"
         return AgentCfg(tool=tool, model=model, label=label)
 
+    profiles    = _load_profiles()
+    profile     = profile_override or raw.get("project", {}).get("profile", "")
+    enabled     = _resolve_enabled(profile, profiles)
     slack_token = raw["slack"]["bot_token"]
 
     return Config(
         agents={
-            "PM Agent":     make_agent("pm_tool",     "pm_model"),
-            "Scrum Master": make_agent("scrum_tool",  "scrum_model"),
-            "Analyst":      make_agent("analyst_tool","analyst_model"),
-            "BE Agent 1":   make_agent("be1_tool",    "be1_model"),
-            "BE Agent 2":   make_agent("be2_tool",    "be2_model"),
-            "FE Agent 1":   make_agent("fe1_tool",    "fe1_model"),
-            "FE Agent 2":   make_agent("fe2_tool",    "fe2_model"),
+            "PM Agent":     make_agent("pm_tool",      "pm_model"),
+            "Scrum Master": make_agent("scrum_tool",   "scrum_model"),
+            "Analyst":      make_agent("analyst_tool", "analyst_model"),
+            "BE Agent 1":   make_agent("be1_tool",     "be1_model"),
+            "BE Agent 2":   make_agent("be2_tool",     "be2_model"),
+            "FE Agent 1":   make_agent("fe1_tool",     "fe1_model"),
+            "FE Agent 2":   make_agent("fe2_tool",     "fe2_model"),
+            "Leader Agent": make_agent("leader_tool",  "leader_model"),
         },
+        enabled_agents=enabled,
+        profile=profile or "fullstack",
         slack_token=slack_token,
         slack_channel=raw["slack"]["channel"],
         output_dir=raw["output"]["directory"],
@@ -71,8 +108,14 @@ def load() -> Config:
     )
 
 
-# Singleton — load 1 lần
 _config: Config | None = None
+
+
+def init(config_path: Path | None = None, profile: str | None = None) -> Config:
+    global _config
+    _config = load(config_path, profile)
+    return _config
+
 
 def get() -> Config:
     global _config

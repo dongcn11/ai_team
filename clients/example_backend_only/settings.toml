@@ -1,0 +1,48 @@
+# Project: Example Backend Only
+# Profile: backend_only (PM + Scrum + Analyst + BE1 + BE2 + Leader)
+# FE agents bị bỏ qua hoàn toàn
+
+[project]
+name    = "Example Backend Only"
+profile = "backend_only"
+
+[agents]
+pm_tool     = "claude"
+pm_model    = ""
+
+scrum_tool  = "claude"
+scrum_model = ""
+
+analyst_tool  = "claude"
+analyst_model = ""
+
+be1_tool  = "opencode"
+be1_model = "opencode/qwen3.6-plus"
+
+be2_tool  = "opencode"
+be2_model = "opencode/minimax-m2.7"
+
+# FE agents vẫn cần khai báo nhưng sẽ bị bỏ qua do profile
+fe1_tool  = "opencode"
+fe1_model = "opencode/qwen3.5-plus"
+
+fe2_tool  = "opencode"
+fe2_model = "opencode/qwen3.5-plus"
+
+leader_tool  = "claude"
+leader_model = ""
+
+[slack]
+bot_token = "xoxb-your-token-here"
+channel   = "#ai-team"
+
+[output]
+directory = "./clients/example_backend_only/output"
+
+[timeouts]
+claude_code = 600
+opencode    = 600
+
+[tech_stack]
+backend  = "Python FastAPI + SQLModel + SQLite"
+frontend = ""
