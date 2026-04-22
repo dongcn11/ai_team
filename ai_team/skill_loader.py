@@ -27,6 +27,7 @@ ROLE_SKILL_DIRS: dict[str, list[str]] = {
     "BE Agent 2":   ["shared", "be"],
     "FE Agent 1":   ["shared", "fe"],
     "FE Agent 2":   ["shared", "fe"],
+    "Leader Agent": ["shared", "leader"],
 }
 
 

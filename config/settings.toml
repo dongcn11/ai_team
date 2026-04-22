@@ -28,6 +28,9 @@ fe1_model = "opencode/qwen3.5-plus"     # Go plan: 10,200 credits
 fe2_tool  = "opencode"
 fe2_model = "opencode/qwen3.5-plus"     # Go plan: 10,200 credits
 
+leader_tool  = "claude"
+leader_model = ""                        # claude dùng account đăng nhập
+
 [slack]
 # Điền token sau khi tạo Slack App
 # Hướng dẫn: xem README.md phần Slack Setup

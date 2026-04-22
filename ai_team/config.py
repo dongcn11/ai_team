@@ -21,6 +21,8 @@ AGENT_KEYS = {
     "be2":     "BE Agent 2",
     "fe1":     "FE Agent 1",
     "fe2":     "FE Agent 2",
+    "fs1":     "Fullstack Agent 1",
+    "fs2":     "Fullstack Agent 2",
     "leader":  "Leader Agent",
 }
 
@@ -84,17 +86,26 @@ def load(config_path: Path | None = None, profile_override: str | None = None) -
     enabled     = _resolve_enabled(profile, profiles)
     slack_token = raw["slack"]["bot_token"]
 
+    def make_agent_optional(tool_key: str, model_key: str) -> AgentCfg | None:
+        if tool_key not in a:
+            return None
+        return make_agent(tool_key, model_key)
+
+    agents: dict[str, AgentCfg] = {
+        "PM Agent":     make_agent("pm_tool",      "pm_model"),
+        "Scrum Master": make_agent("scrum_tool",   "scrum_model"),
+        "Analyst":      make_agent("analyst_tool", "analyst_model"),
+        "Leader Agent": make_agent("leader_tool",  "leader_model"),
+    }
+    for key, name in [("be1", "BE Agent 1"), ("be2", "BE Agent 2"),
+                      ("fe1", "FE Agent 1"), ("fe2", "FE Agent 2"),
+                      ("fs1", "Fullstack Agent 1"), ("fs2", "Fullstack Agent 2")]:
+        agent = make_agent_optional(f"{key}_tool", f"{key}_model")
+        if agent:
+            agents[name] = agent
+
     return Config(
-        agents={
-            "PM Agent":     make_agent("pm_tool",      "pm_model"),
-            "Scrum Master": make_agent("scrum_tool",   "scrum_model"),
-            "Analyst":      make_agent("analyst_tool", "analyst_model"),
-            "BE Agent 1":   make_agent("be1_tool",     "be1_model"),
-            "BE Agent 2":   make_agent("be2_tool",     "be2_model"),
-            "FE Agent 1":   make_agent("fe1_tool",     "fe1_model"),
-            "FE Agent 2":   make_agent("fe2_tool",     "fe2_model"),
-            "Leader Agent": make_agent("leader_tool",  "leader_model"),
-        },
+        agents=agents,
         enabled_agents=enabled,
         profile=profile or "fullstack",
         slack_token=slack_token,

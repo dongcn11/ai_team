@@ -79,30 +79,25 @@ Tham khảo: https://github.com/dongcn11/v0-html-css-template
 
 ### 4. Phân chia task
 
-#### BE Agent 1 — Core API
+#### Fullstack Agent 1 — Core & Public
 - Auth system (register, login, JWT via Sanctum)
 - Services CRUD + Admin endpoints
 - Database migrations + seeders (10 services mẫu)
-- Unit tests cho auth và services
-
-#### BE Agent 2 — Orders & Features
-- Cart system (full CRUD)
-- Orders system (create, list, detail, admin manage)
-- Contact form (save + email notification)
-- Redis caching cho services list
-- Integration tests cho cart và orders
-
-#### FE Agent 1 — Public Pages
 - Homepage (hero, featured services, CTA sections)
 - Services listing (filter by category, sort by price)
 - Service detail page
 - Contact page + form validation
+- Contact form API (save + email notification)
 
-#### FE Agent 2 — Transactional Pages
+#### Fullstack Agent 2 — Transactional & Admin
+- Cart system (full CRUD)
+- Orders system (create, list, detail, admin manage)
+- Redis caching cho services list
 - Shopping cart (add/remove/update, live total)
 - Checkout flow (form, order review, confirm)
 - Login / Register pages
 - Thông báo order success
+- Admin dashboard (quản lý orders, services, contacts)
 
 ---
 

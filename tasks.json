@@ -2,64 +2,73 @@
   "PM Agent": {
     "role": "PM Agent",
     "description": "Viết user stories và acceptance criteria",
-    "status": "failed",
-    "started_at": "17:11:32",
-    "finished_at": "17:11:32",
+    "status": "running",
+    "started_at": "16:46:41",
+    "finished_at": null,
     "duration_s": null,
-    "error": "[WinError 2] The system cannot find the file specified"
+    "error": null
   },
   "Scrum Master": {
     "role": "Scrum Master",
     "description": "Tạo backlog và sprint plan",
-    "status": "failed",
-    "started_at": "17:11:32",
-    "finished_at": "17:11:32",
+    "status": "pending",
+    "started_at": null,
+    "finished_at": null,
     "duration_s": null,
-    "error": "[WinError 2] The system cannot find the file specified"
+    "error": null
   },
   "Analyst": {
     "role": "Analyst",
     "description": "Thiết kế API, data model, chia task",
-    "status": "failed",
-    "started_at": "17:11:32",
-    "finished_at": "17:11:32",
+    "status": "pending",
+    "started_at": null,
+    "finished_at": null,
     "duration_s": null,
-    "error": "[WinError 2] The system cannot find the file specified"
+    "error": null
   },
   "BE Agent 1": {
     "role": "BE Agent 1",
     "description": "Implement backend theo be1_task.md",
-    "status": "failed",
-    "started_at": "17:11:32",
-    "finished_at": "17:11:32",
+    "status": "pending",
+    "started_at": null,
+    "finished_at": null,
     "duration_s": null,
-    "error": "[WinError 2] The system cannot find the file specified"
+    "error": null
   },
   "BE Agent 2": {
     "role": "BE Agent 2",
     "description": "Implement backend theo be2_task.md",
-    "status": "failed",
-    "started_at": "17:11:32",
-    "finished_at": "17:11:32",
+    "status": "pending",
+    "started_at": null,
+    "finished_at": null,
     "duration_s": null,
-    "error": "[WinError 2] The system cannot find the file specified"
+    "error": null
   },
   "FE Agent 1": {
     "role": "FE Agent 1",
     "description": "Implement frontend theo fe1_task.md",
-    "status": "failed",
-    "started_at": "17:11:32",
-    "finished_at": "17:11:32",
+    "status": "pending",
+    "started_at": null,
+    "finished_at": null,
     "duration_s": null,
-    "error": "[WinError 2] The system cannot find the file specified"
+    "error": null
   },
   "FE Agent 2": {
     "role": "FE Agent 2",
     "description": "Implement frontend theo fe2_task.md",
-    "status": "failed",
-    "started_at": "17:11:32",
-    "finished_at": "17:11:32",
+    "status": "pending",
+    "started_at": null,
+    "finished_at": null,
     "duration_s": null,
-    "error": "[WinError 2] The system cannot find the file specified"
+    "error": null
+  },
+  "Leader Agent": {
+    "role": "Leader Agent",
+    "description": "Review toàn bộ code",
+    "status": "pending",
+    "started_at": null,
+    "finished_at": null,
+    "duration_s": null,
+    "error": null
   }
 }
