@@ -147,8 +147,10 @@ async def orchestrate(prd: str, output_dir: str = "./output"):
     cfg      = get_config()
     out      = Path(output_dir)
     docs_dir = out / "docs"
-    be_dir   = out / "backend"
-    fe_dir   = out / "frontend"
+    be1_dir  = out / "backend" / "be1"
+    be2_dir  = out / "backend" / "be2"
+    fe1_dir  = out / "frontend" / "fe1"
+    fe2_dir  = out / "frontend" / "fe2"
 
     out.mkdir(parents=True, exist_ok=True)
     docs_dir.mkdir(parents=True, exist_ok=True)
@@ -225,15 +227,15 @@ Tạo trong docs/:
     # Stage 4a: BE song song
     print("\n[Orchestrator] Stage 4a — BE agents song song...")
     await asyncio.gather(
-        _coding_agent("BE Agent 1", "be1_task.md", be_dir, output_dir),
-        _coding_agent("BE Agent 2", "be2_task.md", be_dir, output_dir),
+        _coding_agent("BE Agent 1", "be1_task.md", be1_dir, output_dir),
+        _coding_agent("BE Agent 2", "be2_task.md", be2_dir, output_dir),
     )
 
     # Stage 4b: FE song song
     print("\n[Orchestrator] Stage 4b — FE agents song song...")
     await asyncio.gather(
-        _coding_agent("FE Agent 1", "fe1_task.md", fe_dir, output_dir),
-        _coding_agent("FE Agent 2", "fe2_task.md", fe_dir, output_dir),
+        _coding_agent("FE Agent 1", "fe1_task.md", fe1_dir, output_dir),
+        _coding_agent("FE Agent 2", "fe2_task.md", fe2_dir, output_dir),
     )
 
     # Sprint summary
