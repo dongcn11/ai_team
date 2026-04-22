@@ -63,7 +63,9 @@ async def run_opencode(model: str, prompt: str, work_dir: Path) -> str:
     prompt_file = write_prompt_file(prompt, "opencode")
 
     cmd = _resolve_cmd("opencode") + [
-        "run", "--model", model,
+        "run",
+        "Follow the instructions in the attached file exactly.",
+        "--model", model,
         "--dangerously-skip-permissions",
         "-f", str(prompt_file),
     ]
