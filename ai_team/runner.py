@@ -66,7 +66,6 @@ async def run_opencode(model: str, prompt: str, work_dir: Path) -> str:
         "run", "--model", model,
         "--dangerously-skip-permissions",
         "-f", str(prompt_file),
-        "Follow the instructions in the attached file exactly. Implement everything as specified.",
     ]
 
     proc = await asyncio.create_subprocess_exec(
