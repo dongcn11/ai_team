@@ -1,63 +1,18 @@
 {
-  "PM Agent": {
-    "role": "PM Agent",
-    "description": "Viết user stories và acceptance criteria",
+  "Fullstack Agent 1": {
+    "role": "Fullstack Agent 1",
+    "description": "Implement theo fs1_task.md (clone repo + làm tiếp)",
     "status": "running",
-    "started_at": "16:46:41",
+    "started_at": "13:11:37",
     "finished_at": null,
     "duration_s": null,
     "error": null
   },
-  "Scrum Master": {
-    "role": "Scrum Master",
-    "description": "Tạo backlog và sprint plan",
-    "status": "pending",
-    "started_at": null,
-    "finished_at": null,
-    "duration_s": null,
-    "error": null
-  },
-  "Analyst": {
-    "role": "Analyst",
-    "description": "Thiết kế API, data model, chia task",
-    "status": "pending",
-    "started_at": null,
-    "finished_at": null,
-    "duration_s": null,
-    "error": null
-  },
-  "BE Agent 1": {
-    "role": "BE Agent 1",
-    "description": "Implement backend theo be1_task.md",
-    "status": "pending",
-    "started_at": null,
-    "finished_at": null,
-    "duration_s": null,
-    "error": null
-  },
-  "BE Agent 2": {
-    "role": "BE Agent 2",
-    "description": "Implement backend theo be2_task.md",
-    "status": "pending",
-    "started_at": null,
-    "finished_at": null,
-    "duration_s": null,
-    "error": null
-  },
-  "FE Agent 1": {
-    "role": "FE Agent 1",
-    "description": "Implement frontend theo fe1_task.md",
-    "status": "pending",
-    "started_at": null,
-    "finished_at": null,
-    "duration_s": null,
-    "error": null
-  },
-  "FE Agent 2": {
-    "role": "FE Agent 2",
-    "description": "Implement frontend theo fe2_task.md",
-    "status": "pending",
-    "started_at": null,
+  "Fullstack Agent 2": {
+    "role": "Fullstack Agent 2",
+    "description": "Implement theo fs2_task.md (clone repo + làm tiếp)",
+    "status": "running",
+    "started_at": "13:11:37",
     "finished_at": null,
     "duration_s": null,
     "error": null
