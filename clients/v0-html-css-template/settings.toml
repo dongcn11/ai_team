@@ -1,10 +1,10 @@
 # Project: AlowWeb — Premium Web Solutions Platform
 # Repo: https://github.com/dongcn11/v0-html-css-template
-# Profile: fullstack (PM + Scrum + Analyst + BE1 + BE2 + FE1 + FE2 + Leader)
+# Profile: dual_fullstack (PM + Scrum + Analyst + FS1 + FS2 + Leader)
 
 [project]
 name    = "AlowWeb"
-profile = "fullstack"
+profile = "dual_fullstack"
 
 [agents]
 pm_tool     = "claude"
@@ -16,17 +16,11 @@ scrum_model = ""
 analyst_tool  = "claude"
 analyst_model = ""
 
-be1_tool  = "opencode"
-be1_model = "opencode/qwen3.6-plus"
+fs1_tool  = "opencode"
+fs1_model = "opencode-go/qwen3.6-plus"
 
-be2_tool  = "opencode"
-be2_model = "opencode/minimax-m2.7"
-
-fe1_tool  = "opencode"
-fe1_model = "opencode/qwen3.5-plus"
-
-fe2_tool  = "opencode"
-fe2_model = "opencode/qwen3.5-plus"
+fs2_tool  = "opencode"
+fs2_model = "opencode-go/mimo-v2.5-pro"
 
 leader_tool  = "claude"
 leader_model = ""
@@ -40,7 +34,7 @@ directory = "./clients/v0-html-css-template/output"
 
 [timeouts]
 claude_code = 900
-opencode    = 1200
+opencode    = 3600
 
 [tech_stack]
 backend  = "PHP 8.2 + Laravel 12 + Laravel Sanctum + MySQL + Redis"

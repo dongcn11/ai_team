@@ -7,6 +7,7 @@ Stage 1: PM → Stage 2: Scrum (optional) → Stage 3: Analyst → Stage 4: BE+F
 
 import asyncio
 import json
+import re
 import time
 from pathlib import Path
 
@@ -24,6 +25,23 @@ def _docs_dir(output_dir: str) -> Path:
 def _read_doc(output_dir: str, filename: str) -> str:
     path = _docs_dir(output_dir) / filename
     return path.read_text(encoding="utf-8") if path.exists() else f"(chưa có {filename})"
+
+
+def _extract_repo_url(text: str) -> str | None:
+    match = re.search(r'https://github\.com/[\w\-]+/[\w\-]+', text)
+    return match.group(0) if match else None
+
+
+def _branch_name(role: str) -> str:
+    mapping = {
+        "BE Agent 1":         "feature/be1",
+        "BE Agent 2":         "feature/be2",
+        "FE Agent 1":         "feature/fe1",
+        "FE Agent 2":         "feature/fe2",
+        "Fullstack Agent 1":  "feature/fs1",
+        "Fullstack Agent 2":  "feature/fs2",
+    }
+    return mapping.get(role, f"feature/{role.lower().replace(' ', '-')}")
 
 
 def _new_files(work_dir: Path, before: set) -> list[str]:
@@ -65,7 +83,7 @@ async def _run_stage(role: str, prompt: str, work_dir: Path, summary: str):
 
 # ── Coding agents ─────────────────────────────────────────────────────────────
 
-async def _coding_agent(role: str, task_doc: str, work_dir: Path, output_dir: str):
+async def _coding_agent(role: str, task_doc: str, work_dir: Path, output_dir: str, repo_url: str | None = None):
     cfg         = get_config()
     agent_cfg   = cfg.agents[role]
     task_content = _read_doc(output_dir, task_doc)
@@ -84,8 +102,53 @@ async def _coding_agent(role: str, task_doc: str, work_dir: Path, output_dir: st
     start      = time.time()
     issue_file = work_dir / f"_issue_{role.replace(' ', '_')}.json"
 
+    role_prefix = _branch_name(role)  # e.g. "feature/fs1"
+    git_workflow = f"""GIT WORKFLOW — bắt buộc thực hiện theo từng feature:
+
+1. Clone repo (chỉ làm 1 lần đầu):
+     git clone {repo_url} .
+
+2. Với MỖI feature trong task, tạo branch riêng rồi implement:
+     git checkout -b {role_prefix}/<feature-slug>
+     # Ví dụ: {role_prefix}/auth-system, {role_prefix}/services-crud, {role_prefix}/contact-page
+
+3. Sau khi feature đó xong, commit + push + tạo Pull Request:
+     git add .
+     git commit -m "feat: <mô tả feature>"
+     git push origin {role_prefix}/<feature-slug>
+     gh pr create \\
+       --title "feat: <mô tả feature>" \\
+       --body "## Summary\\n<mô tả chi tiết>\\n\\n## Checklist\\n- [ ] Đã test\\n- [ ] Theo đúng API contract" \\
+       --label "review-needed"
+
+4. Sau khi tạo PR xong, checkout về main/master rồi tiếp tục feature tiếp theo:
+     git checkout main
+
+Lặp lại bước 2-4 cho từng feature trong task của bạn.
+""" if repo_url else f"""GIT WORKFLOW — bắt buộc thực hiện theo từng feature:
+
+1. Với MỖI feature trong task, tạo branch riêng rồi implement:
+     git checkout -b {role_prefix}/<feature-slug>
+     # Ví dụ: {role_prefix}/cart-system, {role_prefix}/orders-api, {role_prefix}/admin-dashboard
+
+2. Sau khi feature đó xong, commit + push + tạo Pull Request:
+     git add .
+     git commit -m "feat: <mô tả feature>"
+     git push origin {role_prefix}/<feature-slug>
+     gh pr create \\
+       --title "feat: <mô tả feature>" \\
+       --body "## Summary\\n<mô tả chi tiết>\\n\\n## Checklist\\n- [ ] Đã test\\n- [ ] Theo đúng API contract" \\
+       --label "review-needed"
+
+3. Checkout về main rồi tiếp tục feature tiếp theo:
+     git checkout main
+
+Lặp lại bước 1-3 cho từng feature trong task của bạn.
+"""
+
     task_prompt = f"""Bạn là {role} trong AI development team.
 
+{git_workflow}
 TASK CỦA BẠN:
 {task_content}
 
@@ -95,7 +158,7 @@ API CONTRACT:
 DATA MODELS:
 {data_models}
 
-Tech stack: {cfg.tech_backend} (backend) / {cfg.tech_frontend} (frontend)
+Tech stack: {cfg.tech_backend} / {cfg.tech_frontend}
 
 Yêu cầu:
 - Áp dụng đúng skills đã học ở trên khi viết code
@@ -183,6 +246,10 @@ async def _review_agent(output_dir: str):
         code_sections.append(f"CODE FE AGENT 1 (frontend/fe1/):\n{_collect_code('frontend/fe1')}")
     if _enabled("FE Agent 2"):
         code_sections.append(f"CODE FE AGENT 2 (frontend/fe2/):\n{_collect_code('frontend/fe2')}")
+    if _enabled("Fullstack Agent 1"):
+        code_sections.append(f"CODE FULLSTACK AGENT 1 (fullstack/fs1/):\n{_collect_code('fullstack/fs1')}")
+    if _enabled("Fullstack Agent 2"):
+        code_sections.append(f"CODE FULLSTACK AGENT 2 (fullstack/fs2/):\n{_collect_code('fullstack/fs2')}")
 
     code_block = "\n\n---\n\n".join(code_sections) if code_sections else "(không có code để review)"
 
@@ -245,6 +312,7 @@ async def orchestrate(prd: str, output_dir: str = "./output"):
     cfg      = get_config()
     out      = Path(output_dir)
     docs_dir = out / "docs"
+    repo_url = _extract_repo_url(prd)
 
     out.mkdir(parents=True, exist_ok=True)
     docs_dir.mkdir(parents=True, exist_ok=True)
@@ -252,6 +320,8 @@ async def orchestrate(prd: str, output_dir: str = "./output"):
     print("=" * 60)
     print("AI TEAM ORCHESTRATOR")
     print(f"Profile: {cfg.profile}")
+    if repo_url:
+        print(f"Repo:    {repo_url}")
     print("-" * 60)
     for role, a in cfg.agents.items():
         status = "✅" if role in cfg.enabled_agents else "⏭️  (skip)"
@@ -263,14 +333,16 @@ async def orchestrate(prd: str, output_dir: str = "./output"):
 
     # Khởi tạo task manager chỉ với enabled agents
     tasks = {}
-    if _enabled("PM Agent"):      tasks["PM Agent"]     = "Viết user stories và acceptance criteria"
-    if _enabled("Scrum Master"):  tasks["Scrum Master"] = "Tạo backlog và sprint plan"
-    if _enabled("Analyst"):       tasks["Analyst"]      = "Thiết kế API, data model, chia task"
-    if _enabled("BE Agent 1"):    tasks["BE Agent 1"]   = "Implement backend theo be1_task.md"
-    if _enabled("BE Agent 2"):    tasks["BE Agent 2"]   = "Implement backend theo be2_task.md"
-    if _enabled("FE Agent 1"):    tasks["FE Agent 1"]   = "Implement frontend theo fe1_task.md"
-    if _enabled("FE Agent 2"):    tasks["FE Agent 2"]   = "Implement frontend theo fe2_task.md"
-    if _enabled("Leader Agent"):  tasks["Leader Agent"] = "Review toàn bộ code"
+    if _enabled("PM Agent"):             tasks["PM Agent"]             = "Viết user stories và acceptance criteria"
+    if _enabled("Scrum Master"):         tasks["Scrum Master"]         = "Tạo backlog và sprint plan"
+    if _enabled("Analyst"):              tasks["Analyst"]              = "Thiết kế API, data model, chia task"
+    if _enabled("BE Agent 1"):           tasks["BE Agent 1"]           = "Implement backend theo be1_task.md"
+    if _enabled("BE Agent 2"):           tasks["BE Agent 2"]           = "Implement backend theo be2_task.md"
+    if _enabled("FE Agent 1"):           tasks["FE Agent 1"]           = "Implement frontend theo fe1_task.md"
+    if _enabled("FE Agent 2"):           tasks["FE Agent 2"]           = "Implement frontend theo fe2_task.md"
+    if _enabled("Fullstack Agent 1"):    tasks["Fullstack Agent 1"]    = "Implement theo fs1_task.md (clone repo + làm tiếp)"
+    if _enabled("Fullstack Agent 2"):    tasks["Fullstack Agent 2"]    = "Implement theo fs2_task.md (clone repo + làm tiếp)"
+    if _enabled("Leader Agent"):         tasks["Leader Agent"]         = "Review toàn bộ code"
 
     tm.init(tasks)
     tm.print_status()
@@ -290,6 +362,14 @@ Tạo 2 file trong docs/:
 
     # Stage 2: Scrum (optional)
     if _enabled("Scrum Master"):
+        has_fs   = _enabled("Fullstack Agent 1") or _enabled("Fullstack Agent 2")
+        has_be   = _enabled("BE Agent 1") or _enabled("BE Agent 2")
+        has_fe   = _enabled("FE Agent 1") or _enabled("FE Agent 2")
+        assignee_hint = (
+            "FS1/FS2" if has_fs and not has_be and not has_fe
+            else "BE1/BE2/FE1/FE2" if has_be or has_fe
+            else "FS1/FS2"
+        )
         await _run_stage("Scrum Master", f"""Bạn là Scrum Master AI.
 
 USER STORIES:
@@ -299,30 +379,33 @@ ACCEPTANCE:
 {_read_doc(output_dir, 'acceptance.md')}
 
 Tạo 2 file trong docs/:
-1. docs/backlog.md      — Backlog có priority, points, assignee (BE1/BE2/FE1/FE2)
+1. docs/backlog.md      — Backlog có priority, points, assignee ({assignee_hint})
 2. docs/sprint_plan.md  — Sprint plan chia task chi tiết cho từng agent""",
             out, "Tạo backlog và sprint plan")
         tm.print_status()
 
     # Stage 3: Analyst
     if _enabled("Analyst"):
-        has_scrum   = _enabled("Scrum Master")
-        has_fe      = _enabled("FE Agent 1") or _enabled("FE Agent 2")
-        be_agents   = [r for r in ["BE Agent 1", "BE Agent 2"] if _enabled(r)]
-        fe_agents   = [r for r in ["FE Agent 1", "FE Agent 2"] if _enabled(r)]
+        has_scrum  = _enabled("Scrum Master")
+        be_agents  = [r for r in ["BE Agent 1", "BE Agent 2"] if _enabled(r)]
+        fe_agents  = [r for r in ["FE Agent 1", "FE Agent 2"] if _enabled(r)]
+        fs_agents  = [r for r in ["Fullstack Agent 1", "Fullstack Agent 2"] if _enabled(r)]
 
         task_files = []
         for r in be_agents:
-            key = r.lower().replace(" ", "").replace("agent", "_agent_")  # be_agent_1
-            key = r.replace(" ", "").lower()  # beagent1
             num = r.split()[-1]
             task_files.append(f"- docs/be{num}_task.md — Task cho {r}")
         for r in fe_agents:
             num = r.split()[-1]
             task_files.append(f"- docs/fe{num}_task.md — Task cho {r}")
+        for r in fs_agents:
+            num = r.split()[-1]
+            task_files.append(f"- docs/fs{num}_task.md — Task cho {r} (fullstack, không chia BE/FE)")
 
         plan_section = f"""SPRINT PLAN:
 {_read_doc(output_dir, 'sprint_plan.md')}""" if has_scrum else ""
+
+        repo_note = f"\nRepo hiện có (agents sẽ clone và làm tiếp): {repo_url}" if repo_url and fs_agents else ""
 
         analyst_prompt = f"""Bạn là Tech Lead AI.
 
@@ -331,7 +414,7 @@ USER STORIES:
 
 {plan_section}
 
-Tech stack: {cfg.tech_backend}{' / ' + cfg.tech_frontend if has_fe else ''}
+Tech stack: {cfg.tech_backend} / {cfg.tech_frontend}{repo_note}
 
 Tạo trong docs/:
 - docs/api_contract.md  — Tất cả endpoints, request/response schema
@@ -362,6 +445,17 @@ Tạo trong docs/:
     if fe_tasks:
         print("\n[Orchestrator] Stage 4b — FE agents...")
         await asyncio.gather(*fe_tasks)
+
+    # Stage 4c: Fullstack agents (song song, mỗi agent clone repo riêng)
+    fs_tasks = []
+    if _enabled("Fullstack Agent 1"):
+        fs_tasks.append(_coding_agent("Fullstack Agent 1", "fs1_task.md", out / "fullstack" / "fs1", output_dir, repo_url))
+    if _enabled("Fullstack Agent 2"):
+        fs_tasks.append(_coding_agent("Fullstack Agent 2", "fs2_task.md", out / "fullstack" / "fs2", output_dir, repo_url))
+
+    if fs_tasks:
+        print("\n[Orchestrator] Stage 4c — Fullstack agents (clone repo + implement)...")
+        await asyncio.gather(*fs_tasks)
 
     # Stage 5: Leader review
     if _enabled("Leader Agent"):

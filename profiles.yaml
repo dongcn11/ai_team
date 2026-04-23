@@ -33,3 +33,11 @@ profiles:
   solo_fullstack:
     label: "Solo Full-stack"
     agents: [pm, analyst, be1, fe1, leader]
+
+  dual_fullstack:
+    label: "Dual Full-stack (không chia BE/FE)"
+    agents: [pm, scrum, analyst, fs1, fs2, leader]
+
+  fs_retry:
+    label: "Retry FS agents only"
+    agents: [fs1, fs2, leader]
