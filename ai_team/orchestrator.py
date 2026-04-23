@@ -45,7 +45,13 @@ def _branch_name(role: str) -> str:
 
 
 def _new_files(work_dir: Path, before: set) -> list[str]:
-    after = {str(f.relative_to(work_dir)) for f in work_dir.rglob("*") if f.is_file()}
+    after = set()
+    for f in work_dir.rglob("*"):
+        try:
+            if f.is_file():
+                after.add(str(f.relative_to(work_dir)))
+        except OSError:
+            pass
     return sorted(after - before)
 
 
@@ -89,10 +95,14 @@ async def _progress_reporter(role: str, work_dir: Path, start: float, interval: 
     while True:
         await asyncio.sleep(interval)
         try:
-            all_files = sorted(
-                (f for f in work_dir.rglob("*") if f.is_file()),
-                key=lambda f: f.stat().st_mtime,
-            )
+            candidates = []
+            for f in work_dir.rglob("*"):
+                try:
+                    if f.is_file():
+                        candidates.append(f)
+                except OSError:
+                    pass
+            all_files = sorted(candidates, key=lambda f: f.stat().st_mtime)
             count    = len(all_files)
             elapsed  = int(time.time() - start)
             new      = count - prev_count
@@ -253,7 +263,11 @@ async def _review_agent(output_dir: str):
             return f"(thư mục {subdir} không tồn tại)"
         parts = []
         for f in sorted(target.rglob("*")):
-            if f.is_file() and f.suffix in {".py", ".ts", ".tsx", ".js", ".json", ".toml", ".yaml"}:
+            try:
+                is_file = f.is_file()
+            except OSError:
+                continue
+            if is_file and f.suffix in {".py", ".ts", ".tsx", ".js", ".json", ".toml", ".yaml"}:
                 rel = f.relative_to(out)
                 try:
                     content = f.read_text(encoding="utf-8")
