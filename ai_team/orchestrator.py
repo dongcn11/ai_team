@@ -81,6 +81,28 @@ async def _run_stage(role: str, prompt: str, work_dir: Path, summary: str):
         print(f"  [{role}] ❌ {err}")
 
 
+# ── Progress reporter ─────────────────────────────────────────────────────────
+
+async def _progress_reporter(role: str, work_dir: Path, start: float, interval: int = 60):
+    """In tiến độ mỗi `interval` giây: số files + file mới nhất."""
+    prev_count = 0
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            all_files = sorted(
+                (f for f in work_dir.rglob("*") if f.is_file()),
+                key=lambda f: f.stat().st_mtime,
+            )
+            count    = len(all_files)
+            elapsed  = int(time.time() - start)
+            new      = count - prev_count
+            latest   = all_files[-1].name if all_files else "-"
+            print(f"  [{role}] ⏳ {elapsed}s | {count} files (+{new}) | latest: {latest}")
+            prev_count = count
+        except Exception:
+            pass
+
+
 # ── Coding agents ─────────────────────────────────────────────────────────────
 
 async def _coding_agent(role: str, task_doc: str, work_dir: Path, output_dir: str, repo_url: str | None = None):
@@ -173,7 +195,11 @@ Yêu cầu:
     prompt = (skills + "\n" + task_prompt) if skills else task_prompt
 
     try:
-        await run(role, prompt, work_dir)
+        reporter = asyncio.create_task(_progress_reporter(role, work_dir, start))
+        try:
+            await run(role, prompt, work_dir)
+        finally:
+            reporter.cancel()
         duration  = int(time.time() - start)
         new_files = _new_files(work_dir, before)
 
