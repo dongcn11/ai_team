@@ -225,6 +225,7 @@ Yêu cầu:
                     if sugg:
                         msg += f"\n💡 Đề xuất: {sugg}"
                     slack.post_issue(thread_ts, role, msg, mention="Analyst")
+                    tm.report_issue(role, sev, desc, sugg)
                     print(f"  [{role}] Issue {sev}: {desc[:60]}")
                 issue_file.unlink()
             except Exception:
