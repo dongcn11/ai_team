@@ -1,10 +1,10 @@
 import React, { useState, useRef, useEffect } from "react";
 import { useProjectTasks } from "../hooks/useProjectTasks";
-import { ProjectTask, TaskDocument, AgentSimple, TaskComment, SubTask } from "../types";
+import { ProjectTask, TaskDocument, AgentFS, TaskComment, SubTask } from "../types";
 
 interface Props {
-  projectId: number;
-  agents: AgentSimple[];
+  projectId: string;
+  agents: AgentFS[];
   onUpdate: () => void;
 }
 
@@ -161,7 +161,7 @@ export default function TaskManager({ projectId, agents, onUpdate }: Props) {
               <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Assign Agent</label>
               <select className="setting-select" style={{ width: "100%" }} value={agentId} onChange={e => setAgentId(e.target.value)}>
                 <option value="">Unassigned</option>
-                {agents.map(a => <option key={a.id} value={a.id}>{a.name} ({a.role})</option>)}
+                {agents.map(a => <option key={a.key} value={a.key}>{a.name} ({a.role})</option>)}
               </select>
             </div>
             <div>
@@ -245,7 +245,7 @@ export default function TaskManager({ projectId, agents, onUpdate }: Props) {
                 onKeyDown={e => e.key === "Enter" && addSubTask()} />
               <select className="setting-select" style={{ width: 120 }} value={subAgentId} onChange={e => setSubAgentId(e.target.value)}>
                 <option value="">Anyone</option>
-                {agents.map(a => <option key={a.id} value={a.id}>{a.name}</option>)}
+                {agents.map(a => <option key={a.key} value={a.key}>{a.name}</option>)}
               </select>
               <button className="btn-primary" disabled={!subName.trim()} onClick={addSubTask}>Add</button>
             </div>

@@ -1,8 +1,11 @@
-# AI Team Configuration - E-Commerce Platform
+# AI Team Configuration - E-Commerce Opencode
 # =====================
 # Tất cả agents dùng opencode Go plan
 
 [agents]
+# Tool cho từng agent: "claude" hoặc "opencode"
+# Model format: provider/model-name (xem: opencode models)
+
 pm_tool     = "opencode"
 pm_model    = "opencode/qwen3.5-plus"    # Go plan: 10,200 credits
 

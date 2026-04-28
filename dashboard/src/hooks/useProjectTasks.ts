@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from "react";
 import { ProjectTask } from "../types";
 
-export function useProjectTasks(projectId: number | null) {
+export function useProjectTasks(projectId: string | null) {
   const [tasks,   setTasks]   = useState<ProjectTask[]>([]);
   const [loading, setLoading] = useState(true);
   const [error,   setError]   = useState<string | null>(null);

@@ -54,6 +54,18 @@ export interface RunSummary {
 export type ProjectStatus = "active" | "paused" | "completed" | "archived";
 export type AgentStatus   = "available" | "busy" | "offline";
 
+// AgentFS — agent đọc từ filesystem (settings.toml), dùng trong Projects
+export interface AgentFS {
+  key: string;
+  name: string;
+  role: string;
+  model: string;
+  tool: string;
+  status: AgentStatus;
+  description: string;
+}
+
+// AgentSimple — agent từ DB, dùng trong Agents page và TaskManager
 export interface AgentSimple {
   id: number;
   name: string;
@@ -65,27 +77,21 @@ export interface AgentSimple {
 }
 
 export interface Project {
-  id: number;
+  id: string;           // folder name
   name: string;
-  description: string | null;
-  status: ProjectStatus;
-  client_folder: string | null;
-  git_url: string | null;
-  doc_url: string | null;
-  created_at: string;
-  agents: AgentSimple[];
+  tech_stack: { backend?: string; frontend?: string };
+  output_dir: string;
+  agents: AgentFS[];
+  agent_count: number;
 }
 
 export interface ProjectSummary {
-  id: number;
+  id: string;           // folder name
   name: string;
-  description: string | null;
-  status: ProjectStatus;
-  client_folder: string | null;
-  git_url: string | null;
-  doc_url: string | null;
-  created_at: string;
+  tech_stack: { backend?: string; frontend?: string };
+  output_dir: string;
   agent_count: number;
+  status?: string;      // optional, chỉ có khi từ DB agent detail
 }
 
 export interface AgentDetail {
