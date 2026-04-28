@@ -95,9 +95,10 @@ def init(roles: dict[str, str]):
         client  = Path(".").resolve().name
 
     result = _api_post("/api/runs", {
-        "client":  client,
-        "profile": profile,
-        "tasks":   [{"role": r, "description": d} for r, d in roles.items()],
+        "client":     client,
+        "profile":    profile,
+        "project_id": os.getenv("AI_TEAM_PROJECT_ID"),
+        "tasks":      [{"role": r, "description": d} for r, d in roles.items()],
     })
     if result and "id" in result:
         _set_run_id(result["id"])

@@ -27,6 +27,13 @@ services:
       - "8000:8000"
     environment:
       DATABASE_URL: postgresql://dashboard:dashboard123@db:5432/ai_team_dashboard
+      CLIENTS_DIR: /clients
+      CONFIG_DIR: /config
+      PROFILES_DIR: /config
+    volumes:
+      - ../clients:/clients
+      - ../config:/config:ro
+      - ../profiles.yaml:/profiles.yaml:ro
     depends_on:
       db:
         condition: service_healthy

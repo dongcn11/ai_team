@@ -26,6 +26,7 @@ export interface Issue {
 
 export interface Run {
   id: number;
+  project_id: number | null;
   client: string | null;
   profile: string | null;
   started_at: string;
@@ -37,6 +38,7 @@ export interface Run {
 
 export interface RunSummary {
   id: number;
+  project_id: number | null;
   client: string | null;
   profile: string | null;
   started_at: string;
@@ -45,4 +47,106 @@ export interface RunSummary {
   total_tasks: number;
   done_tasks: number;
   failed_tasks: number;
+}
+
+// ── Projects & Agents ──
+
+export type ProjectStatus = "active" | "paused" | "completed" | "archived";
+export type AgentStatus   = "available" | "busy" | "offline";
+
+export interface AgentSimple {
+  id: number;
+  name: string;
+  role: string;
+  model: string;
+  status: AgentStatus;
+  description: string | null;
+  created_at: string;
+}
+
+export interface Project {
+  id: number;
+  name: string;
+  description: string | null;
+  status: ProjectStatus;
+  client_folder: string | null;
+  git_url: string | null;
+  doc_url: string | null;
+  created_at: string;
+  agents: AgentSimple[];
+}
+
+export interface ProjectSummary {
+  id: number;
+  name: string;
+  description: string | null;
+  status: ProjectStatus;
+  client_folder: string | null;
+  git_url: string | null;
+  doc_url: string | null;
+  created_at: string;
+  agent_count: number;
+}
+
+export interface AgentDetail {
+  id: number;
+  name: string;
+  role: string;
+  model: string;
+  status: AgentStatus;
+  description: string | null;
+  created_at: string;
+  projects: ProjectSummary[];
+}
+
+// ── Project Tasks ──
+
+export type TaskPriority = "high" | "medium" | "low";
+export type TaskDocType   = "note" | "spec" | "log" | "result";
+
+export interface TaskDocument {
+  id: number;
+  task_id: number;
+  title: string;
+  content: string;
+  doc_type: TaskDocType;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ProjectTask {
+  id: number;
+  project_id: number;
+  assigned_agent_id: number | null;
+  name: string;
+  description: string | null;
+  status: string;       // todo / in_progress / review / done
+  priority: TaskPriority;
+  progress: number;     // 0-100
+  due_at: string | null;
+  completed_at: string | null;
+  created_at: string;
+  updated_at: string;
+  agent: AgentSimple | null;
+  documents: TaskDocument[];
+  comments: TaskComment[];
+  subtasks: SubTask[];
+}
+
+export interface TaskComment {
+  id: number;
+  task_id: number;
+  author: string;
+  content: string;
+  created_at: string;
+}
+
+export interface SubTask {
+  id: number;
+  task_id: number;
+  name: string;
+  status: string;       // todo / done
+  assigned_agent_id: number | null;
+  created_at: string;
+  agent: AgentSimple | null;
 }

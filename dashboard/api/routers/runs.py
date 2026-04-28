@@ -12,7 +12,12 @@ router = APIRouter()
 
 @router.post("/", response_model=RunOut)
 def create_run(run: RunCreate, db: Session = Depends(get_db)):
-    db_run = Run(client=run.client, profile=run.profile, status="running")
+    db_run = Run(
+        client=run.client,
+        profile=run.profile,
+        project_id=run.project_id,
+        status="running",
+    )
     db.add(db_run)
     db.flush()
 
@@ -40,8 +45,11 @@ def get_current_run(db: Session = Depends(get_db)):
 
 
 @router.get("/", response_model=List[RunSummary])
-def list_runs(skip: int = 0, limit: int = 20, db: Session = Depends(get_db)):
-    runs = db.query(Run).order_by(desc(Run.id)).offset(skip).limit(limit).all()
+def list_runs(skip: int = 0, limit: int = 20, project_id: int | None = None, db: Session = Depends(get_db)):
+    q = db.query(Run).order_by(desc(Run.id))
+    if project_id:
+        q = q.filter(Run.project_id == project_id)
+    runs = q.offset(skip).limit(limit).all()
     result = []
     for run in runs:
         total  = len(run.tasks)
@@ -50,6 +58,7 @@ def list_runs(skip: int = 0, limit: int = 20, db: Session = Depends(get_db)):
         result.append(
             RunSummary(
                 id=run.id,
+                project_id=run.project_id,
                 client=run.client,
                 profile=run.profile,
                 started_at=run.started_at,

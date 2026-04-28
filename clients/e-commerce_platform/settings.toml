@@ -1,0 +1,46 @@
+# AI Team Configuration - E-Commerce Platform
+# =====================
+# Tất cả agents dùng opencode Go plan
+
+[agents]
+# Tool cho từng agent: "claude" hoặc "opencode"
+# Model format: provider/model-name (xem: opencode models)
+
+pm_tool     = "opencode"
+pm_model    = "opencode/qwen3.5-plus"    # Go plan: 10,200 credits
+
+scrum_tool  = "opencode"
+scrum_model = "opencode/qwen3.5-plus"    # Go plan: 10,200 credits
+
+analyst_tool  = "opencode"
+analyst_model = "opencode/qwen3.6-plus"  # Go plan: 3,300 credits
+
+be1_tool  = "opencode"
+be1_model = "opencode/qwen3.6-plus"      # Go plan: 3,300 credits
+
+be2_tool  = "opencode"
+be2_model = "opencode/minimax-m2.7"      # Go plan: 3,400 credits
+
+fe1_tool  = "opencode"
+fe1_model = "opencode/qwen3.5-plus"      # Go plan: 10,200 credits
+
+fe2_tool  = "opencode"
+fe2_model = "opencode/qwen3.5-plus"      # Go plan: 10,200 credits
+
+leader_tool  = "opencode"
+leader_model = "opencode/qwen3.6-plus"   # Go plan: 3,300 credits
+
+[slack]
+bot_token = "xoxb-your-token-here"
+channel   = "#ai-team"
+
+[output]
+directory = "./output/e-commerce_platform"
+
+[timeouts]
+claude_code = 600
+opencode    = 600
+
+[tech_stack]
+backend  = "Python FastAPI + SQLModel + SQLite"
+frontend = "React + TypeScript + Vite + TailwindCSS"

@@ -1,9 +1,72 @@
 {
+  "PM Agent": {
+    "role": "PM Agent",
+    "description": "Viết user stories và acceptance criteria",
+    "status": "done",
+    "started_at": "16:41:24",
+    "finished_at": "16:43:15",
+    "duration_s": 111,
+    "error": null
+  },
+  "Scrum Master": {
+    "role": "Scrum Master",
+    "description": "Tạo backlog và sprint plan",
+    "status": "done",
+    "started_at": "16:43:15",
+    "finished_at": "16:45:12",
+    "duration_s": 117,
+    "error": null
+  },
+  "Analyst": {
+    "role": "Analyst",
+    "description": "Thiết kế API, data model, chia task",
+    "status": "done",
+    "started_at": "16:45:12",
+    "finished_at": "16:53:31",
+    "duration_s": 499,
+    "error": null
+  },
+  "BE Agent 1": {
+    "role": "BE Agent 1",
+    "description": "Implement backend theo be1_task.md",
+    "status": "done",
+    "started_at": "16:53:31",
+    "finished_at": "17:01:39",
+    "duration_s": 488,
+    "error": null
+  },
+  "BE Agent 2": {
+    "role": "BE Agent 2",
+    "description": "Implement backend theo be2_task.md",
+    "status": "done",
+    "started_at": "16:53:31",
+    "finished_at": "17:00:08",
+    "duration_s": 397,
+    "error": null
+  },
+  "FE Agent 1": {
+    "role": "FE Agent 1",
+    "description": "Implement frontend theo fe1_task.md",
+    "status": "running",
+    "started_at": "17:01:39",
+    "finished_at": null,
+    "duration_s": null,
+    "error": null
+  },
+  "FE Agent 2": {
+    "role": "FE Agent 2",
+    "description": "Implement frontend theo fe2_task.md",
+    "status": "running",
+    "started_at": "17:01:39",
+    "finished_at": null,
+    "duration_s": null,
+    "error": null
+  },
   "Fullstack Agent 1": {
     "role": "Fullstack Agent 1",
     "description": "Implement theo fs1_task.md (clone repo + làm tiếp)",
-    "status": "running",
-    "started_at": "13:11:37",
+    "status": "pending",
+    "started_at": null,
     "finished_at": null,
     "duration_s": null,
     "error": null
@@ -11,8 +74,8 @@
   "Fullstack Agent 2": {
     "role": "Fullstack Agent 2",
     "description": "Implement theo fs2_task.md (clone repo + làm tiếp)",
-    "status": "running",
-    "started_at": "13:11:37",
+    "status": "pending",
+    "started_at": null,
     "finished_at": null,
     "duration_s": null,
     "error": null
