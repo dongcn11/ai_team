@@ -1,0 +1,29 @@
+{
+  "issues": [
+    {
+      "severity": "medium",
+      "description": "API Contract specifies POST /api/auth/register should return 400 for weak password, but Pydantic validation returns 422 for min_length violations before custom validation runs.",
+      "suggestion": "Either accept 422 as valid response for validation errors (standard FastAPI behavior), or implement custom middleware to convert 422 to 400 for password validation errors."
+    },
+    {
+      "severity": "low",
+      "description": "Passlib has compatibility issues with bcrypt>=4.1.0 on Python 3.12. The bcrypt package version must be pinned to 4.0.1.",
+      "suggestion": "Consider using bcrypt directly instead of passlib, or pin bcrypt==4.0.1 in requirements.txt."
+    },
+    {
+      "severity": "low",
+      "description": "datetime.utcnow() is deprecated in Python 3.12 and will be removed in future versions.",
+      "suggestion": "Replace with datetime.now(datetime.UTC) for timezone-aware datetimes."
+    },
+    {
+      "severity": "medium",
+      "description": "Token blacklist uses in-memory set which will be lost on server restart. This means logged-out tokens become valid again.",
+      "suggestion": "Use Redis or database table for token blacklist in production, or use short-lived access tokens (30 min) as mitigation."
+    },
+    {
+      "severity": "low",
+      "description": "SECRET_KEY is hardcoded in security.py. This is a security risk if committed to version control.",
+      "suggestion": "Use environment variable: SECRET_KEY = os.getenv('SECRET_KEY', 'fallback-dev-key')"
+    }
+  ]
+}
