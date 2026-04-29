@@ -339,8 +339,16 @@ async def orchestrate(prd: str, output_dir: str = "./output"):
     docs_dir = out / "docs"
     repo_url = _extract_repo_url(prd)
 
-    out.mkdir(parents=True, exist_ok=True)
-    docs_dir.mkdir(parents=True, exist_ok=True)
+    try:
+        out.mkdir(parents=True, exist_ok=True)
+        docs_dir.mkdir(parents=True, exist_ok=True)
+    except (FileNotFoundError, OSError) as e:
+        print(f"\nERROR: Không thể tạo output directory: {out.resolve()}")
+        print(f"       {e}")
+        print(f"\n  → Kiểm tra lại [output] directory trong settings.toml hoặc settings.local.toml")
+        if out.is_absolute() and out.drive:
+            print(f"  → Drive '{out.drive}' có thể không tồn tại trên máy này")
+        raise SystemExit(1)
 
     print("=" * 60)
     print("AI TEAM ORCHESTRATOR")
