@@ -1,9 +1,10 @@
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, Query
 from pydantic import BaseModel
 from typing import List, Optional
 from sqlalchemy.orm import Session
 import os
 import re
+import shutil
 import tomllib
 from pathlib import Path
 
@@ -192,8 +193,23 @@ def add_settings_agent(folder_name: str, payload: AgentFsPayload) -> List[dict]:
     return get_system_agents(folder / "settings.toml")
 
 
+# Workspace sub-path cho từng coding agent (stage/PM/Scrum/Analyst/Leader dùng docs chung)
+_AGENT_WORKSPACE: dict[str, str] = {
+    "be1": "backend/be1",
+    "be2": "backend/be2",
+    "fe1": "frontend/fe1",
+    "fe2": "frontend/fe2",
+    "fs1": "fullstack/fs1",
+    "fs2": "fullstack/fs2",
+}
+
+
 @router.delete("/{folder_name}/settings-agents/{agent_key}")
-def remove_settings_agent(folder_name: str, agent_key: str) -> List[dict]:
+def remove_settings_agent(
+    folder_name: str,
+    agent_key: str,
+    cleanup: bool = Query(False, description="Xóa workspace code của agent"),
+) -> dict:
     folder = CLIENTS_DIR / folder_name
     raw = _read_toml(folder)
     agents = raw.get("agents", {})
@@ -203,7 +219,18 @@ def remove_settings_agent(folder_name: str, agent_key: str) -> List[dict]:
     agents.pop(f"{agent_key}_model", None)
     raw["agents"] = agents
     _write_toml(folder, raw)
-    return get_system_agents(folder / "settings.toml")
+
+    deleted_workspace: str | None = None
+    if cleanup and agent_key in _AGENT_WORKSPACE:
+        ws = _resolve_output_dir(folder) / _AGENT_WORKSPACE[agent_key]
+        if ws.exists():
+            shutil.rmtree(ws)
+            deleted_workspace = str(ws)
+
+    return {
+        "agents": get_system_agents(folder / "settings.toml"),
+        "deleted_workspace": deleted_workspace,
+    }
 
 
 # ── PRD ───────────────────────────────────────────────────────────────────────

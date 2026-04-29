@@ -11,6 +11,12 @@ export default function ProjectsPage() {
   const [projRuns,    setProjRuns]    = useState<RunSummary[]>([]);
   const [activeTab,   setActiveTab]   = useState<"features" | "agents" | "prd" | "runs" | "docs">("features");
 
+  // Remove agent confirm dialog
+  const AGENTS_WITH_WORKSPACE = ["be1","be2","fe1","fe2","fs1","fs2"];
+  const [removeAgentKey,      setRemoveAgentKey]      = useState<string | null>(null);
+  const [removeWithCleanup,   setRemoveWithCleanup]   = useState(false);
+  const [removedWorkspaceMsg, setRemovedWorkspaceMsg] = useState<string | null>(null);
+
   // New project form
   const [showNewProject,   setShowNewProject]   = useState(false);
   const [npFolderName,     setNpFolderName]     = useState("");
@@ -95,10 +101,24 @@ export default function ProjectsPage() {
     setAddSaving(false);
   };
 
-  const handleRemoveAgent = async (key: string) => {
-    if (!selected) return;
-    const res = await fetch(`/api/projects/${selected.id}/settings-agents/${key}`, { method: "DELETE" });
-    if (res.ok) setSettingsAgents(await res.json());
+  const confirmRemoveAgent = (key: string) => {
+    setRemoveAgentKey(key);
+    setRemoveWithCleanup(false);
+    setRemovedWorkspaceMsg(null);
+  };
+
+  const handleRemoveAgent = async () => {
+    if (!selected || !removeAgentKey) return;
+    const url = `/api/projects/${selected.id}/settings-agents/${removeAgentKey}?cleanup=${removeWithCleanup}`;
+    const res = await fetch(url, { method: "DELETE" });
+    if (res.ok) {
+      const data = await res.json();
+      setSettingsAgents(data.agents);
+      setRemovedWorkspaceMsg(data.deleted_workspace
+        ? `Đã xóa workspace: ${data.deleted_workspace}`
+        : null);
+    }
+    setRemoveAgentKey(null);
   };
 
   const loadPrd = useCallback(async (id: string) => {
@@ -465,7 +485,7 @@ export default function ProjectsPage() {
                         <span>{a.name}</span>
                         <span className="agent-chip-role">{a.key}</span>
                         <span style={{ fontSize: 10, color: "#6b7280" }}>{a.tool} · {a.model}</span>
-                        <button onClick={() => handleRemoveAgent(a.key)}
+                        <button onClick={() => confirmRemoveAgent(a.key)}
                           style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#ef4444", cursor: "pointer", fontSize: 14, lineHeight: 1 }}
                           title="Remove">✕</button>
                       </div>
@@ -610,6 +630,44 @@ export default function ProjectsPage() {
               </div>
             );
           })()}
+        </div>
+      )}
+
+      {/* Remove agent confirm dialog */}
+      {removeAgentKey && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.6)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: "#0f172a", border: "1px solid #374151", borderRadius: 12, padding: 24, minWidth: 360, maxWidth: 480 }}>
+            <h4 style={{ margin: "0 0 12px", color: "#f1f5f9" }}>Xóa agent <code style={{ background: "#1e293b", padding: "2px 6px", borderRadius: 4 }}>{removeAgentKey}</code>?</h4>
+            <p style={{ fontSize: 13, color: "#9ca3af", margin: "0 0 16px" }}>
+              Agent sẽ bị xóa khỏi <code style={{ background: "#1e293b", padding: "1px 5px", borderRadius: 3, fontSize: 11 }}>settings.toml</code> và không chạy trong các lần orchestrate tiếp theo.
+            </p>
+            {AGENTS_WITH_WORKSPACE.includes(removeAgentKey) && (
+              <label style={{ display: "flex", alignItems: "flex-start", gap: 10, cursor: "pointer", background: "#1e293b", border: "1px solid #374151", borderRadius: 8, padding: "10px 12px", marginBottom: 16 }}>
+                <input type="checkbox" checked={removeWithCleanup} onChange={e => setRemoveWithCleanup(e.target.checked)}
+                  style={{ marginTop: 2, accentColor: "#ef4444", flexShrink: 0 }} />
+                <div>
+                  <div style={{ fontSize: 13, color: "#f1f5f9", fontWeight: 500 }}>Xóa workspace code</div>
+                  <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>
+                    Xóa toàn bộ folder <code style={{ background: "#0f172a", padding: "1px 4px", borderRadius: 3 }}>output/{selected?.id}/{removeAgentKey.startsWith("be") ? "backend" : removeAgentKey.startsWith("fe") ? "frontend" : "fullstack"}/{removeAgentKey}/</code>
+                  </div>
+                </div>
+              </label>
+            )}
+            <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+              <button className="btn-muted" onClick={() => setRemoveAgentKey(null)}>Huỷ</button>
+              <button className="btn-danger" onClick={handleRemoveAgent}>
+                {removeWithCleanup ? "Xóa agent + workspace" : "Xóa agent"}
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Workspace deleted toast */}
+      {removedWorkspaceMsg && (
+        <div style={{ position: "fixed", bottom: 24, right: 24, background: "#14532d", border: "1px solid #166534", borderRadius: 8, padding: "10px 16px", fontSize: 13, color: "#86efac", zIndex: 200, maxWidth: 400 }}>
+          ✓ {removedWorkspaceMsg}
+          <button onClick={() => setRemovedWorkspaceMsg(null)} style={{ marginLeft: 12, background: "none", border: "none", color: "#86efac", cursor: "pointer", fontSize: 16, lineHeight: 1 }}>✕</button>
         </div>
       )}
 
