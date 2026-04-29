@@ -3,7 +3,19 @@ import { useProjects } from "../hooks/useProjects";
 import { Project, AgentFS, RunSummary } from "../types";
 
 const VALID_KEYS = ["pm","scrum","analyst","be1","be2","fe1","fe2","fs1","fs2","leader"];
-const DEFAULT_MODELS: Record<string,string> = { opencode: "opencode/qwen3.5-plus", claude: "" };
+const DEFAULT_MODELS: Record<string,string> = { opencode: "opencode-go/qwen3.5-plus", claude: "" };
+const OPENCODE_GO_MODELS = [
+  { value: "opencode-go/qwen3.5-plus",    label: "qwen3.5-plus   (Go plan)"  },
+  { value: "opencode-go/qwen3.6-plus",    label: "qwen3.6-plus   (Go plan)"  },
+  { value: "opencode-go/minimax-m2.7",    label: "minimax-m2.7   (Go plan)"  },
+  { value: "opencode-go/deepseek-v4-pro", label: "deepseek-v4-pro (Go plan)" },
+  { value: "opencode-go/glm-5.1",         label: "glm-5.1        (Go plan)"  },
+  { value: "opencode-go/mimo-v2.5-pro",   label: "mimo-v2.5-pro  (Go plan)"  },
+  { value: "opencode/qwen3.5-plus",       label: "⚠️ qwen3.5-plus   (pay-per-use)" },
+  { value: "opencode/qwen3.6-plus",       label: "⚠️ qwen3.6-plus   (pay-per-use)" },
+  { value: "opencode/minimax-m2.7",       label: "⚠️ minimax-m2.7   (pay-per-use)" },
+  { value: "other",                       label: "Nhập tay..."   },
+];
 
 export default function ProjectsPage() {
   const { projects, loading, error, refetch } = useProjects();
@@ -32,7 +44,7 @@ export default function ProjectsPage() {
   const [showAddAgent,   setShowAddAgent]   = useState(false);
   const [addKey,         setAddKey]         = useState("be1");
   const [addTool,        setAddTool]        = useState("opencode");
-  const [addModel,       setAddModel]       = useState("opencode/qwen3.5-plus");
+  const [addModel,       setAddModel]       = useState("opencode-go/qwen3.5-plus");
   const [addSaving,      setAddSaving]      = useState(false);
 
   // PRD
@@ -466,8 +478,24 @@ export default function ProjectsPage() {
                   </div>
                   <div>
                     <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Model</label>
-                    <input className="setting-input" style={{ width: 220 }} value={addModel}
-                      onChange={e => setAddModel(e.target.value)} placeholder="e.g. opencode/qwen3.5-plus" />
+                    {addTool === "opencode" ? (
+                      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                        <select className="setting-select" style={{ width: 260 }}
+                          value={OPENCODE_GO_MODELS.find(m => m.value === addModel) ? addModel : "other"}
+                          onChange={e => { if (e.target.value !== "other") setAddModel(e.target.value); else setAddModel(""); }}>
+                          {OPENCODE_GO_MODELS.map(m => (
+                            <option key={m.value} value={m.value}>{m.label}</option>
+                          ))}
+                        </select>
+                        {(!OPENCODE_GO_MODELS.find(m => m.value === addModel && m.value !== "other") || addModel === "") && (
+                          <input className="setting-input" style={{ width: 260 }} value={addModel}
+                            onChange={e => setAddModel(e.target.value)} placeholder="vd: opencode-go/model-name" />
+                        )}
+                      </div>
+                    ) : (
+                      <input className="setting-input" style={{ width: 220 }} value={addModel}
+                        onChange={e => setAddModel(e.target.value)} placeholder="để trống = dùng claude mặc định" />
+                    )}
                   </div>
                   <button className="btn-primary" disabled={addSaving || (addTool === "opencode" && !addModel.trim())} onClick={handleAddAgent}>
                     {addSaving ? "Saving..." : "Add"}
