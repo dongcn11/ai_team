@@ -40,6 +40,7 @@ class Config:
     enabled_agents:   set[str]
     profile:          str
     output_dir:       str
+    docs_dir:         str
     timeout_claude:   int
     timeout_opencode: int
     tech_backend:     str
@@ -123,11 +124,24 @@ def load(config_path: Path | None = None, profile_override: str | None = None) -
         if agent:
             agents[name] = agent
 
+    def _resolve_dir(raw_str: str) -> str:
+        p = Path(raw_str)
+        if not p.is_absolute():
+            p = (path.parent / p).resolve()
+        return str(p)
+
+    output_dir = _resolve_dir(raw["output"]["directory"])
+
+    # docs_directory: mặc định là {output_dir}/docs nếu không cấu hình
+    docs_raw = raw.get("output", {}).get("docs_directory", "")
+    docs_dir = _resolve_dir(docs_raw) if docs_raw else str(Path(output_dir) / "docs")
+
     return Config(
         agents=agents,
         enabled_agents=enabled,
         profile=profile or "fullstack",
-        output_dir=raw["output"]["directory"],
+        output_dir=output_dir,
+        docs_dir=docs_dir,
         timeout_claude=raw["timeouts"]["claude_code"],
         timeout_opencode=raw["timeouts"]["opencode"],
         tech_backend=raw["tech_stack"]["backend"],

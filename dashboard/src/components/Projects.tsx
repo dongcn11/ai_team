@@ -9,7 +9,7 @@ export default function ProjectsPage() {
   const { projects, loading, error, refetch } = useProjects();
   const [selected,    setSelected]    = useState<Project | null>(null);
   const [projRuns,    setProjRuns]    = useState<RunSummary[]>([]);
-  const [activeTab,   setActiveTab]   = useState<"agents" | "prd" | "runs" | "docs">("agents");
+  const [activeTab,   setActiveTab]   = useState<"features" | "agents" | "prd" | "runs" | "docs">("features");
 
   // Agent management
   const [settingsAgents, setSettingsAgents] = useState<AgentFS[]>([]);
@@ -26,6 +26,16 @@ export default function ProjectsPage() {
   const [prdDraft,    setPrdDraft]    = useState("");
   const [prdSaving,   setPrdSaving]   = useState(false);
 
+  // Features
+  type Feature = { id: number; name: string; description: string | null; status: string; priority: string; created_at: string };
+  const [features,        setFeatures]        = useState<Feature[]>([]);
+  const [featuresLoaded,  setFeaturesLoaded]  = useState(false);
+  const [showAddFeature,  setShowAddFeature]  = useState(false);
+  const [featureName,     setFeatureName]     = useState("");
+  const [featureDesc,     setFeatureDesc]     = useState("");
+  const [featurePriority, setFeaturePriority] = useState("medium");
+  const [featureSaving,   setFeatureSaving]   = useState(false);
+
   // Docs
   const [docFiles,    setDocFiles]    = useState<{path: string; name: string; size: number}[]>([]);
   const [selectedDoc, setSelectedDoc] = useState<string | null>(null);
@@ -35,11 +45,14 @@ export default function ProjectsPage() {
   const openProject = useCallback(async (id: string) => {
     const res = await fetch(`/api/projects/${id}`);
     if (res.ok) {
-      setSelected(await res.json());
-      setActiveTab("agents");
+      const proj = await res.json();
+      setSelected(proj);
+      setActiveTab("features");
+      loadFeatures(proj.id);
       setPrdContent(null); setPrdEditing(false);
       setDocFiles([]); setSelectedDoc(null); setDocContent(null);
       setShowAddAgent(false);
+      setFeatures([]); setFeaturesLoaded(false); setShowAddFeature(false);
     }
   }, []);
 
@@ -106,15 +119,58 @@ export default function ProjectsPage() {
     if (res.ok) { setPrdContent(""); setPrdExists(false); setPrdEditing(false); }
   };
 
+  const loadFeatures = useCallback(async (id: string) => {
+    const res = await fetch(`/api/projects/${id}/features`);
+    if (res.ok) { setFeatures(await res.json()); setFeaturesLoaded(true); }
+  }, []);
+
+  const addFeature = async () => {
+    if (!selected || !featureName.trim()) return;
+    setFeatureSaving(true);
+    const res = await fetch(`/api/projects/${selected.id}/features`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: featureName.trim(), description: featureDesc.trim(), priority: featurePriority }),
+    });
+    if (res.ok) {
+      const created = await res.json();
+      setFeatures(prev => [...prev, created]);
+      setFeatureName(""); setFeatureDesc(""); setFeaturePriority("medium");
+      setShowAddFeature(false);
+    }
+    setFeatureSaving(false);
+  };
+
+  const deleteFeature = async (id: number) => {
+    if (!selected || !window.confirm("Xóa feature này?")) return;
+    const res = await fetch(`/api/projects/${selected.id}/features/${id}`, { method: "DELETE" });
+    if (res.ok) setFeatures(prev => prev.filter(f => f.id !== id));
+  };
+
+  const updateFeatureStatus = async (id: number, status: string) => {
+    if (!selected) return;
+    const res = await fetch(`/api/projects/${selected.id}/features/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ status }),
+    });
+    if (res.ok) {
+      const updated = await res.json();
+      setFeatures(prev => prev.map(f => f.id === id ? updated : f));
+    }
+  };
+
+  const markFeatureDone = (id: number) => updateFeatureStatus(id, "done");
+
   const loadDocs = useCallback(async (id: string) => {
     const res = await fetch(`/api/projects/${id}/docs`);
     if (res.ok) setDocFiles(await res.json());
   }, []);
 
-  const loadDocContent = async (id: string, path: string) => {
+  const loadDocContent = async (id: string, path: string, source: string = "code") => {
     setDocLoading(true);
     setSelectedDoc(path);
-    const res = await fetch(`/api/projects/${id}/docs/content?path=${encodeURIComponent(path)}`);
+    const res = await fetch(`/api/projects/${id}/docs/content?path=${encodeURIComponent(path)}&source=${source}`);
     if (res.ok) { const d = await res.json(); setDocContent(d.content); }
     setDocLoading(false);
   };
@@ -162,23 +218,105 @@ export default function ProjectsPage() {
 
           {/* Tabs */}
           <div style={{ display: "flex", gap: 4, marginTop: 16, borderBottom: "1px solid #1e293b" }}>
-            {(["agents","prd","runs","docs"] as const).map(tab => (
+            {(["features","agents","prd","runs","docs"] as const).map(tab => (
               <button key={tab}
                 onClick={() => {
-                  setActiveTab(tab);
+                  setActiveTab(tab as typeof activeTab);
                   if (tab === "prd" && prdContent === null) loadPrd(selected.id);
                   if (tab === "docs" && docFiles.length === 0) loadDocs(selected.id);
+                  if (tab === "features" && !featuresLoaded) loadFeatures(selected.id);
                 }}
                 style={{ padding: "6px 16px", background: activeTab === tab ? "#1e293b" : "none", border: "none",
                   borderRadius: "6px 6px 0 0", color: activeTab === tab ? "#f1f5f9" : "#6b7280",
                   cursor: "pointer", fontSize: 13, fontWeight: activeTab === tab ? 600 : 400 }}>
-                {tab === "agents" ? `Agents (${settingsAgents.length})`
+                {tab === "features" ? `Features (${features.length})`
+                  : tab === "agents" ? `Agents (${settingsAgents.length})`
                   : tab === "prd" ? "PRD"
                   : tab === "runs" ? `Runs (${projRuns.length})`
                   : `Docs${docFiles.length > 0 ? ` (${docFiles.length})` : ""}`}
               </button>
             ))}
           </div>
+
+          {/* Features tab */}
+          {activeTab === "features" && (
+            <div style={{ marginTop: 16 }}>
+              <div className="task-manager-header">
+                <h4>Features / Ý tưởng ({features.length})</h4>
+                <button className="btn-primary" style={{ fontSize: 12, padding: "4px 10px" }}
+                  onClick={() => setShowAddFeature(v => !v)}>
+                  + Add Feature
+                </button>
+              </div>
+
+              {showAddFeature && (
+                <div style={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 8, padding: 12, marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
+                  <input className="setting-input" placeholder="Tên feature (VD: Chức năng login)"
+                    value={featureName} onChange={e => setFeatureName(e.target.value)}
+                    onKeyDown={e => e.key === "Enter" && addFeature()} />
+                  <textarea className="setting-input" placeholder="Mô tả chi tiết (tuỳ chọn)"
+                    value={featureDesc} onChange={e => setFeatureDesc(e.target.value)}
+                    rows={2} style={{ resize: "vertical", fontFamily: "inherit" }} />
+                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                    <label className="setting-label">Priority:</label>
+                    <select className="setting-select" value={featurePriority} onChange={e => setFeaturePriority(e.target.value)}>
+                      <option value="high">High</option>
+                      <option value="medium">Medium</option>
+                      <option value="low">Low</option>
+                    </select>
+                    <button className="btn-primary" disabled={featureSaving || !featureName.trim()} onClick={addFeature}>
+                      {featureSaving ? "Saving..." : "Add"}
+                    </button>
+                    <button className="btn-muted" onClick={() => { setShowAddFeature(false); setFeatureName(""); setFeatureDesc(""); }}>Cancel</button>
+                  </div>
+                </div>
+              )}
+
+              {features.length === 0 ? (
+                <p style={{ color: "#6b7280", fontSize: 13, marginTop: 12 }}>
+                  Chưa có feature nào. Bấm "+ Add Feature" để thêm ý tưởng.
+                </p>
+              ) : (
+                <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 6 }}>
+                  {features.map(f => {
+                    const statusColor = f.status === "done" ? "#14532d" : f.status === "in_progress" ? "#92400e" : f.status === "todo" ? "#1e293b" : "#7f1d1d";
+                    const statusLabel = f.status === "done" ? "✅ done" : f.status === "in_progress" ? "⏳ running" : f.status === "todo" ? "📋 todo" : "❌ failed";
+                    const priorityColor = f.priority === "high" ? "#ef4444" : f.priority === "medium" ? "#f59e0b" : "#6b7280";
+                    return (
+                      <div key={f.id} style={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 8, padding: "10px 14px", display: "flex", alignItems: "flex-start", gap: 10 }}>
+                        <div style={{ flex: 1, minWidth: 0 }}>
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                            <span style={{ fontWeight: 600, fontSize: 13, color: "#f1f5f9" }}>{f.name}</span>
+                            <span style={{ fontSize: 10, padding: "2px 7px", borderRadius: 99, background: statusColor, color: "#e2e8f0" }}>{statusLabel}</span>
+                            <span style={{ fontSize: 10, color: priorityColor }}>{f.priority}</span>
+                          </div>
+                          {f.description && (
+                            <p style={{ margin: "4px 0 0", fontSize: 12, color: "#9ca3af", lineHeight: 1.5 }}>{f.description}</p>
+                          )}
+                        </div>
+                        <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
+                          {f.status !== "done" ? (
+                            <button onClick={() => markFeatureDone(f.id)}
+                              style={{ background: "#14532d", border: "none", color: "#86efac", cursor: "pointer", fontSize: 11, padding: "3px 8px", borderRadius: 4 }}
+                              title="Đánh dấu hoàn thành">✓ Done</button>
+                          ) : (
+                            <button onClick={() => updateFeatureStatus(f.id, "todo")}
+                              style={{ background: "#1e293b", border: "1px solid #374151", color: "#9ca3af", cursor: "pointer", fontSize: 11, padding: "3px 8px", borderRadius: 4 }}
+                              title="Reopen">↩ Reopen</button>
+                          )}
+                          {f.status !== "done" && (
+                            <button onClick={() => deleteFeature(f.id)}
+                              style={{ background: "none", border: "none", color: "#ef4444", cursor: "pointer", fontSize: 14, padding: "0 4px" }}
+                              title="Xóa">✕</button>
+                          )}
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              )}
+            </div>
+          )}
 
           {/* Agents tab */}
           {activeTab === "agents" && (
@@ -322,42 +460,66 @@ export default function ProjectsPage() {
           )}
 
           {/* Docs tab */}
-          {activeTab === "docs" && (
-            <div style={{ marginTop: 16 }}>
-              {docFiles.length === 0 ? (
-                <p style={{ color: "#6b7280", fontSize: 13 }}>Chưa có file output. Chạy orchestrator để tạo tài liệu.</p>
-              ) : (
-                <div style={{ display: "grid", gridTemplateColumns: selectedDoc ? "260px 1fr" : "1fr", gap: 12 }}>
-                  <div style={{ borderRight: selectedDoc ? "1px solid #1e293b" : "none", paddingRight: selectedDoc ? 12 : 0 }}>
-                    {docFiles.map(f => (
-                      <div key={f.path} onClick={() => loadDocContent(selected.id, f.path)}
-                        style={{ padding: "4px 8px", cursor: "pointer", borderRadius: 4, fontSize: 12,
-                          background: selectedDoc === f.path ? "#1e293b" : "transparent",
-                          color: selectedDoc === f.path ? "#f1f5f9" : "#9ca3af",
-                          fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
-                        title={f.path}>
-                        {f.path}
-                      </div>
-                    ))}
-                  </div>
-                  {selectedDoc && (
-                    <div>
-                      <div style={{ fontSize: 11, color: "#4b5563", marginBottom: 8, fontFamily: "monospace" }}>{selectedDoc}</div>
-                      {docLoading ? (
-                        <div style={{ color: "#6b7280", fontSize: 13 }}>Loading...</div>
-                      ) : (
-                        <pre style={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 8, padding: 16,
-                          fontFamily: "monospace", fontSize: 12, lineHeight: 1.6, whiteSpace: "pre-wrap",
-                          wordBreak: "break-word", color: "#e2e8f0", maxHeight: 600, overflowY: "auto", margin: 0 }}>
-                          {docContent}
-                        </pre>
+          {activeTab === "docs" && (() => {
+            type DocFile = { path: string; name: string; size: number; source: string };
+            const planningFiles = (docFiles as DocFile[]).filter(f => f.source === "docs");
+            const codeFiles     = (docFiles as DocFile[]).filter(f => f.source === "code");
+            const selectedFile  = (docFiles as DocFile[]).find(f => f.path === selectedDoc);
+            return (
+              <div style={{ marginTop: 16 }}>
+                {docFiles.length === 0 ? (
+                  <p style={{ color: "#6b7280", fontSize: 13 }}>Chưa có file output. Chạy orchestrator để tạo tài liệu.</p>
+                ) : (
+                  <div style={{ display: "grid", gridTemplateColumns: selectedDoc ? "260px 1fr" : "1fr", gap: 12 }}>
+                    <div style={{ borderRight: selectedDoc ? "1px solid #1e293b" : "none", paddingRight: selectedDoc ? 12 : 0 }}>
+                      {planningFiles.length > 0 && (
+                        <>
+                          <div style={{ fontSize: 10, color: "#6b7280", padding: "6px 8px 2px", textTransform: "uppercase", letterSpacing: 1 }}>📋 Planning Docs</div>
+                          {planningFiles.map(f => (
+                            <div key={f.path} onClick={() => loadDocContent(selected.id, f.path, "docs")}
+                              style={{ padding: "4px 8px", cursor: "pointer", borderRadius: 4, fontSize: 12,
+                                background: selectedDoc === f.path ? "#1e293b" : "transparent",
+                                color: selectedDoc === f.path ? "#f1f5f9" : "#9ca3af",
+                                fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
+                              title={f.path}>{f.path}</div>
+                          ))}
+                        </>
+                      )}
+                      {codeFiles.length > 0 && (
+                        <>
+                          <div style={{ fontSize: 10, color: "#6b7280", padding: "10px 8px 2px", textTransform: "uppercase", letterSpacing: 1 }}>💻 Source Code</div>
+                          {codeFiles.map(f => (
+                            <div key={f.path} onClick={() => loadDocContent(selected.id, f.path, "code")}
+                              style={{ padding: "4px 8px", cursor: "pointer", borderRadius: 4, fontSize: 12,
+                                background: selectedDoc === f.path ? "#1e293b" : "transparent",
+                                color: selectedDoc === f.path ? "#f1f5f9" : "#9ca3af",
+                                fontFamily: "monospace", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}
+                              title={f.path}>{f.path}</div>
+                          ))}
+                        </>
                       )}
                     </div>
-                  )}
-                </div>
-              )}
-            </div>
-          )}
+                    {selectedDoc && (
+                      <div>
+                        <div style={{ fontSize: 11, color: "#4b5563", marginBottom: 8, fontFamily: "monospace" }}>
+                          {selectedFile?.source === "docs" ? "📋" : "💻"} {selectedDoc}
+                        </div>
+                        {docLoading ? (
+                          <div style={{ color: "#6b7280", fontSize: 13 }}>Loading...</div>
+                        ) : (
+                          <pre style={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 8, padding: 16,
+                            fontFamily: "monospace", fontSize: 12, lineHeight: 1.6, whiteSpace: "pre-wrap",
+                            wordBreak: "break-word", color: "#e2e8f0", maxHeight: 600, overflowY: "auto", margin: 0 }}>
+                            {docContent}
+                          </pre>
+                        )}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            );
+          })()}
         </div>
       )}
 

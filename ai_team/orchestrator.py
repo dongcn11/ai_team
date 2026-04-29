@@ -17,12 +17,8 @@ from ai_team.config import get as get_config
 from ai_team.skill_loader import load_skills, get_skills_summary
 
 
-def _docs_dir(output_dir: str) -> Path:
-    return Path(output_dir) / "docs"
-
-
-def _read_doc(output_dir: str, filename: str) -> str:
-    path = _docs_dir(output_dir) / filename
+def _read_doc(docs_dir: str, filename: str) -> str:
+    path = Path(docs_dir) / filename
     return path.read_text(encoding="utf-8") if path.exists() else f"(chưa có {filename})"
 
 
@@ -59,6 +55,36 @@ def _enabled(role: str) -> bool:
     return role in cfg.enabled_agents and role in cfg.agents
 
 
+# ── Progress reporter ─────────────────────────────────────────────────────────
+
+async def _progress_reporter(role: str, work_dir: Path, start: float, interval: int = 30):
+    """In tiến độ mỗi `interval` giây: elapsed + số files mới."""
+    prev_count = 0
+    while True:
+        await asyncio.sleep(interval)
+        try:
+            candidates = [f for f in work_dir.rglob("*") if f.is_file()]
+            all_files  = sorted(candidates, key=lambda f: f.stat().st_mtime)
+            count      = len(all_files)
+            elapsed    = int(time.time() - start)
+            new        = count - prev_count
+            latest     = all_files[-1].name if all_files else "-"
+            new_str    = f" +{new} files" if new > 0 else ""
+            print(f"  [{role}] ⏳ {elapsed}s đã trôi qua{new_str} | file mới nhất: {latest}")
+            prev_count = count
+        except Exception:
+            pass
+
+
+async def _stage_timer(role: str, start: float, interval: int = 30):
+    """In elapsed time cho stage agents (PM/Scrum/Analyst/Leader) mỗi interval giây."""
+    elapsed = 0
+    while True:
+        await asyncio.sleep(interval)
+        elapsed = int(time.time() - start)
+        print(f"  [{role}] ⏳ Đang chạy... {elapsed}s")
+
+
 # ── Stage agents ──────────────────────────────────────────────────────────────
 
 async def _run_stage(role: str, prompt: str, work_dir: Path, summary: str):
@@ -70,6 +96,7 @@ async def _run_stage(role: str, prompt: str, work_dir: Path, summary: str):
     before = {str(f.relative_to(work_dir)) for f in work_dir.rglob("*") if f.is_file()}
     start  = time.time()
 
+    timer = asyncio.create_task(_stage_timer(role, start))
     try:
         await run(role, prompt, work_dir)
         duration  = int(time.time() - start)
@@ -80,42 +107,18 @@ async def _run_stage(role: str, prompt: str, work_dir: Path, summary: str):
         err = str(e) or type(e).__name__
         tm.set_failed(role, err)
         print(f"  [{role}] ❌ {err}")
-
-
-# ── Progress reporter ─────────────────────────────────────────────────────────
-
-async def _progress_reporter(role: str, work_dir: Path, start: float, interval: int = 60):
-    """In tiến độ mỗi `interval` giây: số files + file mới nhất."""
-    prev_count = 0
-    while True:
-        await asyncio.sleep(interval)
-        try:
-            candidates = []
-            for f in work_dir.rglob("*"):
-                try:
-                    if f.is_file():
-                        candidates.append(f)
-                except OSError:
-                    pass
-            all_files = sorted(candidates, key=lambda f: f.stat().st_mtime)
-            count    = len(all_files)
-            elapsed  = int(time.time() - start)
-            new      = count - prev_count
-            latest   = all_files[-1].name if all_files else "-"
-            print(f"  [{role}] ⏳ {elapsed}s | {count} files (+{new}) | latest: {latest}")
-            prev_count = count
-        except Exception:
-            pass
+    finally:
+        timer.cancel()
 
 
 # ── Coding agents ─────────────────────────────────────────────────────────────
 
-async def _coding_agent(role: str, task_doc: str, work_dir: Path, output_dir: str, repo_url: str | None = None):
+async def _coding_agent(role: str, task_doc: str, work_dir: Path, docs_dir: str, repo_url: str | None = None):
     cfg         = get_config()
     agent_cfg   = cfg.agents[role]
-    task_content = _read_doc(output_dir, task_doc)
-    api_contract = _read_doc(output_dir, "api_contract.md")
-    data_models  = _read_doc(output_dir, "data_models.md")
+    task_content = _read_doc(docs_dir, task_doc)
+    api_contract = _read_doc(docs_dir, "api_contract.md")
+    data_models  = _read_doc(docs_dir, "data_models.md")
     summary      = task_content.split("\n")[0].replace("#", "").strip()[:120]
 
     print(f"\n[{role} / {agent_cfg.label}] Bắt đầu coding...")
@@ -236,16 +239,16 @@ Yêu cầu:
 
 # ── Leader / Review agent ─────────────────────────────────────────────────────
 
-async def _review_agent(output_dir: str):
+async def _review_agent(output_dir: str, docs_dir_str: str):
     cfg       = get_config()
     role      = "Leader Agent"
     agent_cfg = cfg.agents[role]
     out       = Path(output_dir)
-    docs_dir  = out / "docs"
+    docs_dir  = Path(docs_dir_str)
 
-    api_contract = _read_doc(output_dir, "api_contract.md")
-    data_models  = _read_doc(output_dir, "data_models.md")
-    user_stories = _read_doc(output_dir, "user_stories.md")
+    api_contract = _read_doc(docs_dir_str, "api_contract.md")
+    data_models  = _read_doc(docs_dir_str, "data_models.md")
+    user_stories = _read_doc(docs_dir_str, "user_stories.md")
 
     def _collect_code(subdir: str) -> str:
         target = out / subdir
@@ -310,7 +313,7 @@ DATA MODELS:
 Yêu cầu:
 - Review kỹ từng agent theo skill guidelines
 - Đánh giá sự nhất quán giữa các agents (API calls, data types, error handling)
-- Tạo file docs/review_report.md theo đúng format trong skill
+- Tạo file {docs_dir_str}/review_report.md theo đúng format trong skill
 - Không sửa code, chỉ báo cáo
 - Không hỏi lại"""
 
@@ -336,7 +339,7 @@ Yêu cầu:
 async def orchestrate(prd: str, output_dir: str = "./output"):
     cfg      = get_config()
     out      = Path(output_dir)
-    docs_dir = out / "docs"
+    docs_dir = Path(cfg.docs_dir)
     repo_url = _extract_repo_url(prd)
 
     try:
@@ -350,16 +353,19 @@ async def orchestrate(prd: str, output_dir: str = "./output"):
             print(f"  → Drive '{out.drive}' có thể không tồn tại trên máy này")
         raise SystemExit(1)
 
+    dd = str(docs_dir)  # shorthand để dùng trong prompts
+
     print("=" * 60)
     print("AI TEAM ORCHESTRATOR")
-    print(f"Profile: {cfg.profile}")
+    print(f"Profile:  {cfg.profile}")
+    print(f"Code:     {out.resolve()}")
+    print(f"Docs:     {docs_dir.resolve()}")
     if repo_url:
-        print(f"Repo:    {repo_url}")
+        print(f"Repo:     {repo_url}")
     print("-" * 60)
     for role, a in cfg.agents.items():
         status = "✅" if role in cfg.enabled_agents else "⏭️  (skip)"
         print(f"  {role:14} → {a.label:30} {status}")
-    print(f"Output: {out.resolve()}")
     print("=" * 60)
 
     # Khởi tạo task manager chỉ với enabled agents
@@ -385,10 +391,10 @@ async def orchestrate(prd: str, output_dir: str = "./output"):
 PRD:
 {prd}
 
-Tạo 2 file trong docs/:
-1. docs/user_stories.md — User stories: As a/I want/So that + story points
-2. docs/acceptance.md   — Acceptance criteria: Given/When/Then""",
-            out, "Viết user stories từ PRD")
+Tạo 2 file (dùng đường dẫn tuyệt đối):
+1. {dd}/user_stories.md — User stories: As a/I want/So that + story points
+2. {dd}/acceptance.md   — Acceptance criteria: Given/When/Then""",
+            docs_dir, "Viết user stories từ PRD")
         tm.print_status()
 
     # Stage 2: Scrum (optional)
@@ -404,63 +410,61 @@ Tạo 2 file trong docs/:
         await _run_stage("Scrum Master", f"""Bạn là Scrum Master AI.
 
 USER STORIES:
-{_read_doc(output_dir, 'user_stories.md')}
+{_read_doc(dd, 'user_stories.md')}
 
 ACCEPTANCE:
-{_read_doc(output_dir, 'acceptance.md')}
+{_read_doc(dd, 'acceptance.md')}
 
-Tạo 2 file trong docs/:
-1. docs/backlog.md      — Backlog có priority, points, assignee ({assignee_hint})
-2. docs/sprint_plan.md  — Sprint plan chia task chi tiết cho từng agent""",
-            out, "Tạo backlog và sprint plan")
+Tạo 2 file (dùng đường dẫn tuyệt đối):
+1. {dd}/backlog.md      — Backlog có priority, points, assignee ({assignee_hint})
+2. {dd}/sprint_plan.md  — Sprint plan chia task chi tiết cho từng agent""",
+            docs_dir, "Tạo backlog và sprint plan")
         tm.print_status()
 
     # Stage 3: Analyst
     if _enabled("Analyst"):
-        has_scrum  = _enabled("Scrum Master")
-        be_agents  = [r for r in ["BE Agent 1", "BE Agent 2"] if _enabled(r)]
-        fe_agents  = [r for r in ["FE Agent 1", "FE Agent 2"] if _enabled(r)]
-        fs_agents  = [r for r in ["Fullstack Agent 1", "Fullstack Agent 2"] if _enabled(r)]
+        has_scrum = _enabled("Scrum Master")
+        be_agents = [r for r in ["BE Agent 1", "BE Agent 2"] if _enabled(r)]
+        fe_agents = [r for r in ["FE Agent 1", "FE Agent 2"] if _enabled(r)]
+        fs_agents = [r for r in ["Fullstack Agent 1", "Fullstack Agent 2"] if _enabled(r)]
 
         task_files = []
         for r in be_agents:
             num = r.split()[-1]
-            task_files.append(f"- docs/be{num}_task.md — Task cho {r}")
+            task_files.append(f"- {dd}/be{num}_task.md — Task cho {r}")
         for r in fe_agents:
             num = r.split()[-1]
-            task_files.append(f"- docs/fe{num}_task.md — Task cho {r}")
+            task_files.append(f"- {dd}/fe{num}_task.md — Task cho {r}")
         for r in fs_agents:
             num = r.split()[-1]
-            task_files.append(f"- docs/fs{num}_task.md — Task cho {r} (fullstack, không chia BE/FE)")
+            task_files.append(f"- {dd}/fs{num}_task.md — Task cho {r} (fullstack, không chia BE/FE)")
 
-        plan_section = f"""SPRINT PLAN:
-{_read_doc(output_dir, 'sprint_plan.md')}""" if has_scrum else ""
-
-        repo_note = f"\nRepo hiện có (agents sẽ clone và làm tiếp): {repo_url}" if repo_url and fs_agents else ""
+        plan_section = f"SPRINT PLAN:\n{_read_doc(dd, 'sprint_plan.md')}" if has_scrum else ""
+        repo_note    = f"\nRepo hiện có (agents sẽ clone và làm tiếp): {repo_url}" if repo_url and fs_agents else ""
 
         analyst_prompt = f"""Bạn là Tech Lead AI.
 
 USER STORIES:
-{_read_doc(output_dir, 'user_stories.md')}
+{_read_doc(dd, 'user_stories.md')}
 
 {plan_section}
 
 Tech stack: {cfg.tech_backend} / {cfg.tech_frontend}{repo_note}
 
-Tạo trong docs/:
-- docs/api_contract.md  — Tất cả endpoints, request/response schema
-- docs/data_models.md   — Database schema đầy đủ
+Tạo các file sau (dùng đường dẫn tuyệt đối):
+- {dd}/api_contract.md  — Tất cả endpoints, request/response schema
+- {dd}/data_models.md   — Database schema đầy đủ
 {chr(10).join(task_files)}"""
 
-        await _run_stage("Analyst", analyst_prompt, out, "Thiết kế kỹ thuật và chia task")
+        await _run_stage("Analyst", analyst_prompt, docs_dir, "Thiết kế kỹ thuật và chia task")
         tm.print_status()
 
     # Stage 4a: BE agents
     be_tasks = []
     if _enabled("BE Agent 1"):
-        be_tasks.append(_coding_agent("BE Agent 1", "be1_task.md", out / "backend" / "be1", output_dir))
+        be_tasks.append(_coding_agent("BE Agent 1", "be1_task.md", out / "backend" / "be1", dd))
     if _enabled("BE Agent 2"):
-        be_tasks.append(_coding_agent("BE Agent 2", "be2_task.md", out / "backend" / "be2", output_dir))
+        be_tasks.append(_coding_agent("BE Agent 2", "be2_task.md", out / "backend" / "be2", dd))
 
     if be_tasks:
         print("\n[Orchestrator] Stage 4a — BE agents...")
@@ -469,20 +473,20 @@ Tạo trong docs/:
     # Stage 4b: FE agents
     fe_tasks = []
     if _enabled("FE Agent 1"):
-        fe_tasks.append(_coding_agent("FE Agent 1", "fe1_task.md", out / "frontend" / "fe1", output_dir))
+        fe_tasks.append(_coding_agent("FE Agent 1", "fe1_task.md", out / "frontend" / "fe1", dd))
     if _enabled("FE Agent 2"):
-        fe_tasks.append(_coding_agent("FE Agent 2", "fe2_task.md", out / "frontend" / "fe2", output_dir))
+        fe_tasks.append(_coding_agent("FE Agent 2", "fe2_task.md", out / "frontend" / "fe2", dd))
 
     if fe_tasks:
         print("\n[Orchestrator] Stage 4b — FE agents...")
         await asyncio.gather(*fe_tasks)
 
-    # Stage 4c: Fullstack agents (song song, mỗi agent clone repo riêng)
+    # Stage 4c: Fullstack agents
     fs_tasks = []
     if _enabled("Fullstack Agent 1"):
-        fs_tasks.append(_coding_agent("Fullstack Agent 1", "fs1_task.md", out / "fullstack" / "fs1", output_dir, repo_url))
+        fs_tasks.append(_coding_agent("Fullstack Agent 1", "fs1_task.md", out / "fullstack" / "fs1", dd, repo_url))
     if _enabled("Fullstack Agent 2"):
-        fs_tasks.append(_coding_agent("Fullstack Agent 2", "fs2_task.md", out / "fullstack" / "fs2", output_dir, repo_url))
+        fs_tasks.append(_coding_agent("Fullstack Agent 2", "fs2_task.md", out / "fullstack" / "fs2", dd, repo_url))
 
     if fs_tasks:
         print("\n[Orchestrator] Stage 4c — Fullstack agents (clone repo + implement)...")
@@ -491,14 +495,17 @@ Tạo trong docs/:
     # Stage 5: Leader review
     if _enabled("Leader Agent"):
         print("\n[Orchestrator] Stage 5 — Leader Agent review code...")
-        await _review_agent(output_dir)
+        await _review_agent(str(out), dd)
+
+    # Cập nhật feature statuses về done nếu chạy từ dashboard
+    tm.mark_features_done()
 
     # Sprint summary
-    all_files  = [f for f in out.rglob("*") if f.is_file()]
-    code_files = [f for f in all_files if f.suffix in [".py", ".ts", ".tsx", ".json", ".toml"]]
-    doc_files  = [f for f in all_files if f.suffix == ".md"]
+    doc_files  = list(docs_dir.rglob("*.md"))
+    code_files = [f for f in out.rglob("*") if f.suffix in [".py", ".ts", ".tsx", ".json", ".toml"]]
 
     print("\n" + "=" * 60)
-    print(f"XONG! {out.resolve()}")
-    print(f"  Docs: {len(doc_files)} files  |  Code: {len(code_files)} files")
+    print(f"XONG!")
+    print(f"  Docs ({docs_dir.resolve()}): {len(doc_files)} files")
+    print(f"  Code ({out.resolve()}):      {len(code_files)} files")
     tm.print_status()

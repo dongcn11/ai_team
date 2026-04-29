@@ -5,3 +5,5 @@ __pycache__/
 *.log
 output/
 settings.local.toml
+dashboard/dist/
+dashboard/node_modules/

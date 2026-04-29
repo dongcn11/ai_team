@@ -51,21 +51,25 @@ def _set_run_id(rid: int):
     _CURRENT_RUN_FILE.write_text(json.dumps({"run_id": rid}), encoding="utf-8")
 
 
-def _api_post(path: str, body: dict) -> dict | None:
-    """Fire-and-forget POST — never raises, never blocks the orchestrator."""
+def _api_request(path: str, body: dict, method: str = "POST") -> dict | None:
+    """Fire-and-forget HTTP request — never raises, never blocks the orchestrator."""
     try:
         data = json.dumps(body).encode()
         req  = urllib.request.Request(
             f"{_API_URL}{path}",
             data=data,
             headers={"Content-Type": "application/json"},
-            method="POST",
+            method=method,
         )
         with urllib.request.urlopen(req, timeout=3) as resp:
             return json.loads(resp.read())
     except Exception:
         pass
     return None
+
+
+def _api_post(path: str, body: dict) -> dict | None:
+    return _api_request(path, body, "POST")
 
 
 # ── Public API ────────────────────────────────────────────────
@@ -178,6 +182,33 @@ def report_issue(role: str, severity: str, description: str, suggestion: str = "
             "description": description,
             "suggestion":  suggestion,
         })
+
+
+def mark_features_done():
+    """Cập nhật các FEATURE_IDS thành 'done' sau khi pipeline hoàn thành."""
+    project_id   = os.getenv("AI_TEAM_PROJECT_ID", "")
+    feature_ids  = os.getenv("FEATURE_IDS", "")
+    if not project_id or not feature_ids:
+        return
+    for fid in feature_ids.split(","):
+        fid = fid.strip()
+        if fid:
+            _api_request(f"/api/project-tasks/{project_id}/{fid}",
+                         {"status": "done"}, "PUT")
+    print(f"[TaskManager] Đã cập nhật {len(feature_ids.split(','))} features → done")
+
+
+def mark_features_failed(error: str = ""):
+    """Cập nhật các FEATURE_IDS thành 'todo' (rollback) khi pipeline lỗi."""
+    project_id  = os.getenv("AI_TEAM_PROJECT_ID", "")
+    feature_ids = os.getenv("FEATURE_IDS", "")
+    if not project_id or not feature_ids:
+        return
+    for fid in feature_ids.split(","):
+        fid = fid.strip()
+        if fid:
+            _api_request(f"/api/project-tasks/{project_id}/{fid}",
+                         {"status": "todo"}, "PUT")
 
 
 def get_all() -> dict:
