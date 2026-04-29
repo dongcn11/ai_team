@@ -23,6 +23,11 @@ export default function ProjectsPage() {
   const [projRuns,    setProjRuns]    = useState<RunSummary[]>([]);
   const [activeTab,   setActiveTab]   = useState<"features" | "agents" | "prd" | "runs" | "docs">("features");
 
+  // Delete project
+  const [showDeleteProject,  setShowDeleteProject]  = useState(false);
+  const [deleteProjecting,   setDeleteProjecting]   = useState(false);
+  const [deleteStep,         setDeleteStep]         = useState<"confirm"|"done">("confirm");
+
   // Remove agent confirm dialog
   const AGENTS_WITH_WORKSPACE = ["be1","be2","fe1","fe2","fs1","fs2"];
   const [removeAgentKey,      setRemoveAgentKey]      = useState<string | null>(null);
@@ -244,6 +249,22 @@ export default function ProjectsPage() {
     setNpSaving(false);
   };
 
+  const handleDeleteProject = async () => {
+    if (!selected) return;
+    setDeleteProjecting(true);
+    const res = await fetch(`/api/projects/${selected.id}`, { method: "DELETE" });
+    if (res.ok) {
+      setDeleteStep("done");
+      await refetch();
+      setTimeout(() => {
+        setSelected(null);
+        setShowDeleteProject(false);
+        setDeleteStep("confirm");
+      }, 1500);
+    }
+    setDeleteProjecting(false);
+  };
+
   if (loading) return <div className="state">Loading projects...</div>;
   if (error)   return <div className="state err">{error}</div>;
 
@@ -335,7 +356,13 @@ export default function ProjectsPage() {
                 </span>
               </div>
             </div>
-            <button className="btn-muted" onClick={() => { setSelected(null); setShowAddAgent(false); setPrdEditing(false); }}>Close</button>
+            <div style={{ display: "flex", gap: 8 }}>
+              <button className="btn-danger" style={{ fontSize: 12, padding: "4px 10px" }}
+                onClick={() => { setShowDeleteProject(true); setDeleteStep("confirm"); }}>
+                🗑 Delete Project
+              </button>
+              <button className="btn-muted" onClick={() => { setSelected(null); setShowAddAgent(false); setPrdEditing(false); }}>Close</button>
+            </div>
           </div>
 
           {/* Tabs */}
@@ -658,6 +685,55 @@ export default function ProjectsPage() {
               </div>
             );
           })()}
+        </div>
+      )}
+
+      {/* Delete project modal */}
+      {showDeleteProject && selected && (
+        <div style={{ position: "fixed", inset: 0, background: "rgba(0,0,0,0.7)", zIndex: 100, display: "flex", alignItems: "center", justifyContent: "center" }}>
+          <div style={{ background: "#0f172a", border: "1px solid #374151", borderRadius: 12, padding: 28, minWidth: 420, maxWidth: 520 }}>
+            {deleteStep === "done" ? (
+              <div style={{ textAlign: "center", padding: "8px 0" }}>
+                <div style={{ fontSize: 32, marginBottom: 8 }}>✅</div>
+                <p style={{ color: "#4ade80", fontSize: 15, fontWeight: 600 }}>Đã xóa project <strong>{selected.name}</strong></p>
+              </div>
+            ) : (
+              <>
+                <h4 style={{ margin: "0 0 6px", color: "#f1f5f9" }}>Xóa project <code style={{ background: "#1e293b", padding: "2px 8px", borderRadius: 4 }}>{selected.id}</code>?</h4>
+                <p style={{ fontSize: 13, color: "#9ca3af", margin: "0 0 20px" }}>
+                  Folder <code style={{ background: "#1e293b", padding: "1px 5px", borderRadius: 3, fontSize: 11 }}>clients/{selected.id}/</code> sẽ bị xóa vĩnh viễn.
+                  Tải backup trước nếu cần.
+                </p>
+
+                {/* Download buttons */}
+                <div style={{ display: "flex", gap: 10, marginBottom: 20 }}>
+                  <a href={`/api/projects/${selected.id}/backup/docs`} download
+                    style={{ flex: 1, background: "#172554", border: "1px solid #1e40af", borderRadius: 8, padding: "10px 14px", textDecoration: "none", display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                    <span style={{ fontSize: 20 }}>📄</span>
+                    <span style={{ fontSize: 12, color: "#93c5fd", fontWeight: 600 }}>Backup Docs</span>
+                    <span style={{ fontSize: 10, color: "#3b82f6" }}>prd.md + docs/</span>
+                  </a>
+                  <a href={`/api/projects/${selected.id}/backup/source`} download
+                    style={{ flex: 1, background: "#14532d", border: "1px solid #166534", borderRadius: 8, padding: "10px 14px", textDecoration: "none", display: "flex", flexDirection: "column", alignItems: "center", gap: 4 }}>
+                    <span style={{ fontSize: 20 }}>💻</span>
+                    <span style={{ fontSize: 12, color: "#86efac", fontWeight: 600 }}>Backup Source</span>
+                    <span style={{ fontSize: 10, color: "#4ade80" }}>output/{selected.id}/</span>
+                  </a>
+                </div>
+
+                <div style={{ background: "#1a0a0a", border: "1px solid #7f1d1d", borderRadius: 8, padding: "10px 14px", marginBottom: 20, fontSize: 12, color: "#fca5a5" }}>
+                  ⚠️ Hành động này không thể hoàn tác. Source code trong <code style={{ background: "#0f172a", padding: "1px 4px", borderRadius: 3 }}>output/</code> sẽ không bị xóa (cần xóa thủ công nếu muốn).
+                </div>
+
+                <div style={{ display: "flex", gap: 8, justifyContent: "flex-end" }}>
+                  <button className="btn-muted" onClick={() => setShowDeleteProject(false)}>Huỷ</button>
+                  <button className="btn-danger" disabled={deleteProjecting} onClick={handleDeleteProject}>
+                    {deleteProjecting ? "Đang xóa..." : "Xóa Project"}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
         </div>
       )}
 

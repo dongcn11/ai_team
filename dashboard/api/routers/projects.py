@@ -1,11 +1,15 @@
 from fastapi import APIRouter, HTTPException, Depends, Query
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel
 from typing import List, Optional
 from sqlalchemy.orm import Session
+import io
 import os
 import re
 import shutil
 import tomllib
+import zipfile
+from datetime import datetime
 from pathlib import Path
 
 PROFILE_AGENTS: dict[str, list[str]] = {
@@ -160,6 +164,89 @@ def create_project(payload: ProjectCreate) -> dict:
     }
     _write_toml(folder, raw)
     return _folder_to_project(folder)
+
+
+# ── Delete / Backup ───────────────────────────────────────────────────────────
+
+def _zip_dir(base: Path, zip_buf: io.BytesIO, arcname_prefix: str = ""):
+    """Nén toàn bộ base vào zip_buf."""
+    with zipfile.ZipFile(zip_buf, "a", zipfile.ZIP_DEFLATED) as zf:
+        for f in sorted(base.rglob("*")):
+            if f.is_file():
+                arc = Path(arcname_prefix) / f.relative_to(base)
+                zf.write(f, arc)
+
+
+@router.get("/{folder_name}/backup/docs")
+def backup_docs(folder_name: str):
+    """Tải ZIP chứa docs/ + prd.md của project."""
+    folder = CLIENTS_DIR / folder_name
+    if not folder.is_dir():
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    buf = io.BytesIO()
+    docs_dir = folder / "docs"
+    prd_file = folder / "prd.md"
+
+    if not docs_dir.exists() and not prd_file.exists():
+        raise HTTPException(status_code=404, detail="Chưa có docs để backup")
+
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        if docs_dir.exists():
+            for f in sorted(docs_dir.rglob("*")):
+                if f.is_file():
+                    zf.write(f, Path("docs") / f.relative_to(docs_dir))
+        if prd_file.exists():
+            zf.write(prd_file, "prd.md")
+
+    buf.seek(0)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{folder_name}_docs_{ts}.zip"
+    return StreamingResponse(buf, media_type="application/zip",
+                             headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@router.get("/{folder_name}/backup/source")
+def backup_source(folder_name: str):
+    """Tải ZIP chứa toàn bộ source code (output dir) của project."""
+    folder   = CLIENTS_DIR / folder_name
+    if not folder.is_dir():
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    src_dir = _resolve_output_dir(folder)
+    if not src_dir.exists():
+        raise HTTPException(status_code=404, detail="Chưa có source code để backup")
+
+    buf = io.BytesIO()
+    _SKIP = {".pyc", ".pyo", ".cache"}
+    _SKIP_D = {"__pycache__", ".pytest_cache", ".ruff_cache", "node_modules", ".git"}
+
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for f in sorted(src_dir.rglob("*")):
+            if not f.is_file():
+                continue
+            parts = f.relative_to(src_dir).parts
+            if any(p in _SKIP_D for p in parts[:-1]):
+                continue
+            if f.suffix in _SKIP:
+                continue
+            zf.write(f, Path("source") / f.relative_to(src_dir))
+
+    buf.seek(0)
+    ts = datetime.now().strftime("%Y%m%d_%H%M%S")
+    filename = f"{folder_name}_source_{ts}.zip"
+    return StreamingResponse(buf, media_type="application/zip",
+                             headers={"Content-Disposition": f'attachment; filename="{filename}"'})
+
+
+@router.delete("/{folder_name}")
+def delete_project(folder_name: str) -> dict:
+    """Xóa project (clients/{folder}). Output dir không bị xóa (mounted read-only)."""
+    folder = CLIENTS_DIR / folder_name
+    if not folder.is_dir() or not (folder / "settings.toml").exists():
+        raise HTTPException(status_code=404, detail="Project not found")
+    shutil.rmtree(folder)
+    return {"ok": True, "deleted": folder_name}
 
 
 # ── Agent management (settings.toml) ─────────────────────────────────────────
