@@ -151,6 +151,10 @@ export default function ProjectsPage() {
                     FE: {selected.tech_stack.frontend}
                   </span>
                 )}
+                <span className="project-link" style={{ background: "#1a1a1a", borderColor: "#374151", fontSize: 10 }}
+                  title="Output directory (override bằng settings.local.toml)">
+                  📂 {selected.output_dir}
+                </span>
               </div>
             </div>
             <button className="btn-muted" onClick={() => { setSelected(null); setShowAddAgent(false); setPrdEditing(false); }}>Close</button>

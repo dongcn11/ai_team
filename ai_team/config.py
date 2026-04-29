@@ -61,10 +61,29 @@ def _resolve_enabled(profile_name: str, profiles: dict) -> set[str]:
     return {AGENT_KEYS[k] for k in keys if k in AGENT_KEYS}
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Merge override vào base, section-level override."""
+    result = {**base}
+    for k, v in override.items():
+        if isinstance(v, dict) and isinstance(result.get(k), dict):
+            result[k] = {**result[k], **v}
+        else:
+            result[k] = v
+    return result
+
+
 def load(config_path: Path | None = None, profile_override: str | None = None) -> Config:
     path = config_path or DEFAULT_CONFIG
     with open(path, "rb") as f:
         raw = tomllib.load(f)
+
+    # Load settings.local.toml nếu tồn tại (gitignored, per-machine override)
+    local_path = path.parent / "settings.local.toml"
+    if local_path.exists():
+        with open(local_path, "rb") as f:
+            local = tomllib.load(f)
+        raw = _deep_merge(raw, local)
+        print(f"[config] Loaded local override: {local_path}")
 
     a = raw["agents"]
 
