@@ -12,7 +12,6 @@ import time
 from pathlib import Path
 
 from ai_team import task_manager as tm
-from ai_team import slack_bridge as slack
 from ai_team.runner import run
 from ai_team.config import get as get_config
 from ai_team.skill_loader import load_skills, get_skills_summary
@@ -56,7 +55,8 @@ def _new_files(work_dir: Path, before: set) -> list[str]:
 
 
 def _enabled(role: str) -> bool:
-    return role in get_config().enabled_agents
+    cfg = get_config()
+    return role in cfg.enabled_agents and role in cfg.agents
 
 
 # ── Stage agents ──────────────────────────────────────────────────────────────
@@ -65,9 +65,6 @@ async def _run_stage(role: str, prompt: str, work_dir: Path, summary: str):
     cfg = get_config()
     print(f"\n[{role} / {cfg.agents[role].label}]...")
     tm.set_running(role)
-
-    thread_ts = slack.create_task_thread(role, summary, cfg.agents[role].label)
-    slack.post_to_thread(thread_ts, role, "Bắt đầu...")
 
     work_dir.mkdir(parents=True, exist_ok=True)
     before = {str(f.relative_to(work_dir)) for f in work_dir.rglob("*") if f.is_file()}
@@ -78,12 +75,10 @@ async def _run_stage(role: str, prompt: str, work_dir: Path, summary: str):
         duration  = int(time.time() - start)
         new_files = _new_files(work_dir, before)
         tm.set_done(role)
-        slack.post_done(thread_ts, role, new_files, duration)
         print(f"  [{role}] ✅ Xong! ({duration}s)")
     except Exception as e:
         err = str(e) or type(e).__name__
         tm.set_failed(role, err)
-        slack.post_failed(thread_ts, role, err)
         print(f"  [{role}] ❌ {err}")
 
 
@@ -125,9 +120,6 @@ async def _coding_agent(role: str, task_doc: str, work_dir: Path, output_dir: st
 
     print(f"\n[{role} / {agent_cfg.label}] Bắt đầu coding...")
     tm.set_running(role)
-
-    thread_ts = slack.create_task_thread(role, summary, agent_cfg.label)
-    slack.post_to_thread(thread_ts, role, f"Đọc `{task_doc}`...")
 
     work_dir.mkdir(parents=True, exist_ok=True)
     before     = {str(f.relative_to(work_dir)) for f in work_dir.rglob("*") if f.is_file()}
@@ -224,7 +216,6 @@ Yêu cầu:
                     msg  = f"{icon} [{sev.upper()}] {desc}"
                     if sugg:
                         msg += f"\n💡 Đề xuất: {sugg}"
-                    slack.post_issue(thread_ts, role, msg, mention="Analyst")
                     tm.report_issue(role, sev, desc, sugg)
                     print(f"  [{role}] Issue {sev}: {desc[:60]}")
                 issue_file.unlink()
@@ -233,13 +224,11 @@ Yêu cầu:
 
         code_files = [f for f in new_files if not f.startswith("_")]
         tm.set_done(role)
-        slack.post_done(thread_ts, role, code_files, duration)
         print(f"  [{role}] ✅ Xong! ({duration}s, {len(code_files)} files)")
 
     except Exception as e:
         err = str(e) or type(e).__name__
         tm.set_failed(role, err)
-        slack.post_failed(thread_ts, role, err)
         print(f"  [{role}] ❌ {err}")
 
     tm.print_status()
@@ -298,9 +287,6 @@ async def _review_agent(output_dir: str):
     print(f"\n[{role} / {agent_cfg.label}] Bắt đầu review code...")
     tm.set_running(role)
 
-    thread_ts = slack.create_task_thread(role, summary, agent_cfg.label)
-    slack.post_to_thread(thread_ts, role, "Đang đọc và review code từ tất cả agents...")
-
     start  = time.time()
     before = {str(f.relative_to(docs_dir)) for f in docs_dir.rglob("*") if f.is_file()}
 
@@ -336,12 +322,10 @@ Yêu cầu:
         duration  = int(time.time() - start)
         new_files = _new_files(docs_dir, before)
         tm.set_done(role)
-        slack.post_done(thread_ts, role, new_files, duration)
         print(f"  [{role}] ✅ Xong! ({duration}s)")
     except Exception as e:
         err = str(e) or type(e).__name__
         tm.set_failed(role, err)
-        slack.post_failed(thread_ts, role, err)
         print(f"  [{role}] ❌ {err}")
 
     tm.print_status()
@@ -367,8 +351,6 @@ async def orchestrate(prd: str, output_dir: str = "./output"):
     for role, a in cfg.agents.items():
         status = "✅" if role in cfg.enabled_agents else "⏭️  (skip)"
         print(f"  {role:14} → {a.label:30} {status}")
-    slack_st = "✅ Connected" if cfg.slack_enabled else "⚠️  Offline (điền token để bật)"
-    print(f"\nSlack:  {slack_st}")
     print(f"Output: {out.resolve()}")
     print("=" * 60)
 
@@ -507,8 +489,6 @@ Tạo trong docs/:
     all_files  = [f for f in out.rglob("*") if f.is_file()]
     code_files = [f for f in all_files if f.suffix in [".py", ".ts", ".tsx", ".json", ".toml"]]
     doc_files  = [f for f in all_files if f.suffix == ".md"]
-
-    slack.post_sprint_summary({r: t["status"] for r, t in tm.get_all().items()})
 
     print("\n" + "=" * 60)
     print(f"XONG! {out.resolve()}")

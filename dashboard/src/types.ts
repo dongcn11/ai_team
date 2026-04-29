@@ -51,8 +51,16 @@ export interface RunSummary {
 
 // ── Projects & Agents ──
 
-export type ProjectStatus = "active" | "paused" | "completed" | "archived";
-export type AgentStatus   = "available" | "busy" | "offline";
+export type AgentStatus = "available" | "busy" | "offline";
+
+export interface AgentFS {
+  key: string;
+  name: string;
+  role: string;
+  tool: string;
+  model: string;
+  description: string | null;
+}
 
 export interface AgentSimple {
   id: number;
@@ -65,26 +73,18 @@ export interface AgentSimple {
 }
 
 export interface Project {
-  id: number;
+  id: string;
   name: string;
-  description: string | null;
-  status: ProjectStatus;
-  client_folder: string | null;
-  git_url: string | null;
-  doc_url: string | null;
-  created_at: string;
-  agents: AgentSimple[];
+  tech_stack: { backend?: string; frontend?: string };
+  agents: AgentFS[];
+  agent_count: number;
+  output_dir: string;
 }
 
 export interface ProjectSummary {
-  id: number;
+  id: string;
   name: string;
-  description: string | null;
-  status: ProjectStatus;
-  client_folder: string | null;
-  git_url: string | null;
-  doc_url: string | null;
-  created_at: string;
+  tech_stack: { backend?: string; frontend?: string };
   agent_count: number;
 }
 
