@@ -11,6 +11,16 @@ export default function ProjectsPage() {
   const [projRuns,    setProjRuns]    = useState<RunSummary[]>([]);
   const [activeTab,   setActiveTab]   = useState<"features" | "agents" | "prd" | "runs" | "docs">("features");
 
+  // New project form
+  const [showNewProject,   setShowNewProject]   = useState(false);
+  const [npFolderName,     setNpFolderName]     = useState("");
+  const [npProfile,        setNpProfile]        = useState("fullstack");
+  const [npTool,           setNpTool]           = useState("claude");
+  const [npBackend,        setNpBackend]        = useState("");
+  const [npFrontend,       setNpFrontend]       = useState("");
+  const [npSaving,         setNpSaving]         = useState(false);
+  const [npError,          setNpError]          = useState("");
+
   // Agent management
   const [settingsAgents, setSettingsAgents] = useState<AgentFS[]>([]);
   const [showAddAgent,   setShowAddAgent]   = useState(false);
@@ -177,6 +187,31 @@ export default function ProjectsPage() {
 
   const availableKeys = VALID_KEYS.filter(k => !settingsAgents.find(a => a.key === k));
 
+  const createProject = async () => {
+    if (!npFolderName.trim()) return;
+    setNpSaving(true); setNpError("");
+    const res = await fetch("/api/projects/", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        folder_name: npFolderName.trim(),
+        profile:     npProfile,
+        default_tool: npTool,
+        backend:     npBackend.trim(),
+        frontend:    npFrontend.trim(),
+      }),
+    });
+    if (res.ok) {
+      setShowNewProject(false);
+      setNpFolderName(""); setNpBackend(""); setNpFrontend("");
+      await refetch();
+    } else {
+      const d = await res.json().catch(() => ({}));
+      setNpError(d.detail || "Lỗi tạo project");
+    }
+    setNpSaving(false);
+  };
+
   if (loading) return <div className="state">Loading projects...</div>;
   if (error)   return <div className="state err">{error}</div>;
 
@@ -184,8 +219,63 @@ export default function ProjectsPage() {
     <div className="projects-page">
       <div className="page-header">
         <h2>Projects</h2>
-        <button className="btn-muted" onClick={refetch}>↻ Refresh</button>
+        <div style={{ display: "flex", gap: 8 }}>
+          <button className="btn-primary" onClick={() => { setShowNewProject(v => !v); setNpError(""); }}>+ New Project</button>
+          <button className="btn-muted"   onClick={refetch}>↻ Refresh</button>
+        </div>
       </div>
+
+      {showNewProject && (
+        <div className="card" style={{ marginBottom: 20 }}>
+          <h4 style={{ marginTop: 0, marginBottom: 16 }}>Tạo Project mới</h4>
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+            <div>
+              <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Tên folder (slug) *</label>
+              <input className="setting-input" placeholder="vd: my_project"
+                value={npFolderName} onChange={e => setNpFolderName(e.target.value.toLowerCase().replace(/\s+/g, "_"))}
+                onKeyDown={e => e.key === "Enter" && createProject()} />
+              <div style={{ fontSize: 11, color: "#4b5563", marginTop: 4 }}>
+                → clients/<strong>{npFolderName || "folder_name"}</strong>/
+              </div>
+            </div>
+            <div>
+              <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Profile</label>
+              <select className="setting-select" value={npProfile} onChange={e => setNpProfile(e.target.value)}>
+                <option value="fullstack">fullstack — PM+Scrum+Analyst+BE1+BE2+FE1+FE2+Leader</option>
+                <option value="dual_fullstack">dual_fullstack — PM+Scrum+Analyst+FS1+FS2+Leader</option>
+                <option value="backend_only">backend_only — PM+Scrum+Analyst+BE1+BE2+Leader</option>
+              </select>
+            </div>
+            <div>
+              <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Default tool</label>
+              <select className="setting-select" value={npTool} onChange={e => setNpTool(e.target.value)}>
+                <option value="claude">claude (Claude Code)</option>
+                <option value="opencode">opencode</option>
+              </select>
+            </div>
+            <div />
+            <div>
+              <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Backend tech stack</label>
+              <input className="setting-input" placeholder="Python FastAPI + SQLModel + SQLite"
+                value={npBackend} onChange={e => setNpBackend(e.target.value)} />
+            </div>
+            {npProfile !== "backend_only" && (
+              <div>
+                <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Frontend tech stack</label>
+                <input className="setting-input" placeholder="React + TypeScript + Vite + TailwindCSS"
+                  value={npFrontend} onChange={e => setNpFrontend(e.target.value)} />
+              </div>
+            )}
+          </div>
+          {npError && <p style={{ color: "#ef4444", fontSize: 13, marginTop: 8 }}>{npError}</p>}
+          <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
+            <button className="btn-primary" disabled={npSaving || !npFolderName.trim()} onClick={createProject}>
+              {npSaving ? "Đang tạo..." : "Tạo Project"}
+            </button>
+            <button className="btn-muted" onClick={() => { setShowNewProject(false); setNpError(""); }}>Huỷ</button>
+          </div>
+        </div>
+      )}
 
       {selected && (
         <div className="card" style={{ marginBottom: 20 }}>

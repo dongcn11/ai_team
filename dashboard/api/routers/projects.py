@@ -7,6 +7,16 @@ import re
 import tomllib
 from pathlib import Path
 
+PROFILE_AGENTS: dict[str, list[str]] = {
+    "fullstack":      ["pm", "scrum", "analyst", "be1", "be2", "fe1", "fe2", "leader"],
+    "dual_fullstack": ["pm", "scrum", "analyst", "fs1", "fs2", "leader"],
+    "backend_only":   ["pm", "scrum", "analyst", "be1", "be2", "leader"],
+}
+DEFAULT_MODEL = {
+    "claude":   "",
+    "opencode": "opencode/qwen3.5-plus",
+}
+
 from system_config import get_system_agents
 from database import get_db
 from models import Project, ProjectTask
@@ -104,6 +114,50 @@ def get_project(folder_name: str) -> dict:
     folder = CLIENTS_DIR / folder_name
     if not folder.is_dir() or not (folder / "settings.toml").exists():
         raise HTTPException(status_code=404, detail="Project not found")
+    return _folder_to_project(folder)
+
+
+class ProjectCreate(BaseModel):
+    folder_name: str
+    profile: str = "fullstack"
+    default_tool: str = "claude"
+    backend: str = ""
+    frontend: str = ""
+
+
+@router.post("/")
+def create_project(payload: ProjectCreate) -> dict:
+    slug = re.sub(r"[^a-z0-9_-]", "_", payload.folder_name.strip().lower())
+    if not slug:
+        raise HTTPException(status_code=400, detail="Tên project không hợp lệ")
+    if payload.profile not in PROFILE_AGENTS:
+        raise HTTPException(status_code=400, detail=f"Profile không hợp lệ. Chọn: {list(PROFILE_AGENTS)}")
+    if payload.default_tool not in DEFAULT_MODEL:
+        raise HTTPException(status_code=400, detail="Tool phải là 'claude' hoặc 'opencode'")
+
+    folder = CLIENTS_DIR / slug
+    if folder.exists():
+        raise HTTPException(status_code=409, detail=f"Project '{slug}' đã tồn tại")
+
+    folder.mkdir(parents=True)
+
+    model = DEFAULT_MODEL[payload.default_tool]
+    agents: dict[str, str] = {}
+    for key in PROFILE_AGENTS[payload.profile]:
+        agents[f"{key}_tool"]  = payload.default_tool
+        agents[f"{key}_model"] = model
+
+    raw: dict = {
+        "project": {"name": slug.replace("_", " ").replace("-", " ").title(), "profile": payload.profile},
+        "agents":  agents,
+        "output":  {"directory": f"./clients/{slug}/output"},
+        "timeouts": {"claude_code": 600, "opencode": 600},
+        "tech_stack": {
+            "backend":  payload.backend  or "Python FastAPI + SQLModel + SQLite",
+            "frontend": payload.frontend or "React + TypeScript + Vite + TailwindCSS",
+        },
+    }
+    _write_toml(folder, raw)
     return _folder_to_project(folder)
 
 
