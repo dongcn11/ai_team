@@ -3,25 +3,24 @@ pm_tool = "opencode"
 pm_model = "opencode-go/qwen3.5-plus"
 scrum_tool = "opencode"
 scrum_model = "opencode-go/qwen3.5-plus"
-fs1_tool = "claude"
-fs1_model = ""
 analyst_tool = "opencode"
 analyst_model = "opencode-go/qwen3.5-plus"
+fs1_tool = "opencode"
+fs1_model = "opencode-go/qwen3.5-plus"
 leader_tool = "opencode"
 leader_model = "opencode-go/qwen3.5-plus"
 
-[slack]
-bot_token = "xoxb-your-token-here"
-channel = "#ai-team"
-
 [output]
-directory = "./output"
-docs_directory = "./docs"
+directory = "./clients/audiobook/output"
 
 [timeouts]
 claude_code = 600
 opencode = 600
 
 [tech_stack]
-backend = "Python FastAPI + SQLModel + SQLite"
-frontend = "React + TypeScript + Vite + TailwindCSS"
+backend = "PHP 8.2 + Laravel 12 + Laravel Sanctum + MySQL + Redis"
+frontend = "HTML5 + CSS3 + Vanilla JavaScript (không dùng framework JS)"
+
+[project]
+name = "Audiobook"
+profile = "dual_fullstack"
