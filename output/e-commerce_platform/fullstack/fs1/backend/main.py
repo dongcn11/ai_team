@@ -2,7 +2,7 @@ from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from database import create_db_and_tables
-from routers import auth
+from routers import auth, tasks
 import logging
 
 logging.basicConfig(level=logging.INFO)
@@ -31,6 +31,7 @@ def on_startup():
 
 
 app.include_router(auth.router, prefix="/api/auth", tags=["auth"])
+app.include_router(tasks.router, prefix="/api/tasks", tags=["tasks"])
 
 
 @app.get("/health")
