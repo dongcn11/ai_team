@@ -20,7 +20,7 @@ docs_directory = "./docs"
 
 [timeouts]
 claude_code = 600
-opencode = 600
+opencode = 3600
 
 [tech_stack]
 backend = "Python FastAPI + SQLModel + SQLite"

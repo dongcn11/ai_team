@@ -14,8 +14,8 @@ leader_model = "opencode-go/qwen3.5-plus"
 directory = "./clients/audiobook/output"
 
 [timeouts]
-claude_code = 600
-opencode = 600
+claude_code = 900
+opencode = 3600
 
 [tech_stack]
 backend = "PHP 8.2 + Laravel 12 + Laravel Sanctum + MySQL + Redis"
