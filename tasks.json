@@ -3,45 +3,45 @@
     "role": "PM Agent",
     "description": "Viết user stories và acceptance criteria",
     "status": "done",
-    "started_at": "14:08:36",
-    "finished_at": "14:09:41",
-    "duration_s": 65,
+    "started_at": "15:52:48",
+    "finished_at": "15:53:40",
+    "duration_s": 52,
     "error": null
   },
   "Scrum Master": {
     "role": "Scrum Master",
     "description": "Tạo backlog và sprint plan",
-    "status": "done",
-    "started_at": "14:09:41",
-    "finished_at": "14:11:40",
-    "duration_s": 119,
+    "status": "running",
+    "started_at": "15:53:40",
+    "finished_at": null,
+    "duration_s": null,
     "error": null
   },
   "Analyst": {
     "role": "Analyst",
     "description": "Thiết kế API, data model, chia task",
-    "status": "done",
-    "started_at": "14:11:40",
-    "finished_at": "14:15:40",
-    "duration_s": 240,
+    "status": "pending",
+    "started_at": null,
+    "finished_at": null,
+    "duration_s": null,
     "error": null
   },
   "Fullstack Agent 1": {
     "role": "Fullstack Agent 1",
     "description": "Implement theo fs1_task.md (clone repo + làm tiếp)",
-    "status": "failed",
-    "started_at": "14:15:40",
-    "finished_at": "14:25:40",
+    "status": "pending",
+    "started_at": null,
+    "finished_at": null,
     "duration_s": null,
-    "error": "TimeoutError"
+    "error": null
   },
   "Leader Agent": {
     "role": "Leader Agent",
     "description": "Review toàn bộ code",
-    "status": "done",
-    "started_at": "14:25:40",
-    "finished_at": "14:28:14",
-    "duration_s": 154,
+    "status": "pending",
+    "started_at": null,
+    "finished_at": null,
+    "duration_s": null,
     "error": null
   }
 }
