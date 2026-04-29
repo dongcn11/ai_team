@@ -2,7 +2,7 @@
 Orchestrator
 ============
 Logic điều phối toàn bộ AI team.
-Stage 1: PM → Stage 2: Scrum (optional) → Stage 3: Analyst → Stage 4: BE+FE → Stage 5: Leader Review
+Stage 1: PM → Stage 2: Scrum (optional) → Stage 3: Analyst → Stage 4: BE+FE → Stage 5: Leader Review → Stage 6: Fix Loop
 """
 
 import asyncio
@@ -37,6 +37,78 @@ def _branch_name(role: str) -> str:
         "Fullstack Agent 2":  "feature/fs2",
     }
     return mapping.get(role, f"feature/{role.lower().replace(' ', '-')}")
+
+
+def _work_dir_for_role(role: str, out: Path) -> Path:
+    mapping = {
+        "BE Agent 1":        out / "backend"   / "be1",
+        "BE Agent 2":        out / "backend"   / "be2",
+        "FE Agent 1":        out / "frontend"  / "fe1",
+        "FE Agent 2":        out / "frontend"  / "fe2",
+        "Fullstack Agent 1": out / "fullstack" / "fs1",
+        "Fullstack Agent 2": out / "fullstack" / "fs2",
+    }
+    return mapping.get(role, out)
+
+
+def _task_doc_for_role(role: str) -> str:
+    mapping = {
+        "BE Agent 1":        "be1_task.md",
+        "BE Agent 2":        "be2_task.md",
+        "FE Agent 1":        "fe1_task.md",
+        "FE Agent 2":        "fe2_task.md",
+        "Fullstack Agent 1": "fs1_task.md",
+        "Fullstack Agent 2": "fs2_task.md",
+    }
+    return mapping.get(role, "")
+
+
+def _parse_review_issues(review_path: Path) -> dict[str, list[str]]:
+    """Parse review_report.md — trả về {role: [high-severity issue blocks]}.
+    Chỉ các agent có [severity: high] mới được đưa vào fix loop.
+    """
+    if not review_path.exists():
+        return {}
+
+    text = review_path.read_text(encoding="utf-8")
+
+    ROLE_KEYWORDS = [
+        ("BE Agent 1",        "BE Agent 1"),
+        ("BE Agent 2",        "BE Agent 2"),
+        ("FE Agent 1",        "FE Agent 1"),
+        ("FE Agent 2",        "FE Agent 2"),
+        ("Fullstack Agent 1", "Fullstack Agent 1"),
+        ("Fullstack Agent 2", "Fullstack Agent 2"),
+    ]
+
+    result: dict[str, list[str]] = {}
+
+    # Tách theo level-2 headers (## ...)
+    parts = re.split(r"(?=^## )", text, flags=re.MULTILINE)
+
+    for part in parts:
+        first_line = part.split("\n")[0]
+        if "needs-fix" not in first_line:
+            continue
+
+        role = None
+        for keyword, r in ROLE_KEYWORDS:
+            if keyword in first_line:
+                role = r
+                break
+        if not role:
+            continue
+
+        # Tìm tất cả [severity: high] blocks
+        high_blocks = re.findall(
+            r"\[severity:\s*high\].+?(?=\[severity:|\Z)",
+            part,
+            flags=re.DOTALL | re.IGNORECASE,
+        )
+        if high_blocks:
+            result[role] = [b.strip()[:800] for b in high_blocks]
+
+    return result
 
 
 def _new_files(work_dir: Path, before: set) -> list[str]:
@@ -237,6 +309,74 @@ Yêu cầu:
     tm.print_status()
 
 
+# ── Fix loop agent ────────────────────────────────────────────────────────────
+
+async def _fix_coding_agent(role: str, issues: list[str], work_dir: Path, docs_dir: str):
+    """Re-run coding agent để fix các high-severity issues từ Leader Review."""
+    cfg       = get_config()
+    agent_cfg = cfg.agents.get(role)
+    if not agent_cfg:
+        return
+
+    task_doc     = _task_doc_for_role(role)
+    task_content = _read_doc(docs_dir, task_doc)
+    api_contract = _read_doc(docs_dir, "api_contract.md")
+    data_models  = _read_doc(docs_dir, "data_models.md")
+
+    issues_text = "\n\n---\n\n".join(
+        f"### Issue {i+1}\n{issue}" for i, issue in enumerate(issues)
+    )
+
+    fix_prompt = f"""Bạn là {role} trong AI development team.
+
+Leader Agent đã review code của bạn và phát hiện {len(issues)} vấn đề NGHIÊM TRỌNG (severity: high) cần fix ngay:
+
+{issues_text}
+
+---
+
+TASK GỐC CỦA BẠN:
+{task_content}
+
+API CONTRACT:
+{api_contract}
+
+DATA MODELS:
+{data_models}
+
+Tech stack: {cfg.tech_backend} / {cfg.tech_frontend}
+
+Yêu cầu:
+- Fix TẤT CẢ các vấn đề severity:high được liệt kê ở trên
+- Không xóa code cũ đang hoạt động — chỉ sửa và bổ sung phần còn thiếu
+- Implement vào đúng working directory hiện tại (đừng tạo thư mục mới)
+- Không hỏi lại, fix thẳng vào code"""
+
+    skills = load_skills(role)
+    prompt = (skills + "\n" + fix_prompt) if skills else fix_prompt
+
+    print(f"\n[{role}] 🔧 Fix loop — {len(issues)} high-severity issues...")
+    tm.set_running(role)
+    work_dir.mkdir(parents=True, exist_ok=True)
+    start  = time.time()
+    before = {str(f.relative_to(work_dir)) for f in work_dir.rglob("*") if f.is_file()}
+
+    try:
+        reporter = asyncio.create_task(_progress_reporter(role, work_dir, start))
+        try:
+            await run(role, prompt, work_dir)
+        finally:
+            reporter.cancel()
+        duration  = int(time.time() - start)
+        new_files = _new_files(work_dir, before)
+        tm.set_done(role)
+        print(f"  [{role}] ✅ Fix xong! ({duration}s, +{len(new_files)} files mới)")
+    except Exception as e:
+        err = str(e) or type(e).__name__
+        tm.set_failed(role, err)
+        print(f"  [{role}] ❌ Fix thất bại: {err}")
+
+
 # ── Leader / Review agent ─────────────────────────────────────────────────────
 
 async def _review_agent(output_dir: str, docs_dir_str: str):
@@ -341,6 +481,8 @@ async def orchestrate(prd: str, output_dir: str = "./output"):
     out      = Path(output_dir)
     docs_dir = Path(cfg.docs_dir)
     repo_url = _extract_repo_url(prd)
+
+    tm.set_output_dir(out)
 
     try:
         out.mkdir(parents=True, exist_ok=True)
@@ -496,6 +638,26 @@ Tạo các file sau (dùng đường dẫn tuyệt đối):
     if _enabled("Leader Agent"):
         print("\n[Orchestrator] Stage 5 — Leader Agent review code...")
         await _review_agent(str(out), dd)
+
+        # Stage 6: Fix loop — re-run agents có high-severity issues
+        review_path  = Path(dd) / "review_report.md"
+        agent_issues = _parse_review_issues(review_path)
+
+        if agent_issues:
+            enabled_issues = {r: v for r, v in agent_issues.items() if _enabled(r)}
+            if enabled_issues:
+                total_issues = sum(len(v) for v in enabled_issues.values())
+                print(f"\n[Orchestrator] Stage 6 — Fix loop "
+                      f"({len(enabled_issues)} agents, {total_issues} high-severity issues)...")
+                fix_tasks = [
+                    _fix_coding_agent(role, issues, _work_dir_for_role(role, out), dd)
+                    for role, issues in enabled_issues.items()
+                ]
+                await asyncio.gather(*fix_tasks)
+                print("\n[Orchestrator] Fix loop hoàn thành!")
+                tm.print_status()
+        else:
+            print("\n[Orchestrator] ✅ Review passed — không có high-severity issues!")
 
     # Cập nhật feature statuses về done nếu chạy từ dashboard
     tm.mark_features_done()

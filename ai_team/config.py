@@ -45,6 +45,9 @@ class Config:
     timeout_opencode: int
     tech_backend:     str
     tech_frontend:    str
+    slack_enabled:    bool = False
+    slack_token:      str  = ""
+    slack_channel:    str  = "#ai-team"
 
 
 def _load_profiles() -> dict:
@@ -136,6 +139,10 @@ def load(config_path: Path | None = None, profile_override: str | None = None) -
     docs_raw = raw.get("output", {}).get("docs_directory", "")
     docs_dir = _resolve_dir(docs_raw) if docs_raw else str(Path(output_dir) / "docs")
 
+    slack_raw     = raw.get("slack", {})
+    slack_token   = slack_raw.get("bot_token", "")
+    slack_enabled = bool(slack_token and not slack_token.startswith("xoxb-your"))
+
     return Config(
         agents=agents,
         enabled_agents=enabled,
@@ -146,6 +153,9 @@ def load(config_path: Path | None = None, profile_override: str | None = None) -
         timeout_opencode=raw["timeouts"]["opencode"],
         tech_backend=raw["tech_stack"]["backend"],
         tech_frontend=raw["tech_stack"]["frontend"],
+        slack_enabled=slack_enabled,
+        slack_token=slack_token,
+        slack_channel=slack_raw.get("channel", "#ai-team"),
     )
 
 

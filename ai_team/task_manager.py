@@ -7,13 +7,23 @@ Theo dõi trạng thái từng agent, lưu vào tasks.json.
 
 import json
 import os
+import time
 import urllib.request
 import urllib.error
 from pathlib import Path
 from datetime import datetime
 
+# Resolved at runtime via set_output_dir() — avoids cwd-dependent relative paths
 TASKS_FILE        = Path("./tasks.json")
 _CURRENT_RUN_FILE = Path("./_dashboard_run.json")
+
+
+def set_output_dir(output_dir: str | Path):
+    """Gọi từ orchestrator trước khi init() để đặt tasks.json đúng chỗ."""
+    global TASKS_FILE, _CURRENT_RUN_FILE
+    base             = Path(output_dir)
+    TASKS_FILE        = base / "tasks.json"
+    _CURRENT_RUN_FILE = base / "_dashboard_run.json"
 _API_URL          = os.getenv("DASHBOARD_API_URL", "http://localhost:8000")
 
 _run_id: int | None = None
@@ -74,8 +84,13 @@ def _api_post(path: str, body: dict) -> dict | None:
 
 # ── Public API ────────────────────────────────────────────────
 
+# Lưu monotonic start times để tính duration chính xác (tránh bug qua nửa đêm)
+_start_times: dict[str, float] = {}
+
+
 def init(roles: dict[str, str]):
     """Khởi tạo tasks.json. roles = {agent_name: description}"""
+    _start_times.clear()
     tasks = {
         role: {
             "role": role, "description": desc,
@@ -110,6 +125,7 @@ def init(roles: dict[str, str]):
 
 
 def set_running(role: str):
+    _start_times[role] = time.monotonic()
     data = _load()
     if role in data:
         data[role]["status"]     = "running"
@@ -130,12 +146,9 @@ def set_done(role: str):
     data = _load()
     if role in data:
         data[role]["status"]      = "done"
-        data[role]["finished_at"] = now = datetime.now().strftime("%H:%M:%S")
-        if data[role]["started_at"]:
-            fmt = "%H:%M:%S"
-            s   = datetime.strptime(data[role]["started_at"], fmt)
-            e   = datetime.strptime(now, fmt)
-            data[role]["duration_s"] = int((e - s).total_seconds())
+        data[role]["finished_at"] = datetime.now().strftime("%H:%M:%S")
+        if role in _start_times:
+            data[role]["duration_s"] = int(time.monotonic() - _start_times.pop(role))
     _save(data)
 
     run_id = _get_run_id()
@@ -157,6 +170,8 @@ def set_failed(role: str, error: str):
         data[role]["status"]      = "failed"
         data[role]["finished_at"] = datetime.now().strftime("%H:%M:%S")
         data[role]["error"]       = error[:200]
+        if role in _start_times:
+            data[role]["duration_s"] = int(time.monotonic() - _start_times.pop(role))
     _save(data)
 
     run_id = _get_run_id()
