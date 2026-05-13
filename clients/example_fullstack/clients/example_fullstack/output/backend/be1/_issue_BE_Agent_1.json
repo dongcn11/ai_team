@@ -1,0 +1,19 @@
+{
+  "issues": [
+    {
+      "severity": "low",
+      "description": "FastAPI HTTPException wraps dict detail as {\"detail\": {\"detail\": \"...\", \"code\": \"...\"}} instead of flat {\"detail\": \"...\", \"code\": \"...\"} as specified in api_contract.md. The actual API response has an extra nesting level.",
+      "suggestion": "Use a custom exception handler to flatten the response format to match the contract exactly, or update api_contract.md to reflect FastAPI's default behavior."
+    },
+    {
+      "severity": "low",
+      "description": "datetime.utcnow() is deprecated in Python 3.12+. Used in SQLModel Field default_factory and jose jwt.encode.",
+      "suggestion": "Replace with datetime.now(timezone.utc) throughout the codebase when dependencies are updated."
+    },
+    {
+      "severity": "medium",
+      "description": "Rate limiting via slowapi decorator on login endpoint requires Request parameter, which changes the function signature. The limiter is defined locally in auth.py rather than shared from main.py, which could lead to inconsistent rate limit tracking.",
+      "suggestion": "Consider implementing rate limiting as middleware or using Redis-backed limits for production multi-worker deployments."
+    }
+  ]
+}
