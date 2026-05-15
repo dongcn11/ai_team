@@ -115,7 +115,7 @@ async def _progress_reporter(role: str, work_dir: Path, start: float, interval: 
 
 # ── Coding agents ─────────────────────────────────────────────────────────────
 
-async def _coding_agent(role: str, task_doc: str, work_dir: Path, output_dir: str, repo_url: str | None = None):
+async def _coding_agent(role: str, task_doc: str, work_dir: Path, output_dir: str):
     cfg         = get_config()
     agent_cfg   = cfg.agents[role]
     task_content = _read_doc(output_dir, task_doc)
@@ -137,45 +137,17 @@ async def _coding_agent(role: str, task_doc: str, work_dir: Path, output_dir: st
     role_prefix = _branch_name(role)  # e.g. "feature/fs1"
     git_workflow = f"""GIT WORKFLOW — bắt buộc thực hiện theo từng feature:
 
-1. Clone repo (chỉ làm 1 lần đầu):
-     git clone {repo_url} .
-
-2. Với MỖI feature trong task, tạo branch riêng rồi implement:
+1. Với MỖI feature trong task, tạo branch riêng trước khi implement:
      git checkout -b {role_prefix}/<feature-slug>
      # Ví dụ: {role_prefix}/auth-system, {role_prefix}/services-crud, {role_prefix}/contact-page
 
-3. Sau khi feature đó xong, commit + push + tạo Pull Request:
-     git add .
-     git commit -m "feat: <mô tả feature>"
-     git push origin {role_prefix}/<feature-slug>
-     gh pr create \\
-       --title "feat: <mô tả feature>" \\
-       --body "## Summary\\n<mô tả chi tiết>\\n\\n## Checklist\\n- [ ] Đã test\\n- [ ] Theo đúng API contract" \\
-       --label "review-needed"
+2. Implement feature trên branch đó.
 
-4. Sau khi tạo PR xong, checkout về main/master rồi tiếp tục feature tiếp theo:
-     git checkout main
-
-Lặp lại bước 2-4 cho từng feature trong task của bạn.
-""" if repo_url else f"""GIT WORKFLOW — bắt buộc thực hiện theo từng feature:
-
-1. Với MỖI feature trong task, tạo branch riêng rồi implement:
-     git checkout -b {role_prefix}/<feature-slug>
-     # Ví dụ: {role_prefix}/cart-system, {role_prefix}/orders-api, {role_prefix}/admin-dashboard
-
-2. Sau khi feature đó xong, commit + push + tạo Pull Request:
-     git add .
-     git commit -m "feat: <mô tả feature>"
-     git push origin {role_prefix}/<feature-slug>
-     gh pr create \\
-       --title "feat: <mô tả feature>" \\
-       --body "## Summary\\n<mô tả chi tiết>\\n\\n## Checklist\\n- [ ] Đã test\\n- [ ] Theo đúng API contract" \\
-       --label "review-needed"
-
-3. Checkout về main rồi tiếp tục feature tiếp theo:
+3. Sau khi xong, checkout về main rồi tiếp tục feature tiếp theo:
      git checkout main
 
 Lặp lại bước 1-3 cho từng feature trong task của bạn.
+KHÔNG tự commit, push, hoặc tạo Pull Request — user sẽ tự xử lý.
 """
 
     task_prompt = f"""Bạn là {role} trong AI development team.
@@ -381,8 +353,8 @@ async def orchestrate(prd: str, output_dir: str = "./output"):
     if _enabled("BE Agent 2"):           tasks["BE Agent 2"]           = "Implement backend theo be2_task.md"
     if _enabled("FE Agent 1"):           tasks["FE Agent 1"]           = "Implement frontend theo fe1_task.md"
     if _enabled("FE Agent 2"):           tasks["FE Agent 2"]           = "Implement frontend theo fe2_task.md"
-    if _enabled("Fullstack Agent 1"):    tasks["Fullstack Agent 1"]    = "Implement theo fs1_task.md (clone repo + làm tiếp)"
-    if _enabled("Fullstack Agent 2"):    tasks["Fullstack Agent 2"]    = "Implement theo fs2_task.md (clone repo + làm tiếp)"
+    if _enabled("Fullstack Agent 1"):    tasks["Fullstack Agent 1"]    = "Implement theo fs1_task.md"
+    if _enabled("Fullstack Agent 2"):    tasks["Fullstack Agent 2"]    = "Implement theo fs2_task.md"
     if _enabled("Leader Agent"):         tasks["Leader Agent"]         = "Review toàn bộ code"
 
     tm.init(tasks)
@@ -446,7 +418,7 @@ Tạo 2 file trong docs/:
         plan_section = f"""SPRINT PLAN:
 {_read_doc(output_dir, 'sprint_plan.md')}""" if has_scrum else ""
 
-        repo_note = f"\nRepo hiện có (agents sẽ clone và làm tiếp): {repo_url}" if repo_url and fs_agents else ""
+        repo_note = f"\nRepo hiện có: {repo_url}" if repo_url and fs_agents else ""
 
         analyst_prompt = f"""Bạn là Tech Lead AI.
 
@@ -487,21 +459,38 @@ Tạo trong docs/:
         print("\n[Orchestrator] Stage 4b — FE agents...")
         await asyncio.gather(*fe_tasks)
 
-    # Stage 4c: Fullstack agents (song song, mỗi agent clone repo riêng)
+    # Stage 4c: Fullstack agents (song song)
     fs_tasks = []
     if _enabled("Fullstack Agent 1"):
-        fs_tasks.append(_coding_agent("Fullstack Agent 1", "fs1_task.md", out / "fullstack" / "fs1", output_dir, repo_url))
+        fs_tasks.append(_coding_agent("Fullstack Agent 1", "fs1_task.md", out / "fullstack" / "fs1", output_dir))
     if _enabled("Fullstack Agent 2"):
-        fs_tasks.append(_coding_agent("Fullstack Agent 2", "fs2_task.md", out / "fullstack" / "fs2", output_dir, repo_url))
+        fs_tasks.append(_coding_agent("Fullstack Agent 2", "fs2_task.md", out / "fullstack" / "fs2", output_dir))
 
     if fs_tasks:
-        print("\n[Orchestrator] Stage 4c — Fullstack agents (clone repo + implement)...")
+        print("\n[Orchestrator] Stage 4c — Fullstack agents...")
         await asyncio.gather(*fs_tasks)
 
     # Stage 5: Leader review
     if _enabled("Leader Agent"):
-        print("\n[Orchestrator] Stage 5 — Leader Agent review code...")
-        await _review_agent(output_dir)
+        coding_roles = [
+            "BE Agent 1", "BE Agent 2",
+            "FE Agent 1", "FE Agent 2",
+            "Fullstack Agent 1", "Fullstack Agent 2",
+        ]
+        all_tasks = tm.get_all()
+        enabled_coding = [r for r in coding_roles if _enabled(r)]
+        done_coding = [r for r in enabled_coding if all_tasks.get(r, {}).get("status") == "done"]
+
+        if not enabled_coding:
+            print("\n[Orchestrator] Stage 5 — Bỏ qua Leader Review (không có coding agent nào enabled).")
+            tm.set_failed("Leader Agent", "Không có coding agent nào enabled để review")
+        elif not done_coding:
+            failed = [r for r in enabled_coding if all_tasks.get(r, {}).get("status") == "failed"]
+            print(f"\n[Orchestrator] Stage 5 — Bỏ qua Leader Review: tất cả {len(enabled_coding)} coding agent đều fail ({', '.join(failed)}).")
+            tm.set_failed("Leader Agent", f"Skipped: tất cả coding agent fail ({', '.join(failed)})")
+        else:
+            print(f"\n[Orchestrator] Stage 5 — Leader Agent review code ({len(done_coding)}/{len(enabled_coding)} coding agent done)...")
+            await _review_agent(output_dir)
 
     # Sprint summary
     all_files  = [f for f in out.rglob("*") if f.is_file()]
