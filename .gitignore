@@ -4,3 +4,4 @@ __pycache__/
 .env
 *.log
 output/
+settings.local.toml
