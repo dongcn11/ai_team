@@ -23,6 +23,19 @@ if sys.platform == "win32":
     # ProactorEventLoop required for subprocess support on Windows
     asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
+    # Chặn lỗi cosmetic "I/O operation on closed pipe" do transport của subprocess
+    # bị GC sau khi event loop đã đóng (bug đã biết của asyncio trên Windows).
+    # Lỗi này vô hại — chỉ xuất hiện lúc shutdown, không ảnh hưởng kết quả.
+    _default_unraisablehook = sys.unraisablehook
+
+    def _silence_closed_pipe(unraisable):
+        exc = unraisable.exc_value
+        if isinstance(exc, ValueError) and "closed pipe" in str(exc):
+            return
+        _default_unraisablehook(unraisable)
+
+    sys.unraisablehook = _silence_closed_pipe
+
 from ai_team import config as cfg_module
 from ai_team.orchestrator import orchestrate
 
