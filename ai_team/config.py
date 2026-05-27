@@ -39,14 +39,15 @@ class Config:
     agents:           dict[str, AgentCfg]
     enabled_agents:   set[str]
     profile:          str
-    slack_token:      str
-    slack_channel:    str
     output_dir:       str
+    docs_dir:         str
     timeout_claude:   int
     timeout_opencode: int
     tech_backend:     str
     tech_frontend:    str
-    slack_enabled:    bool
+    slack_enabled:    bool = False
+    slack_token:      str  = ""
+    slack_channel:    str  = "#ai-team"
 
 
 def _load_profiles() -> dict:
@@ -64,10 +65,29 @@ def _resolve_enabled(profile_name: str, profiles: dict) -> set[str]:
     return {AGENT_KEYS[k] for k in keys if k in AGENT_KEYS}
 
 
+def _deep_merge(base: dict, override: dict) -> dict:
+    """Merge override vào base, section-level override."""
+    result = {**base}
+    for k, v in override.items():
+        if isinstance(v, dict) and isinstance(result.get(k), dict):
+            result[k] = {**result[k], **v}
+        else:
+            result[k] = v
+    return result
+
+
 def load(config_path: Path | None = None, profile_override: str | None = None) -> Config:
     path = config_path or DEFAULT_CONFIG
     with open(path, "rb") as f:
         raw = tomllib.load(f)
+
+    # Load settings.local.toml nếu tồn tại (gitignored, per-machine override)
+    local_path = path.parent / "settings.local.toml"
+    if local_path.exists():
+        with open(local_path, "rb") as f:
+            local = tomllib.load(f)
+        raw = _deep_merge(raw, local)
+        print(f"[config] Loaded local override: {local_path}")
 
     a = raw["agents"]
 
@@ -81,41 +101,61 @@ def load(config_path: Path | None = None, profile_override: str | None = None) -
             label = f"OpenCode + {provider.title()}"
         return AgentCfg(tool=tool, model=model, label=label)
 
-    profiles    = _load_profiles()
-    profile     = profile_override or raw.get("project", {}).get("profile", "")
-    enabled     = _resolve_enabled(profile, profiles)
-    slack_token = raw["slack"]["bot_token"]
+    profiles = _load_profiles()
+    profile  = profile_override or raw.get("project", {}).get("profile", "")
+    enabled  = _resolve_enabled(profile, profiles)
 
     def make_agent_optional(tool_key: str, model_key: str) -> AgentCfg | None:
         if tool_key not in a:
             return None
         return make_agent(tool_key, model_key)
 
-    agents: dict[str, AgentCfg] = {
-        "PM Agent":     make_agent("pm_tool",      "pm_model"),
-        "Scrum Master": make_agent("scrum_tool",   "scrum_model"),
-        "Analyst":      make_agent("analyst_tool", "analyst_model"),
-        "Leader Agent": make_agent("leader_tool",  "leader_model"),
-    }
-    for key, name in [("be1", "BE Agent 1"), ("be2", "BE Agent 2"),
-                      ("fe1", "FE Agent 1"), ("fe2", "FE Agent 2"),
-                      ("fs1", "Fullstack Agent 1"), ("fs2", "Fullstack Agent 2")]:
+    agents: dict[str, AgentCfg] = {}
+    for key, name in [
+        ("pm",      "PM Agent"),
+        ("scrum",   "Scrum Master"),
+        ("analyst", "Analyst"),
+        ("leader",  "Leader Agent"),
+        ("be1",     "BE Agent 1"),
+        ("be2",     "BE Agent 2"),
+        ("fe1",     "FE Agent 1"),
+        ("fe2",     "FE Agent 2"),
+        ("fs1",     "Fullstack Agent 1"),
+        ("fs2",     "Fullstack Agent 2"),
+    ]:
         agent = make_agent_optional(f"{key}_tool", f"{key}_model")
         if agent:
             agents[name] = agent
+
+    def _resolve_dir(raw_str: str) -> str:
+        p = Path(raw_str)
+        if not p.is_absolute():
+            p = (path.parent / p).resolve()
+        return str(p)
+
+    output_dir = _resolve_dir(raw["output"]["directory"])
+
+    # docs_directory: mặc định là {output_dir}/docs nếu không cấu hình
+    docs_raw = raw.get("output", {}).get("docs_directory", "")
+    docs_dir = _resolve_dir(docs_raw) if docs_raw else str(Path(output_dir) / "docs")
+
+    slack_raw     = raw.get("slack", {})
+    slack_token   = slack_raw.get("bot_token", "")
+    slack_enabled = bool(slack_token and not slack_token.startswith("xoxb-your"))
 
     return Config(
         agents=agents,
         enabled_agents=enabled,
         profile=profile or "fullstack",
-        slack_token=slack_token,
-        slack_channel=raw["slack"]["channel"],
-        output_dir=raw["output"]["directory"],
+        output_dir=output_dir,
+        docs_dir=docs_dir,
         timeout_claude=raw["timeouts"]["claude_code"],
         timeout_opencode=raw["timeouts"]["opencode"],
         tech_backend=raw["tech_stack"]["backend"],
         tech_frontend=raw["tech_stack"]["frontend"],
-        slack_enabled=slack_token != "xoxb-your-token-here",
+        slack_enabled=slack_enabled,
+        slack_token=slack_token,
+        slack_channel=slack_raw.get("channel", "#ai-team"),
     )
 
 

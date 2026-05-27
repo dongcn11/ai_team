@@ -1,0 +1,27 @@
+[agents]
+pm_tool = "opencode"
+pm_model = "opencode-go/qwen3.5-plus"
+scrum_tool = "opencode"
+scrum_model = "opencode-go/qwen3.5-plus"
+fs1_tool = "claude"
+fs1_model = ""
+analyst_tool = "opencode"
+analyst_model = "opencode-go/qwen3.5-plus"
+leader_tool = "opencode"
+leader_model = "opencode-go/qwen3.5-plus"
+
+[slack]
+bot_token = "xoxb-your-token-here"
+channel = "#ai-team"
+
+[output]
+directory = "./output"
+docs_directory = "./docs"
+
+[timeouts]
+claude_code = 600
+opencode = 3600
+
+[tech_stack]
+backend = "Python FastAPI + SQLModel + SQLite"
+frontend = "React + TypeScript + Vite + TailwindCSS"

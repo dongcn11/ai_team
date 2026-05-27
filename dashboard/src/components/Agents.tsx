@@ -132,7 +132,7 @@ export default function AgentsPage() {
                   <div key={p.id} className="project-card">
                     <div className="project-card-top">
                       <span>{p.name}</span>
-                      <span className={`project-status-badge status-${p.status}`}>{p.status}</span>
+                      <span style={{ fontSize: 11, color: "#6b7280" }}>{p.id}</span>
                     </div>
                   </div>
                 ))}

@@ -184,7 +184,7 @@ export default function LogsPage() {
           <select className="setting-select" style={{ width: 180 }} value={projectId}
             onChange={e => handleProjectChange(e.target.value)}>
             <option value="">-- Orchestrator --</option>
-            {projects.filter(p => p.status === "active").map(p => (
+            {projects.map(p => (
               <option key={p.id} value={p.id}>{p.name}</option>
             ))}
           </select>

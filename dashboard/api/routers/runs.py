@@ -45,10 +45,12 @@ def get_current_run(db: Session = Depends(get_db)):
 
 
 @router.get("/", response_model=List[RunSummary])
-def list_runs(skip: int = 0, limit: int = 20, project_id: int | None = None, db: Session = Depends(get_db)):
+def list_runs(skip: int = 0, limit: int = 20, project_id: int | None = None, client: str | None = None, db: Session = Depends(get_db)):
     q = db.query(Run).order_by(desc(Run.id))
     if project_id:
         q = q.filter(Run.project_id == project_id)
+    if client:
+        q = q.filter(Run.client == client)
     runs = q.offset(skip).limit(limit).all()
     result = []
     for run in runs:

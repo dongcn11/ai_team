@@ -1,0 +1,26 @@
+[agents]
+pm_tool = "opencode"
+pm_model = "opencode-go/qwen3.5-plus"
+scrum_tool = "opencode"
+scrum_model = "opencode-go/qwen3.5-plus"
+analyst_tool = "opencode"
+analyst_model = "opencode-go/qwen3.5-plus"
+fs1_tool = "opencode"
+fs1_model = "opencode-go/qwen3.5-plus"
+leader_tool = "opencode"
+leader_model = "opencode-go/qwen3.5-plus"
+
+[output]
+directory = "./clients/audiobook/output"
+
+[timeouts]
+claude_code = 900
+opencode = 3600
+
+[tech_stack]
+backend = "PHP 8.2 + Laravel 12 + Laravel Sanctum + MySQL + Redis"
+frontend = "HTML5 + CSS3 + Vanilla JavaScript (không dùng framework JS)"
+
+[project]
+name = "Audiobook"
+profile = "dual_fullstack"

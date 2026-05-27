@@ -7,13 +7,23 @@ Theo dõi trạng thái từng agent, lưu vào tasks.json.
 
 import json
 import os
+import time
 import urllib.request
 import urllib.error
 from pathlib import Path
 from datetime import datetime
 
+# Resolved at runtime via set_output_dir() — avoids cwd-dependent relative paths
 TASKS_FILE        = Path("./tasks.json")
 _CURRENT_RUN_FILE = Path("./_dashboard_run.json")
+
+
+def set_output_dir(output_dir: str | Path):
+    """Gọi từ orchestrator trước khi init() để đặt tasks.json đúng chỗ."""
+    global TASKS_FILE, _CURRENT_RUN_FILE
+    base             = Path(output_dir)
+    TASKS_FILE        = base / "tasks.json"
+    _CURRENT_RUN_FILE = base / "_dashboard_run.json"
 _API_URL          = os.getenv("DASHBOARD_API_URL", "http://localhost:8000")
 
 _run_id: int | None = None
@@ -51,15 +61,15 @@ def _set_run_id(rid: int):
     _CURRENT_RUN_FILE.write_text(json.dumps({"run_id": rid}), encoding="utf-8")
 
 
-def _api_post(path: str, body: dict) -> dict | None:
-    """Fire-and-forget POST — never raises, never blocks the orchestrator."""
+def _api_request(path: str, body: dict, method: str = "POST") -> dict | None:
+    """Fire-and-forget HTTP request — never raises, never blocks the orchestrator."""
     try:
         data = json.dumps(body).encode()
         req  = urllib.request.Request(
             f"{_API_URL}{path}",
             data=data,
             headers={"Content-Type": "application/json"},
-            method="POST",
+            method=method,
         )
         with urllib.request.urlopen(req, timeout=3) as resp:
             return json.loads(resp.read())
@@ -68,10 +78,19 @@ def _api_post(path: str, body: dict) -> dict | None:
     return None
 
 
+def _api_post(path: str, body: dict) -> dict | None:
+    return _api_request(path, body, "POST")
+
+
 # ── Public API ────────────────────────────────────────────────
+
+# Lưu monotonic start times để tính duration chính xác (tránh bug qua nửa đêm)
+_start_times: dict[str, float] = {}
+
 
 def init(roles: dict[str, str]):
     """Khởi tạo tasks.json. roles = {agent_name: description}"""
+    _start_times.clear()
     tasks = {
         role: {
             "role": role, "description": desc,
@@ -106,6 +125,7 @@ def init(roles: dict[str, str]):
 
 
 def set_running(role: str):
+    _start_times[role] = time.monotonic()
     data = _load()
     if role in data:
         data[role]["status"]     = "running"
@@ -126,12 +146,9 @@ def set_done(role: str):
     data = _load()
     if role in data:
         data[role]["status"]      = "done"
-        data[role]["finished_at"] = now = datetime.now().strftime("%H:%M:%S")
-        if data[role]["started_at"]:
-            fmt = "%H:%M:%S"
-            s   = datetime.strptime(data[role]["started_at"], fmt)
-            e   = datetime.strptime(now, fmt)
-            data[role]["duration_s"] = int((e - s).total_seconds())
+        data[role]["finished_at"] = datetime.now().strftime("%H:%M:%S")
+        if role in _start_times:
+            data[role]["duration_s"] = int(time.monotonic() - _start_times.pop(role))
     _save(data)
 
     run_id = _get_run_id()
@@ -153,6 +170,8 @@ def set_failed(role: str, error: str):
         data[role]["status"]      = "failed"
         data[role]["finished_at"] = datetime.now().strftime("%H:%M:%S")
         data[role]["error"]       = error[:200]
+        if role in _start_times:
+            data[role]["duration_s"] = int(time.monotonic() - _start_times.pop(role))
     _save(data)
 
     run_id = _get_run_id()
@@ -178,6 +197,33 @@ def report_issue(role: str, severity: str, description: str, suggestion: str = "
             "description": description,
             "suggestion":  suggestion,
         })
+
+
+def mark_features_done():
+    """Cập nhật các FEATURE_IDS thành 'done' sau khi pipeline hoàn thành."""
+    project_id   = os.getenv("AI_TEAM_PROJECT_ID", "")
+    feature_ids  = os.getenv("FEATURE_IDS", "")
+    if not project_id or not feature_ids:
+        return
+    for fid in feature_ids.split(","):
+        fid = fid.strip()
+        if fid:
+            _api_request(f"/api/project-tasks/{project_id}/{fid}",
+                         {"status": "done"}, "PUT")
+    print(f"[TaskManager] Đã cập nhật {len(feature_ids.split(','))} features → done")
+
+
+def mark_features_failed(error: str = ""):
+    """Cập nhật các FEATURE_IDS thành 'todo' (rollback) khi pipeline lỗi."""
+    project_id  = os.getenv("AI_TEAM_PROJECT_ID", "")
+    feature_ids = os.getenv("FEATURE_IDS", "")
+    if not project_id or not feature_ids:
+        return
+    for fid in feature_ids.split(","):
+        fid = fid.strip()
+        if fid:
+            _api_request(f"/api/project-tasks/{project_id}/{fid}",
+                         {"status": "todo"}, "PUT")
 
 
 def get_all() -> dict:
