@@ -8,8 +8,9 @@ import tomllib
 import yaml
 from pathlib import Path
 
-CONFIG_DIR   = Path(os.getenv("CONFIG_DIR",   "/config"))
-PROFILES_DIR = Path(os.getenv("PROFILES_DIR", "/config"))
+_PROJECT_ROOT = Path(__file__).parent.parent.parent
+CONFIG_DIR   = Path(os.getenv("CONFIG_DIR",   str(_PROJECT_ROOT / "config")))
+PROFILES_DIR = Path(os.getenv("PROFILES_DIR", str(_PROJECT_ROOT / "config")))
 SETTINGS_FILE = CONFIG_DIR / "settings.toml"
 PROFILES_FILE = PROFILES_DIR / "profiles.yaml"
 if not PROFILES_FILE.exists():

@@ -1,0 +1,18 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -oE '.{120}/api/projects/\"[^;]{0,400}' dashboard/dist/assets/*.js)",
+      "Bash(grep -oE 'fetch\\\\\\(\"/api/projects/\"[^\\)]*\\\\\\),\\\\{[^}]*method:\"POST\"[^}]*\\\\}[^;]{0,300}' dashboard/dist/assets/*.js)",
+      "Bash(grep -oE 'method:\"POST\"[^;]{0,250}' dashboard/dist/assets/*.js)",
+      "Bash(git log --all --oneline --diff-filter=A -- 'clients/*/settings.toml')",
+      "Bash(ls -d */ 2>/dev/null | head -40)",
+      "Read(//tmp/**)",
+      "Bash(docker exec *)",
+      "Bash(docker cp *)",
+      "Bash(grep -n \"local\\\\|settings\" .gitignore)",
+      "Bash(ls -la .gitignore)",
+      "Bash(tail -15 .gitignore)",
+      "Bash(docker compose *)"
+    ]
+  }
+}

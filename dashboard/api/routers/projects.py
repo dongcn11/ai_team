@@ -66,6 +66,33 @@ def _write_toml(folder: Path, raw: dict):
     (folder / "settings.toml").write_text("\n".join(lines), encoding="utf-8")
 
 
+def _write_local_template(folder: Path, slug: str):
+    """Tạo settings.local.toml — override cục bộ, KHÔNG commit vào git.
+
+    File chỉ chứa comment mẫu; bỏ comment key cần override cho riêng máy mình.
+    Không ghi đè nếu file đã tồn tại.
+    """
+    target = folder / "settings.local.toml"
+    if target.exists():
+        return
+    template = (
+        f"# settings.local.toml — override cục bộ cho project '{slug}'\n"
+        "# File này KHÔNG nên commit vào git (đặc thù từng máy / chứa secret).\n"
+        "# Bỏ comment các key bên dưới để ghi đè giá trị trong settings.toml.\n"
+        "\n"
+        "# [output]\n"
+        f'# directory = "D:/local/output/{slug}"\n'
+        "\n"
+        "# [slack]\n"
+        '# bot_token = "xoxb-..."\n'
+        '# channel = "#ai-team"\n'
+        "\n"
+        "# [agents]\n"
+        '# pm_model = "claude-opus-4-7"\n'
+    )
+    target.write_text(template, encoding="utf-8")
+
+
 def _resolve_dir(folder: Path, key: str, fallback: Path) -> Path:
     """Resolve a directory from settings.toml. Relative paths → relative to project folder."""
     raw     = _read_toml(folder)
@@ -163,6 +190,7 @@ def create_project(payload: ProjectCreate) -> dict:
         },
     }
     _write_toml(folder, raw)
+    _write_local_template(folder, slug)
     return _folder_to_project(folder)
 
 
