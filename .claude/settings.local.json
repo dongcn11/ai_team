@@ -2,7 +2,7 @@
   "permissions": {
     "allow": [
       "Bash(git add *)",
-      "Bash(git commit -m ' *)",
+      "Bash(git commit -m *)",
       "Bash(git push *)",
       "Skill(bmad-brainstorming)",
       "Skill(bmad-brainstorming:*)"

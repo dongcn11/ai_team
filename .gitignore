@@ -5,3 +5,5 @@ __pycache__/
 *.log
 output/
 settings.local.toml
+.claude/settings.json
+.claude/settings.local.json
