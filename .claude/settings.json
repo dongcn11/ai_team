@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(grep -oE '.{120}/api/projects/\"[^;]{0,400}' dashboard/dist/assets/index-CHPD6kYS.js)",
+      "Bash(grep -oE 'fetch\\\\\\(\"/api/projects/\"[^\\)]*\\\\\\),\\\\{[^}]*method:\"POST\"[^}]*\\\\}[^;]{0,300}' dashboard/dist/assets/index-CHPD6kYS.js)",
+      "Bash(grep -oE 'method:\"POST\"[^;]{0,250}' dashboard/dist/assets/index-CHPD6kYS.js)",
+      "Bash(git -C c:/www/ai_team_clean log --all --oneline --diff-filter=A -- 'clients/*/settings.toml')",
+      "Bash(cd c:/www && ls -d */ 2>/dev/null | head -40; echo \"=== search whole www for settings.local.toml writers ===\"; grep -rIl --include='*.py' --include='*.ts' --include='*.tsx' --include='*.js' --exclude-dir=node_modules --exclude-dir=.git --exclude-dir=dist 'settings.local.toml' /c/www 2>/dev/null | head)",
+      "Read(//c/www/**)",
+      "Bash(netstat -ano)",
+      "Bash(powershell -NoProfile -Command \"Get-CimInstance Win32_Process -Filter 'ProcessId=18820 or ProcessId=11392' | Select-Object ProcessId,Name,CommandLine | Format-List\")",
+      "Bash(docker exec *)",
+      "Bash(docker cp *)",
+      "Read(//tmp/**)",
+      "Bash(MSYS_NO_PATHCONV=1 docker exec dashboard-api-1 cat /app/routers/projects.py)",
+      "Bash(echo \"exit=$?\")",
+      "Bash(grep -n \"local\\\\|settings\" .gitignore)",
+      "Bash(MSYS_NO_PATHCONV=1 docker exec dashboard-api-1 python -c \"import ast; ast.parse\\(open\\('/dev/stdin'\\).read\\(\\)\\)\")",
+      "Bash(ls -la .gitignore)",
+      "Bash(tail -15 .gitignore)",
+      "Bash(docker compose *)",
+      "Bash(curl -s -X POST http://localhost:8000/api/projects/ -H \"Content-Type: application/json\" --data-raw '{\"folder_name\":\"local_test_demo\",\"profile\":\"fullstack\",\"default_tool\":\"claude\",\"backend\":\"\",\"frontend\":\"\"}')",
+      "Bash(git commit -m '@ *)",
+      "Bash(git commit *)"
+    ]
+  }
+}
