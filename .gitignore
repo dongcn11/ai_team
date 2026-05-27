@@ -7,3 +7,5 @@ output/
 settings.local.toml
 .claude/settings.json
 .claude/settings.local.json
+dashboard/dist/
+dashboard/node_modules/
