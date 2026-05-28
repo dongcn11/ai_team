@@ -35,6 +35,20 @@ def parse_args():
     parser.add_argument("--output",  type=str, help="Thư mục output (mặc định: từ settings.toml)")
     parser.add_argument("--config",  type=str, help="Đường dẫn settings.toml cho project này")
     parser.add_argument("--profile", type=str, help="Profile team: fullstack, backend_only, api_only, mobile_app, ...")
+    parser.add_argument(
+        "--disable-stage",
+        action="append",
+        default=[],
+        metavar="STAGE",
+        help="Tắt stage trong pipeline (pm/scrum/analyst/coding/leader/fix). Lặp lại để tắt nhiều stage.",
+    )
+    parser.add_argument(
+        "--enable-stage",
+        action="append",
+        default=[],
+        metavar="STAGE",
+        help="Bật stage (override config). Lặp lại để bật nhiều stage.",
+    )
     return parser.parse_args()
 
 
@@ -63,6 +77,15 @@ if __name__ == "__main__":
 
     config_path = Path(args.config) if args.config else None
     cfg = cfg_module.init(config_path=config_path, profile=args.profile)
+
+    if args.disable_stage or args.enable_stage:
+        try:
+            cfg_module.apply_stage_overrides(
+                cfg, disable=args.disable_stage, enable=args.enable_stage
+            )
+        except ValueError as e:
+            print(f"ERROR: {e}")
+            sys.exit(1)
 
     prd    = load_prd(args)
     output = args.output or cfg.output_dir

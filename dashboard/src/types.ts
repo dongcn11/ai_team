@@ -75,6 +75,7 @@ export interface AgentSimple {
 export interface Project {
   id: string;
   name: string;
+  profile?: string;
   tech_stack: { backend?: string; frontend?: string };
   agents: AgentFS[];
   agent_count: number;

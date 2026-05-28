@@ -28,6 +28,12 @@ export default function ProjectsPage() {
   const [deleteProjecting,   setDeleteProjecting]   = useState(false);
   const [deleteStep,         setDeleteStep]         = useState<"confirm"|"done">("confirm");
 
+  // Inline-editable project header fields
+  type EditableField = "name" | "backend" | "frontend" | "output_dir" | "profile";
+  const [editingField, setEditingField] = useState<EditableField | null>(null);
+  const [editDraft,    setEditDraft]    = useState("");
+  const [editSaving,   setEditSaving]   = useState(false);
+
   // Remove agent confirm dialog
   const AGENTS_WITH_WORKSPACE = ["be1","be2","fe1","fe2","fs1","fs2"];
   const [removeAgentKey,      setRemoveAgentKey]      = useState<string | null>(null);
@@ -43,6 +49,16 @@ export default function ProjectsPage() {
   const [npFrontend,       setNpFrontend]       = useState("");
   const [npSaving,         setNpSaving]         = useState(false);
   const [npError,          setNpError]          = useState("");
+
+  // Profiles list — load từ /api/projects/profiles (đọc từ profiles.yaml)
+  type ProfileInfo = { name: string; label: string; agents: string[]; stages_disabled: string[]; display: string };
+  const [profilesList, setProfilesList] = useState<ProfileInfo[]>([]);
+  useEffect(() => {
+    fetch("/api/projects/profiles")
+      .then(r => r.ok ? r.json() : [])
+      .then((data: ProfileInfo[]) => setProfilesList(data))
+      .catch(() => setProfilesList([]));
+  }, []);
 
   // Agent management
   const [settingsAgents, setSettingsAgents] = useState<AgentFS[]>([]);
@@ -60,14 +76,27 @@ export default function ProjectsPage() {
   const [prdSaving,   setPrdSaving]   = useState(false);
 
   // Features
-  type Feature = { id: number; name: string; description: string | null; status: string; priority: string; created_at: string };
+  type FeatureFile = {
+    id: number; filename: string; original_filename: string;
+    description: string; size: number; content_type: string; uploaded_at: string;
+  };
+  type Feature = {
+    id: number; name: string; description: string | null;
+    status: string; priority: string; created_at: string;
+    acceptance_criteria?: string; files?: FeatureFile[];
+  };
+  // Pending attachment chosen *before* the feature exists (uploaded after create).
+  type PendingFile = { id: string; file: File; description: string };
   const [features,        setFeatures]        = useState<Feature[]>([]);
   const [featuresLoaded,  setFeaturesLoaded]  = useState(false);
   const [showAddFeature,  setShowAddFeature]  = useState(false);
   const [featureName,     setFeatureName]     = useState("");
   const [featureDesc,     setFeatureDesc]     = useState("");
   const [featurePriority, setFeaturePriority] = useState("medium");
+  const [featureAccept,   setFeatureAccept]   = useState("");
+  const [pendingFiles,    setPendingFiles]    = useState<PendingFile[]>([]);
   const [featureSaving,   setFeatureSaving]   = useState(false);
+  const [featureError,    setFeatureError]    = useState("");
 
   // Docs
   const [docFiles,    setDocFiles]    = useState<{path: string; name: string; size: number}[]>([]);
@@ -171,27 +200,89 @@ export default function ProjectsPage() {
     if (res.ok) { setFeatures(await res.json()); setFeaturesLoaded(true); }
   }, []);
 
+  const resetFeatureForm = () => {
+    setFeatureName(""); setFeatureDesc("");
+    setFeaturePriority("medium"); setFeatureAccept("");
+    setPendingFiles([]); setFeatureError("");
+  };
+
+  const closeAddFeatureModal = () => {
+    setShowAddFeature(false);
+    resetFeatureForm();
+  };
+
+  const addPendingFiles = (fl: FileList | null) => {
+    if (!fl || fl.length === 0) return;
+    const next: PendingFile[] = Array.from(fl).map(f => ({
+      id: `${f.name}-${f.size}-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`,
+      file: f,
+      description: "",
+    }));
+    setPendingFiles(prev => [...prev, ...next]);
+  };
+
+  const updatePendingDesc = (id: string, desc: string) =>
+    setPendingFiles(prev => prev.map(p => p.id === id ? { ...p, description: desc } : p));
+
+  const removePendingFile = (id: string) =>
+    setPendingFiles(prev => prev.filter(p => p.id !== id));
+
   const addFeature = async () => {
     if (!selected || !featureName.trim()) return;
-    setFeatureSaving(true);
+    setFeatureSaving(true); setFeatureError("");
     const res = await fetch(`/api/projects/${selected.id}/features`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name: featureName.trim(), description: featureDesc.trim(), priority: featurePriority }),
+      body: JSON.stringify({
+        name: featureName.trim(),
+        description: featureDesc.trim(),
+        priority: featurePriority,
+        acceptance_criteria: featureAccept.trim(),
+      }),
     });
-    if (res.ok) {
-      const created = await res.json();
-      setFeatures(prev => [...prev, created]);
-      setFeatureName(""); setFeatureDesc(""); setFeaturePriority("medium");
-      setShowAddFeature(false);
+    if (!res.ok) {
+      const d = await res.json().catch(() => ({}));
+      setFeatureError(d.detail || "Lỗi tạo feature");
+      setFeatureSaving(false);
+      return;
     }
+    const created: Feature = await res.json();
+
+    // Upload pending files sequentially (small lists, simpler error reporting).
+    const uploaded: FeatureFile[] = [...(created.files || [])];
+    for (const p of pendingFiles) {
+      const fd = new FormData();
+      fd.append("file", p.file);
+      fd.append("description", p.description);
+      const up = await fetch(`/api/projects/${selected.id}/features/${created.id}/files`, {
+        method: "POST",
+        body: fd,
+      });
+      if (up.ok) uploaded.push(await up.json());
+      else {
+        const d = await up.json().catch(() => ({}));
+        setFeatureError(`Upload "${p.file.name}" lỗi: ${d.detail || up.status}`);
+      }
+    }
+    setFeatures(prev => [...prev, { ...created, files: uploaded }]);
+    closeAddFeatureModal();
     setFeatureSaving(false);
   };
 
   const deleteFeature = async (id: number) => {
-    if (!selected || !window.confirm("Xóa feature này?")) return;
+    if (!selected || !window.confirm("Xóa feature này (kèm files đính kèm)?")) return;
     const res = await fetch(`/api/projects/${selected.id}/features/${id}`, { method: "DELETE" });
     if (res.ok) setFeatures(prev => prev.filter(f => f.id !== id));
+  };
+
+  const deleteFeatureFile = async (featureId: number, fileId: number) => {
+    if (!selected || !window.confirm("Xóa file đính kèm này?")) return;
+    const res = await fetch(`/api/projects/${selected.id}/features/${featureId}/files/${fileId}`, { method: "DELETE" });
+    if (res.ok) {
+      setFeatures(prev => prev.map(f => f.id === featureId
+        ? { ...f, files: (f.files || []).filter(x => x.id !== fileId) }
+        : f));
+    }
   };
 
   const updateFeatureStatus = async (id: number, status: string) => {
@@ -208,6 +299,40 @@ export default function ProjectsPage() {
   };
 
   const markFeatureDone = (id: number) => updateFeatureStatus(id, "done");
+
+  const startEditField = (field: EditableField, current: string) => {
+    setEditingField(field);
+    setEditDraft(current || "");
+  };
+
+  const cancelEditField = () => {
+    setEditingField(null);
+    setEditDraft("");
+  };
+
+  const saveEditField = async () => {
+    if (!selected || !editingField) return;
+    setEditSaving(true);
+    const body: Record<string, string> = {};
+    if (editingField === "name")       body.name       = editDraft;
+    if (editingField === "backend")    body.backend    = editDraft;
+    if (editingField === "frontend")   body.frontend   = editDraft;
+    if (editingField === "output_dir") body.output_dir = editDraft;
+    if (editingField === "profile")    body.profile    = editDraft;
+
+    const res = await fetch(`/api/projects/${selected.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+    });
+    if (res.ok) {
+      const updated: Project = await res.json();
+      setSelected(prev => prev ? { ...prev, ...updated } : prev);
+      refetch();
+      cancelEditField();
+    }
+    setEditSaving(false);
+  };
 
   const loadDocs = useCallback(async (id: string) => {
     const res = await fetch(`/api/projects/${id}/docs`);
@@ -294,10 +419,26 @@ export default function ProjectsPage() {
             <div>
               <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Profile</label>
               <select className="setting-select" value={npProfile} onChange={e => setNpProfile(e.target.value)}>
-                <option value="fullstack">fullstack — PM+Scrum+Analyst+BE1+BE2+FE1+FE2+Leader</option>
-                <option value="dual_fullstack">dual_fullstack — PM+Scrum+Analyst+FS1+FS2+Leader</option>
-                <option value="backend_only">backend_only — PM+Scrum+Analyst+BE1+BE2+Leader</option>
+                {profilesList.length === 0 ? (
+                  <>
+                    <option value="fullstack">fullstack — PM+Scrum+Analyst+BE1+BE2+FE1+FE2+Leader</option>
+                    <option value="dual_fullstack">dual_fullstack — PM+Scrum+Analyst+FS1+FS2+Leader</option>
+                    <option value="backend_only">backend_only — PM+Scrum+Analyst+BE1+BE2+Leader</option>
+                  </>
+                ) : (
+                  profilesList.map(p => (
+                    <option key={p.name} value={p.name}>
+                      {p.name} — {p.agents.map(a => a.toUpperCase()).join("+")}
+                      {p.stages_disabled.length > 0 ? ` · skip:${p.stages_disabled.join(",")}` : ""}
+                    </option>
+                  ))
+                )}
               </select>
+              {profilesList.find(p => p.name === npProfile)?.label && (
+                <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
+                  {profilesList.find(p => p.name === npProfile)?.label}
+                </div>
+              )}
             </div>
             <div>
               <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Default tool</label>
@@ -334,26 +475,140 @@ export default function ProjectsPage() {
         <div className="card" style={{ marginBottom: 20 }}>
           {/* Header */}
           <div className="project-detail-header">
-            <div>
-              <h3>{selected.name}</h3>
+            <div style={{ minWidth: 0, flex: 1 }}>
+              {editingField === "name" ? (
+                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+                  <input className="setting-input" value={editDraft} autoFocus
+                    onChange={e => setEditDraft(e.target.value)}
+                    onKeyDown={e => {
+                      if (e.key === "Enter") saveEditField();
+                      if (e.key === "Escape") cancelEditField();
+                    }}
+                    style={{ width: 320, fontSize: 18, fontWeight: 600, boxSizing: "border-box" }} />
+                  <button onClick={saveEditField} disabled={editSaving}
+                    style={{ background: "#14532d", border: "none", color: "#86efac", cursor: "pointer", fontSize: 14, padding: "4px 10px", borderRadius: 4 }}
+                    title="Lưu (Enter)">✓</button>
+                  <button onClick={cancelEditField} disabled={editSaving}
+                    style={{ background: "#1e293b", border: "1px solid #374151", color: "#9ca3af", cursor: "pointer", fontSize: 14, padding: "4px 10px", borderRadius: 4 }}
+                    title="Huỷ (Esc)">✕</button>
+                </div>
+              ) : (
+                <h3 style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
+                  {selected.name}
+                  <button onClick={() => startEditField("name", selected.name)}
+                    style={{ background: "none", border: "none", color: "#6b7280", cursor: "pointer", fontSize: 13, padding: 0 }}
+                    title="Đổi tên hiển thị">✏️</button>
+                </h3>
+              )}
               <div className="project-meta-links">
-                <span className="project-link" style={{ background: "#172554", borderColor: "#3b82f655" }}>
+                <span className="project-link" style={{ background: "#172554", borderColor: "#3b82f655" }}
+                  title="Folder slug — không sửa được">
                   <span className="project-link-icon">&#x1f4c1;</span> clients/{selected.id}
                 </span>
-                {selected.tech_stack?.backend && (
-                  <span className="project-link" style={{ background: "#1a2e1a", borderColor: "#22c55e55" }}>
-                    BE: {selected.tech_stack.backend}
+
+                {/* Profile */}
+                {editingField === "profile" ? (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                    <select className="setting-select" value={editDraft}
+                      onChange={e => setEditDraft(e.target.value)}
+                      style={{ width: 220, fontSize: 11, padding: "2px 6px", boxSizing: "border-box" }}>
+                      {profilesList.length === 0 ? (
+                        <>
+                          <option value="fullstack">fullstack</option>
+                          <option value="dual_fullstack">dual_fullstack</option>
+                          <option value="backend_only">backend_only</option>
+                        </>
+                      ) : profilesList.map(p => (
+                        <option key={p.name} value={p.name}>{p.name}</option>
+                      ))}
+                    </select>
+                    <button onClick={saveEditField} disabled={editSaving}
+                      style={{ background: "none", border: "none", color: "#86efac", cursor: "pointer", fontSize: 13 }}
+                      title="Lưu">✓</button>
+                    <button onClick={cancelEditField} disabled={editSaving}
+                      style={{ background: "none", border: "none", color: "#9ca3af", cursor: "pointer", fontSize: 13 }}
+                      title="Huỷ">✕</button>
+                  </span>
+                ) : (
+                  <span className="project-link"
+                    style={{ background: "#172554", borderColor: "#3b82f655", cursor: "pointer" }}
+                    onClick={() => startEditField("profile", selected.profile || "")}
+                    title="Click để đổi profile">
+                    🧩 {selected.profile || "—"} <span style={{ color: "#6b7280", fontSize: 9 }}>✏️</span>
                   </span>
                 )}
-                {selected.tech_stack?.frontend && (
-                  <span className="project-link" style={{ background: "#1e1a2e", borderColor: "#a855f755" }}>
-                    FE: {selected.tech_stack.frontend}
+
+                {/* Backend */}
+                {editingField === "backend" ? (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                    <input className="setting-input" value={editDraft} autoFocus
+                      onChange={e => setEditDraft(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === "Enter") saveEditField();
+                        if (e.key === "Escape") cancelEditField();
+                      }}
+                      style={{ width: 280, fontSize: 11, padding: "2px 6px", boxSizing: "border-box" }} />
+                    <button onClick={saveEditField} disabled={editSaving}
+                      style={{ background: "none", border: "none", color: "#86efac", cursor: "pointer", fontSize: 13 }}>✓</button>
+                    <button onClick={cancelEditField} disabled={editSaving}
+                      style={{ background: "none", border: "none", color: "#9ca3af", cursor: "pointer", fontSize: 13 }}>✕</button>
+                  </span>
+                ) : (
+                  <span className="project-link"
+                    style={{ background: "#1a2e1a", borderColor: "#22c55e55", cursor: "pointer" }}
+                    onClick={() => startEditField("backend", selected.tech_stack?.backend || "")}
+                    title="Click để sửa BE stack">
+                    BE: {selected.tech_stack?.backend || "—"} <span style={{ color: "#6b7280", fontSize: 9 }}>✏️</span>
                   </span>
                 )}
-                <span className="project-link" style={{ background: "#1a1a1a", borderColor: "#374151", fontSize: 10 }}
-                  title="Output directory (override bằng settings.local.toml)">
-                  📂 {selected.output_dir}
-                </span>
+
+                {/* Frontend */}
+                {editingField === "frontend" ? (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                    <input className="setting-input" value={editDraft} autoFocus
+                      onChange={e => setEditDraft(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === "Enter") saveEditField();
+                        if (e.key === "Escape") cancelEditField();
+                      }}
+                      style={{ width: 280, fontSize: 11, padding: "2px 6px", boxSizing: "border-box" }} />
+                    <button onClick={saveEditField} disabled={editSaving}
+                      style={{ background: "none", border: "none", color: "#86efac", cursor: "pointer", fontSize: 13 }}>✓</button>
+                    <button onClick={cancelEditField} disabled={editSaving}
+                      style={{ background: "none", border: "none", color: "#9ca3af", cursor: "pointer", fontSize: 13 }}>✕</button>
+                  </span>
+                ) : (
+                  <span className="project-link"
+                    style={{ background: "#1e1a2e", borderColor: "#a855f755", cursor: "pointer" }}
+                    onClick={() => startEditField("frontend", selected.tech_stack?.frontend || "")}
+                    title="Click để sửa FE stack">
+                    FE: {selected.tech_stack?.frontend || "—"} <span style={{ color: "#6b7280", fontSize: 9 }}>✏️</span>
+                  </span>
+                )}
+
+                {/* Output dir */}
+                {editingField === "output_dir" ? (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                    <input className="setting-input" value={editDraft} autoFocus
+                      onChange={e => setEditDraft(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === "Enter") saveEditField();
+                        if (e.key === "Escape") cancelEditField();
+                      }}
+                      style={{ width: 320, fontSize: 11, padding: "2px 6px", boxSizing: "border-box" }} />
+                    <button onClick={saveEditField} disabled={editSaving}
+                      style={{ background: "none", border: "none", color: "#86efac", cursor: "pointer", fontSize: 13 }}>✓</button>
+                    <button onClick={cancelEditField} disabled={editSaving}
+                      style={{ background: "none", border: "none", color: "#9ca3af", cursor: "pointer", fontSize: 13 }}>✕</button>
+                  </span>
+                ) : (
+                  <span className="project-link"
+                    style={{ background: "#1a1a1a", borderColor: "#374151", fontSize: 10, cursor: "pointer" }}
+                    onClick={() => startEditField("output_dir", selected.output_dir)}
+                    title="Click để sửa output directory">
+                    📂 {selected.output_dir} <span style={{ color: "#6b7280", fontSize: 9 }}>✏️</span>
+                  </span>
+                )}
               </div>
             </div>
             <div style={{ display: "flex", gap: 8 }}>
@@ -393,33 +648,10 @@ export default function ProjectsPage() {
               <div className="task-manager-header">
                 <h4>Features / Ý tưởng ({features.length})</h4>
                 <button className="btn-primary" style={{ fontSize: 12, padding: "4px 10px" }}
-                  onClick={() => setShowAddFeature(v => !v)}>
+                  onClick={() => { resetFeatureForm(); setShowAddFeature(true); }}>
                   + Add Feature
                 </button>
               </div>
-
-              {showAddFeature && (
-                <div style={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 8, padding: 12, marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
-                  <input className="setting-input" placeholder="Tên feature (VD: Chức năng login)"
-                    value={featureName} onChange={e => setFeatureName(e.target.value)}
-                    onKeyDown={e => e.key === "Enter" && addFeature()} />
-                  <textarea className="setting-input" placeholder="Mô tả chi tiết (tuỳ chọn)"
-                    value={featureDesc} onChange={e => setFeatureDesc(e.target.value)}
-                    rows={2} style={{ resize: "vertical", fontFamily: "inherit" }} />
-                  <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-                    <label className="setting-label">Priority:</label>
-                    <select className="setting-select" value={featurePriority} onChange={e => setFeaturePriority(e.target.value)}>
-                      <option value="high">High</option>
-                      <option value="medium">Medium</option>
-                      <option value="low">Low</option>
-                    </select>
-                    <button className="btn-primary" disabled={featureSaving || !featureName.trim()} onClick={addFeature}>
-                      {featureSaving ? "Saving..." : "Add"}
-                    </button>
-                    <button className="btn-muted" onClick={() => { setShowAddFeature(false); setFeatureName(""); setFeatureDesc(""); }}>Cancel</button>
-                  </div>
-                </div>
-              )}
 
               {features.length === 0 ? (
                 <p style={{ color: "#6b7280", fontSize: 13, marginTop: 12 }}>
@@ -438,9 +670,52 @@ export default function ProjectsPage() {
                             <span style={{ fontWeight: 600, fontSize: 13, color: "#f1f5f9" }}>{f.name}</span>
                             <span style={{ fontSize: 10, padding: "2px 7px", borderRadius: 99, background: statusColor, color: "#e2e8f0" }}>{statusLabel}</span>
                             <span style={{ fontSize: 10, color: priorityColor }}>{f.priority}</span>
+                            {(f.files?.length ?? 0) > 0 && (
+                              <span style={{ fontSize: 10, color: "#60a5fa" }} title="Số file đính kèm">
+                                📎 {f.files!.length}
+                              </span>
+                            )}
                           </div>
                           {f.description && (
                             <p style={{ margin: "4px 0 0", fontSize: 12, color: "#9ca3af", lineHeight: 1.5 }}>{f.description}</p>
+                          )}
+                          {f.acceptance_criteria && (
+                            <pre style={{
+                              margin: "6px 0 0", fontSize: 11, color: "#cbd5e1", lineHeight: 1.5,
+                              background: "#0b1220", border: "1px solid #1e293b", borderRadius: 6,
+                              padding: "6px 8px", whiteSpace: "pre-wrap", fontFamily: "inherit",
+                            }}>{f.acceptance_criteria}</pre>
+                          )}
+                          {(f.files?.length ?? 0) > 0 && (
+                            <div style={{ marginTop: 6, display: "flex", flexDirection: "column", gap: 4 }}>
+                              {f.files!.map(file => (
+                                <div key={file.id} style={{
+                                  display: "flex", alignItems: "center", gap: 8,
+                                  fontSize: 11, color: "#cbd5e1",
+                                  background: "#0b1220", border: "1px solid #1e293b",
+                                  borderRadius: 6, padding: "4px 8px",
+                                }}>
+                                  <span style={{ flexShrink: 0 }}>📄</span>
+                                  <a
+                                    href={`/api/projects/${selected.id}/features/${f.id}/files/${file.id}/download`}
+                                    target="_blank" rel="noreferrer"
+                                    style={{ color: "#93c5fd", textDecoration: "none", flexShrink: 0 }}
+                                    title="Tải về"
+                                  >{file.original_filename}</a>
+                                  <span style={{ color: "#6b7280", fontSize: 10, flexShrink: 0 }}>
+                                    {(file.size / 1024).toFixed(1)} KB
+                                  </span>
+                                  {file.description && (
+                                    <span style={{ color: "#9ca3af", fontStyle: "italic", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                                      — {file.description}
+                                    </span>
+                                  )}
+                                  <button onClick={() => deleteFeatureFile(f.id, file.id)}
+                                    style={{ marginLeft: "auto", background: "none", border: "none", color: "#ef4444", cursor: "pointer", fontSize: 12, padding: "0 4px" }}
+                                    title="Xóa file">✕</button>
+                                </div>
+                              ))}
+                            </div>
                           )}
                         </div>
                         <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
@@ -462,6 +737,149 @@ export default function ProjectsPage() {
                       </div>
                     );
                   })}
+                </div>
+              )}
+
+              {showAddFeature && (
+                <div
+                  onClick={e => { if (e.target === e.currentTarget && !featureSaving) closeAddFeatureModal(); }}
+                  style={{
+                    position: "fixed", inset: 0, background: "rgba(2,6,23,0.75)",
+                    display: "flex", alignItems: "center", justifyContent: "center",
+                    padding: 16, zIndex: 1000,
+                  }}
+                >
+                  <div style={{
+                    background: "#0f172a", border: "1px solid #1e293b", borderRadius: 12,
+                    width: "min(720px, 100%)", maxHeight: "calc(100vh - 32px)",
+                    display: "flex", flexDirection: "column",
+                    boxShadow: "0 20px 50px rgba(0,0,0,0.6)",
+                  }}>
+                    <div style={{
+                      display: "flex", alignItems: "center", justifyContent: "space-between",
+                      padding: "14px 20px", borderBottom: "1px solid #1e293b", flexShrink: 0,
+                    }}>
+                      <h3 style={{ margin: 0, fontSize: 16, color: "#f1f5f9" }}>✨ Thêm Feature mới</h3>
+                      <button onClick={closeAddFeatureModal} disabled={featureSaving}
+                        style={{ background: "none", border: "none", color: "#94a3b8", cursor: "pointer", fontSize: 20, lineHeight: 1, padding: 0 }}
+                        title="Đóng">✕</button>
+                    </div>
+
+                    {/* Scrollable body */}
+                    <div style={{
+                      padding: 20, display: "flex", flexDirection: "column", gap: 14,
+                      overflowY: "auto", overflowX: "hidden", flex: 1, minHeight: 0,
+                    }}>
+
+                    {/* Row 1: name + priority */}
+                    <div style={{ display: "grid", gridTemplateColumns: "minmax(0, 1fr) 140px", gap: 10 }}>
+                      <div style={{ minWidth: 0 }}>
+                        <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Tên feature *</label>
+                        <input className="setting-input" placeholder="VD: Chức năng đăng nhập bằng Google"
+                          value={featureName} onChange={e => setFeatureName(e.target.value)} autoFocus
+                          style={{ width: "100%", boxSizing: "border-box" }} />
+                      </div>
+                      <div style={{ minWidth: 0 }}>
+                        <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Priority</label>
+                        <select className="setting-select" value={featurePriority}
+                          onChange={e => setFeaturePriority(e.target.value)}
+                          style={{ width: "100%", boxSizing: "border-box" }}>
+                          <option value="high">🔴 High</option>
+                          <option value="medium">🟡 Medium</option>
+                          <option value="low">⚪ Low</option>
+                        </select>
+                      </div>
+                    </div>
+
+                    {/* Description */}
+                    <div>
+                      <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Mô tả</label>
+                      <textarea className="setting-input" placeholder="Feature này làm gì, ai dùng, dùng khi nào..."
+                        value={featureDesc} onChange={e => setFeatureDesc(e.target.value)}
+                        rows={3} style={{ resize: "vertical", fontFamily: "inherit", width: "100%", boxSizing: "border-box" }} />
+                    </div>
+
+                    {/* Acceptance criteria */}
+                    <div>
+                      <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>
+                        Acceptance criteria / Checklist
+                        <span style={{ fontWeight: 400, color: "#6b7280", marginLeft: 6, fontSize: 11 }}>
+                          (mỗi dòng 1 ý — viết "- [ ] ..." hoặc gạch đầu dòng tuỳ ý)
+                        </span>
+                      </label>
+                      <textarea className="setting-input"
+                        placeholder={"- [ ] User bấm nút \"Đăng nhập với Google\"\n- [ ] Lưu token vào session\n- [ ] Redirect về dashboard"}
+                        value={featureAccept} onChange={e => setFeatureAccept(e.target.value)}
+                        rows={4} style={{ resize: "vertical", fontFamily: "monospace", fontSize: 12, width: "100%", boxSizing: "border-box" }} />
+                    </div>
+
+                    {/* File attachments */}
+                    <div>
+                      <label className="setting-label" style={{ display: "block", marginBottom: 6 }}>
+                        File đính kèm
+                        <span style={{ fontWeight: 400, color: "#6b7280", marginLeft: 6, fontSize: 11 }}>
+                          (mockup, spec, screenshot... — tối đa 20 MB/file)
+                        </span>
+                      </label>
+                      <label style={{
+                        display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center",
+                        gap: 4, padding: "16px 12px", border: "1px dashed #334155", borderRadius: 8,
+                        background: "#0b1220", cursor: "pointer", color: "#94a3b8", fontSize: 12,
+                      }}>
+                        <span style={{ fontSize: 22 }}>📎</span>
+                        <span>Bấm để chọn file (nhiều file cùng lúc)</span>
+                        <input type="file" multiple style={{ display: "none" }}
+                          onChange={e => { addPendingFiles(e.target.files); e.target.value = ""; }} />
+                      </label>
+                      {pendingFiles.length > 0 && (
+                        <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 6 }}>
+                          {pendingFiles.map(p => (
+                            <div key={p.id} style={{
+                              display: "grid", gridTemplateColumns: "minmax(0, 180px) minmax(0, 1fr) auto",
+                              alignItems: "center", gap: 8,
+                              background: "#0b1220", border: "1px solid #1e293b",
+                              borderRadius: 6, padding: "6px 10px",
+                            }}>
+                              <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12, color: "#cbd5e1", minWidth: 0 }} title={p.file.name}>
+                                <span style={{ flexShrink: 0 }}>📄</span>
+                                <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap", flex: 1 }}>
+                                  {p.file.name}
+                                </span>
+                                <span style={{ color: "#6b7280", fontSize: 10, flexShrink: 0 }}>
+                                  {(p.file.size / 1024).toFixed(1)} KB
+                                </span>
+                              </div>
+                              <input className="setting-input" placeholder="Mô tả file (vd: mockup trang login)"
+                                value={p.description} onChange={e => updatePendingDesc(p.id, e.target.value)}
+                                style={{ fontSize: 12, minWidth: 0, width: "100%", boxSizing: "border-box" }} />
+                              <button onClick={() => removePendingFile(p.id)}
+                                style={{ background: "none", border: "none", color: "#ef4444", cursor: "pointer", fontSize: 14 }}
+                                title="Bỏ file này">✕</button>
+                            </div>
+                          ))}
+                        </div>
+                      )}
+                    </div>
+
+                    {featureError && (
+                      <p style={{ color: "#ef4444", fontSize: 12, margin: 0 }}>{featureError}</p>
+                    )}
+
+                    </div>
+                    {/* /scrollable body */}
+
+                    <div style={{
+                      display: "flex", gap: 8, justifyContent: "flex-end",
+                      borderTop: "1px solid #1e293b", padding: "12px 20px", flexShrink: 0,
+                    }}>
+                      <button className="btn-muted" onClick={closeAddFeatureModal} disabled={featureSaving}>Huỷ</button>
+                      <button className="btn-primary" disabled={featureSaving || !featureName.trim()} onClick={addFeature}>
+                        {featureSaving
+                          ? (pendingFiles.length > 0 ? "Đang upload..." : "Đang lưu...")
+                          : `+ Thêm feature${pendingFiles.length > 0 ? ` (& ${pendingFiles.length} file)` : ""}`}
+                      </button>
+                    </div>
+                  </div>
                 </div>
               )}
             </div>

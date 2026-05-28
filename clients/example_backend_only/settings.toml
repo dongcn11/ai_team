@@ -46,3 +46,15 @@ opencode    = 600
 [tech_stack]
 backend  = "Python FastAPI + SQLModel + SQLite"
 frontend = ""
+
+# Pipeline tùy chỉnh: API-only project — skip scrum & fix loop
+[pipeline.stages.scrum]
+enabled = false
+
+[pipeline.stages.coding]
+enabled = true
+timeout_s = 1800
+parallel = ["be1", "be2"]   # chỉ BE chạy song song
+
+[pipeline.stages.fix]
+enabled = false             # bỏ fix loop, để dev tự sửa

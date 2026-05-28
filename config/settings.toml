@@ -50,3 +50,43 @@ opencode    = 600
 # Tech stack mặc định cho coding agents
 backend  = "Python FastAPI + SQLModel + SQLite"
 frontend = "React + TypeScript + Vite + TailwindCSS"
+
+[pipeline]
+# Định nghĩa quy trình: enable/disable các stages
+# Stages chạy theo thứ tự cố định: pm → scrum → analyst → coding → leader → fix
+#
+# Defaults (áp dụng nếu không khai báo gì ở dưới):
+#   pm/scrum/analyst/leader/fix: enabled=true, timeout_s=600
+#   coding: enabled=true, timeout_s=1800, parallel=[be1,be2,fe1,fe2,fs1,fs2]
+#
+# Profile (profiles.yaml) có thể tắt mặc định 1 số stage qua field `stages_disabled`.
+# Section [pipeline.stages.*] dưới đây sẽ ĐÈ LÊN profile defaults — chỉ khai báo khi
+# project cần override profile.
+
+# Stage definitions (mở comment khi cần override)
+
+# [pipeline.stages.pm]
+# enabled = true
+# timeout_s = 600
+
+# [pipeline.stages.scrum]
+# enabled = true
+# timeout_s = 600
+
+# [pipeline.stages.analyst]
+# enabled = true
+# timeout_s = 600
+
+# [pipeline.stages.coding]
+# enabled = true
+# timeout_s = 1800
+# parallel = ["be1", "be2", "fe1", "fe2", "fs1", "fs2"]
+
+# [pipeline.stages.leader]
+# enabled = true
+# timeout_s = 600
+
+# [pipeline.stages.fix]
+# enabled = true
+# timeout_s = 600
+# depends_on = "leader"

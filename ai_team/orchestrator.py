@@ -22,6 +22,14 @@ def _read_doc(docs_dir: str, filename: str) -> str:
     return path.read_text(encoding="utf-8") if path.exists() else f"(chưa có {filename})"
 
 
+def _tech_stack_line(cfg) -> str:
+    """Render `Tech stack: ...` showing only the parts an enabled agent can use.
+    Returns '' when neither side is applicable so the prompt drops the line entirely.
+    """
+    parts = [p for p in (cfg.tech_backend, cfg.tech_frontend) if p]
+    return f"Tech stack: {' / '.join(parts)}" if parts else ""
+
+
 def _extract_repo_url(text: str) -> str | None:
     match = re.search(r'https://github\.com/[\w\-]+/[\w\-]+', text)
     return match.group(0) if match else None
@@ -127,6 +135,56 @@ def _enabled(role: str) -> bool:
     return role in cfg.enabled_agents and role in cfg.agents
 
 
+def _is_stage_enabled(stage_id: str) -> bool:
+    """Kiểm tra stage có enabled trong pipeline config hay không."""
+    cfg = get_config()
+    stage = cfg.pipeline_stages.get(stage_id)
+    return stage.enabled if stage else False
+
+
+def _get_stage_timeout(stage_id: str) -> int:
+    """Lấy timeout cho stage (tính bằng giây)."""
+    cfg = get_config()
+    stage = cfg.pipeline_stages.get(stage_id)
+    if stage:
+        return stage.timeout_s
+    # Fallback to default timeouts
+    return cfg.timeout_claude if stage_id in {"pm", "scrum", "analyst", "leader"} else cfg.timeout_opencode
+
+
+def _stage_depends_on(stage_id: str) -> str | None:
+    """Lấy dependency của stage (nếu có)."""
+    cfg = get_config()
+    stage = cfg.pipeline_stages.get(stage_id)
+    return stage.depends_on if stage else None
+
+
+def _get_parallel_agents(stage_id: str) -> list[str] | None:
+    """Lấy danh sách agents chạy song song (cho coding stage)."""
+    cfg = get_config()
+    stage = cfg.pipeline_stages.get(stage_id)
+    return stage.parallel_agents if stage else None
+
+
+# Map role → stage_id để per-stage timeout áp dụng đúng agent
+_ROLE_TO_STAGE: dict[str, str] = {
+    "PM Agent":          "pm",
+    "Scrum Master":      "scrum",
+    "Analyst":           "analyst",
+    "BE Agent 1":        "coding",
+    "BE Agent 2":        "coding",
+    "FE Agent 1":        "coding",
+    "FE Agent 2":        "coding",
+    "Fullstack Agent 1": "coding",
+    "Fullstack Agent 2": "coding",
+    "Leader Agent":      "leader",
+}
+
+
+def _stage_id_for_role(role: str) -> str:
+    return _ROLE_TO_STAGE.get(role, "")
+
+
 # ── Progress reporter ─────────────────────────────────────────────────────────
 
 async def _progress_reporter(role: str, work_dir: Path, start: float, interval: int = 30):
@@ -168,9 +226,10 @@ async def _run_stage(role: str, prompt: str, work_dir: Path, summary: str):
     before = {str(f.relative_to(work_dir)) for f in work_dir.rglob("*") if f.is_file()}
     start  = time.time()
 
+    stage_timeout = _get_stage_timeout(_stage_id_for_role(role))
     timer = asyncio.create_task(_stage_timer(role, start))
     try:
-        await run(role, prompt, work_dir)
+        await run(role, prompt, work_dir, timeout=stage_timeout)
         duration  = int(time.time() - start)
         new_files = _new_files(work_dir, before)
         tm.set_done(role)
@@ -229,7 +288,7 @@ API CONTRACT:
 DATA MODELS:
 {data_models}
 
-Tech stack: {cfg.tech_backend} / {cfg.tech_frontend}
+{_tech_stack_line(cfg)}
 
 Yêu cầu:
 - Áp dụng đúng skills đã học ở trên khi viết code
@@ -243,10 +302,11 @@ Yêu cầu:
     skills = load_skills(role)
     prompt = (skills + "\n" + task_prompt) if skills else task_prompt
 
+    stage_timeout = _get_stage_timeout("coding")
     try:
         reporter = asyncio.create_task(_progress_reporter(role, work_dir, start))
         try:
-            await run(role, prompt, work_dir)
+            await run(role, prompt, work_dir, timeout=stage_timeout)
         finally:
             reporter.cancel()
         duration  = int(time.time() - start)
@@ -316,7 +376,7 @@ API CONTRACT:
 DATA MODELS:
 {data_models}
 
-Tech stack: {cfg.tech_backend} / {cfg.tech_frontend}
+{_tech_stack_line(cfg)}
 
 Yêu cầu:
 - Fix TẤT CẢ các vấn đề severity:high được liệt kê ở trên
@@ -333,10 +393,11 @@ Yêu cầu:
     start  = time.time()
     before = {str(f.relative_to(work_dir)) for f in work_dir.rglob("*") if f.is_file()}
 
+    stage_timeout = _get_stage_timeout("fix")
     try:
         reporter = asyncio.create_task(_progress_reporter(role, work_dir, start))
         try:
-            await run(role, prompt, work_dir)
+            await run(role, prompt, work_dir, timeout=stage_timeout)
         finally:
             reporter.cancel()
         duration  = int(time.time() - start)
@@ -432,8 +493,9 @@ Yêu cầu:
     skills = load_skills(role)
     prompt = (skills + "\n" + task_prompt) if skills else task_prompt
 
+    stage_timeout = _get_stage_timeout("leader")
     try:
-        await run(role, prompt, docs_dir)
+        await run(role, prompt, docs_dir, timeout=stage_timeout)
         duration  = int(time.time() - start)
         new_files = _new_files(docs_dir, before)
         tm.set_done(role)
@@ -480,6 +542,11 @@ async def orchestrate(prd: str, output_dir: str = "./output"):
     for role, a in cfg.agents.items():
         status = "✅" if role in cfg.enabled_agents else "⏭️  (skip)"
         print(f"  {role:14} → {a.label:30} {status}")
+    print("-" * 60)
+    print("PIPELINE CONFIG:")
+    for stage_id, stage_cfg in cfg.pipeline_stages.items():
+        status = "✅ enabled" if stage_cfg.enabled else "⏭️  disabled"
+        print(f"  {stage_id:12} → {status} (timeout: {stage_cfg.timeout_s}s)")
     print("=" * 60)
 
     # Khởi tạo task manager chỉ với enabled agents
@@ -499,7 +566,7 @@ async def orchestrate(prd: str, output_dir: str = "./output"):
     tm.print_status()
 
     # Stage 1: PM
-    if _enabled("PM Agent"):
+    if _enabled("PM Agent") and _is_stage_enabled("pm"):
         await _run_stage("PM Agent", f"""Bạn là Product Manager AI.
 
 PRD:
@@ -510,17 +577,19 @@ Tạo 2 file (dùng đường dẫn tuyệt đối):
 2. {dd}/acceptance.md   — Acceptance criteria: Given/When/Then""",
             docs_dir, "Viết user stories từ PRD")
         tm.print_status()
+    elif _enabled("PM Agent"):
+        print("\n[Orchestrator] Stage 1 — PM Agent disabled via pipeline config (skipping).")
 
     # Stage 2: Scrum (optional)
-    if _enabled("Scrum Master"):
-        has_fs   = _enabled("Fullstack Agent 1") or _enabled("Fullstack Agent 2")
-        has_be   = _enabled("BE Agent 1") or _enabled("BE Agent 2")
-        has_fe   = _enabled("FE Agent 1") or _enabled("FE Agent 2")
-        assignee_hint = (
-            "FS1/FS2" if has_fs and not has_be and not has_fe
-            else "BE1/BE2/FE1/FE2" if has_be or has_fe
-            else "FS1/FS2"
-        )
+    if _enabled("Scrum Master") and _is_stage_enabled("scrum"):
+        coding_codes = [
+            code for code, label in [
+                ("BE1", "BE Agent 1"), ("BE2", "BE Agent 2"),
+                ("FE1", "FE Agent 1"), ("FE2", "FE Agent 2"),
+                ("FS1", "Fullstack Agent 1"), ("FS2", "Fullstack Agent 2"),
+            ] if _enabled(label)
+        ] or ["FS1", "FS2"]
+        agent_list = ", ".join(coding_codes)
         await _run_stage("Scrum Master", f"""Bạn là Scrum Master AI.
 
 USER STORIES:
@@ -529,14 +598,19 @@ USER STORIES:
 ACCEPTANCE:
 {_read_doc(dd, 'acceptance.md')}
 
+TEAM (coding agents có sẵn): {agent_list}
+QUAN TRỌNG: KHÔNG được tạo task hay assign cho bất kỳ agent nào ngoài danh sách trên. Nếu team chỉ có FE1 thì không bịa thêm FE2/BE1/BE2; nếu chỉ có BE1 thì không bịa thêm BE2/FE*. Gộp khối lượng vào agent thật, hoặc cắt scope.
+
 Tạo 2 file (dùng đường dẫn tuyệt đối):
-1. {dd}/backlog.md      — Backlog có priority, points, assignee ({assignee_hint})
-2. {dd}/sprint_plan.md  — Sprint plan chia task chi tiết cho từng agent""",
+1. {dd}/backlog.md      — Backlog có priority, points, assignee (chỉ dùng: {agent_list})
+2. {dd}/sprint_plan.md  — Sprint plan chia task chi tiết cho từng agent (chỉ phân cho: {agent_list})""",
             docs_dir, "Tạo backlog và sprint plan")
         tm.print_status()
+    elif _enabled("Scrum Master"):
+        print("\n[Orchestrator] Stage 2 — Scrum Master disabled via pipeline config (skipping).")
 
     # Stage 3: Analyst
-    if _enabled("Analyst"):
+    if _enabled("Analyst") and _is_stage_enabled("analyst"):
         has_scrum = _enabled("Scrum Master")
         be_agents = [r for r in ["BE Agent 1", "BE Agent 2"] if _enabled(r)]
         fe_agents = [r for r in ["FE Agent 1", "FE Agent 2"] if _enabled(r)]
@@ -556,6 +630,9 @@ Tạo 2 file (dùng đường dẫn tuyệt đối):
         plan_section = f"SPRINT PLAN:\n{_read_doc(dd, 'sprint_plan.md')}" if has_scrum else ""
         repo_note    = f"\nRepo hiện có (agents sẽ clone và làm tiếp): {repo_url}" if repo_url and fs_agents else ""
 
+        coding_roster = be_agents + fe_agents + fs_agents
+        roster_line   = ", ".join(coding_roster) if coding_roster else "(không có coding agent nào)"
+
         analyst_prompt = f"""Bạn là Tech Lead AI.
 
 USER STORIES:
@@ -563,7 +640,10 @@ USER STORIES:
 
 {plan_section}
 
-Tech stack: {cfg.tech_backend} / {cfg.tech_frontend}{repo_note}
+{_tech_stack_line(cfg)}{repo_note}
+
+TEAM (coding agents có sẵn): {roster_line}
+QUAN TRỌNG: Chỉ tạo task file cho đúng các agent trong TEAM ở trên. Nếu sprint_plan.md có nhắc đến agent khác (BE2, FE2, …) — bỏ qua, gộp công việc vào agent thật hoặc cắt scope. Không tạo task file cho agent không có trong TEAM.
 
 Tạo các file sau (dùng đường dẫn tuyệt đối):
 - {dd}/api_contract.md  — Tất cả endpoints, request/response schema
@@ -572,42 +652,48 @@ Tạo các file sau (dùng đường dẫn tuyệt đối):
 
         await _run_stage("Analyst", analyst_prompt, docs_dir, "Thiết kế kỹ thuật và chia task")
         tm.print_status()
+    elif _enabled("Analyst"):
+        print("\n[Orchestrator] Stage 3 — Analyst disabled via pipeline config (skipping).")
 
-    # Stage 4a: BE agents
-    be_tasks = []
-    if _enabled("BE Agent 1"):
-        be_tasks.append(_coding_agent("BE Agent 1", "be1_task.md", out / "backend" / "be1", dd))
-    if _enabled("BE Agent 2"):
-        be_tasks.append(_coding_agent("BE Agent 2", "be2_task.md", out / "backend" / "be2", dd))
+    # Stage 4: Coding (parallel agents)
+    if _is_stage_enabled("coding"):
+        # Stage 4a: BE agents
+        be_tasks = []
+        if _enabled("BE Agent 1"):
+            be_tasks.append(_coding_agent("BE Agent 1", "be1_task.md", out / "backend" / "be1", dd))
+        if _enabled("BE Agent 2"):
+            be_tasks.append(_coding_agent("BE Agent 2", "be2_task.md", out / "backend" / "be2", dd))
 
-    if be_tasks:
-        print("\n[Orchestrator] Stage 4a — BE agents...")
-        await asyncio.gather(*be_tasks)
+        if be_tasks:
+            print("\n[Orchestrator] Stage 4a — BE agents...")
+            await asyncio.gather(*be_tasks)
 
-    # Stage 4b: FE agents
-    fe_tasks = []
-    if _enabled("FE Agent 1"):
-        fe_tasks.append(_coding_agent("FE Agent 1", "fe1_task.md", out / "frontend" / "fe1", dd))
-    if _enabled("FE Agent 2"):
-        fe_tasks.append(_coding_agent("FE Agent 2", "fe2_task.md", out / "frontend" / "fe2", dd))
+        # Stage 4b: FE agents
+        fe_tasks = []
+        if _enabled("FE Agent 1"):
+            fe_tasks.append(_coding_agent("FE Agent 1", "fe1_task.md", out / "frontend" / "fe1", dd))
+        if _enabled("FE Agent 2"):
+            fe_tasks.append(_coding_agent("FE Agent 2", "fe2_task.md", out / "frontend" / "fe2", dd))
 
-    if fe_tasks:
-        print("\n[Orchestrator] Stage 4b — FE agents...")
-        await asyncio.gather(*fe_tasks)
+        if fe_tasks:
+            print("\n[Orchestrator] Stage 4b — FE agents...")
+            await asyncio.gather(*fe_tasks)
 
-    # Stage 4c: Fullstack agents
-    fs_tasks = []
-    if _enabled("Fullstack Agent 1"):
-        fs_tasks.append(_coding_agent("Fullstack Agent 1", "fs1_task.md", out / "fullstack" / "fs1", dd, repo_url))
-    if _enabled("Fullstack Agent 2"):
-        fs_tasks.append(_coding_agent("Fullstack Agent 2", "fs2_task.md", out / "fullstack" / "fs2", dd, repo_url))
+        # Stage 4c: Fullstack agents
+        fs_tasks = []
+        if _enabled("Fullstack Agent 1"):
+            fs_tasks.append(_coding_agent("Fullstack Agent 1", "fs1_task.md", out / "fullstack" / "fs1", dd, repo_url))
+        if _enabled("Fullstack Agent 2"):
+            fs_tasks.append(_coding_agent("Fullstack Agent 2", "fs2_task.md", out / "fullstack" / "fs2", dd, repo_url))
 
-    if fs_tasks:
-        print("\n[Orchestrator] Stage 4c — Fullstack agents...")
-        await asyncio.gather(*fs_tasks)
+        if fs_tasks:
+            print("\n[Orchestrator] Stage 4c — Fullstack agents...")
+            await asyncio.gather(*fs_tasks)
+    else:
+        print("\n[Orchestrator] Stage 4 — Coding disabled via pipeline config (skipping all agents).")
 
     # Stage 5: Leader review
-    if _enabled("Leader Agent"):
+    if _enabled("Leader Agent") and _is_stage_enabled("leader"):
         coding_roles = [
             "BE Agent 1", "BE Agent 2",
             "FE Agent 1", "FE Agent 2",
@@ -629,24 +715,29 @@ Tạo các file sau (dùng đường dẫn tuyệt đối):
             await _review_agent(str(out), dd)
 
             # Stage 6: Fix loop — re-run agents có high-severity issues
-            review_path  = Path(dd) / "review_report.md"
-            agent_issues = _parse_review_issues(review_path)
+            if _is_stage_enabled("fix"):
+                review_path  = Path(dd) / "review_report.md"
+                agent_issues = _parse_review_issues(review_path)
 
-            if agent_issues:
-                enabled_issues = {r: v for r, v in agent_issues.items() if _enabled(r)}
-                if enabled_issues:
-                    total_issues = sum(len(v) for v in enabled_issues.values())
-                    print(f"\n[Orchestrator] Stage 6 — Fix loop "
-                          f"({len(enabled_issues)} agents, {total_issues} high-severity issues)...")
-                    fix_tasks = [
-                        _fix_coding_agent(role, issues, _work_dir_for_role(role, out), dd)
-                        for role, issues in enabled_issues.items()
-                    ]
-                    await asyncio.gather(*fix_tasks)
-                    print("\n[Orchestrator] Fix loop hoàn thành!")
-                    tm.print_status()
+                if agent_issues:
+                    enabled_issues = {r: v for r, v in agent_issues.items() if _enabled(r)}
+                    if enabled_issues:
+                        total_issues = sum(len(v) for v in enabled_issues.values())
+                        print(f"\n[Orchestrator] Stage 6 — Fix loop "
+                              f"({len(enabled_issues)} agents, {total_issues} high-severity issues)...")
+                        fix_tasks = [
+                            _fix_coding_agent(role, issues, _work_dir_for_role(role, out), dd)
+                            for role, issues in enabled_issues.items()
+                        ]
+                        await asyncio.gather(*fix_tasks)
+                        print("\n[Orchestrator] Fix loop hoàn thành!")
+                        tm.print_status()
+                else:
+                    print("\n[Orchestrator] ✅ Review passed — không có high-severity issues!")
             else:
-                print("\n[Orchestrator] ✅ Review passed — không có high-severity issues!")
+                print("\n[Orchestrator] Stage 6 — Fix loop disabled via pipeline config (skipping).")
+    elif _enabled("Leader Agent"):
+        print("\n[Orchestrator] Stage 5 — Leader Agent disabled via pipeline config (skipping).")
 
     # Cập nhật feature statuses về done nếu chạy từ dashboard
     tm.mark_features_done()

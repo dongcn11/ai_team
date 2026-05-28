@@ -29,7 +29,7 @@ def write_prompt_file(prompt: str, label: str) -> Path:
     return tmp
 
 
-async def run_claude(prompt: str, work_dir: Path) -> str:
+async def run_claude(prompt: str, work_dir: Path, timeout: int | None = None) -> str:
     cfg         = get_config()
     work_dir.mkdir(parents=True, exist_ok=True)
     prompt_file = write_prompt_file(prompt, "claude")
@@ -48,7 +48,7 @@ async def run_claude(prompt: str, work_dir: Path) -> str:
         stderr=asyncio.subprocess.PIPE,
     )
     stdout, stderr = await asyncio.wait_for(
-        proc.communicate(), timeout=cfg.timeout_claude
+        proc.communicate(), timeout=timeout if timeout is not None else cfg.timeout_claude
     )
     prompt_file.unlink(missing_ok=True)
 
@@ -58,7 +58,7 @@ async def run_claude(prompt: str, work_dir: Path) -> str:
         raise RuntimeError(err_text or out_text or f"exit code {proc.returncode}")
 
 
-async def run_opencode(model: str, prompt: str, work_dir: Path) -> str:
+async def run_opencode(model: str, prompt: str, work_dir: Path, timeout: int | None = None) -> str:
     cfg         = get_config()
     work_dir.mkdir(parents=True, exist_ok=True)
     prompt_file = write_prompt_file(prompt, "opencode")
@@ -77,7 +77,7 @@ async def run_opencode(model: str, prompt: str, work_dir: Path) -> str:
         stderr=asyncio.subprocess.PIPE,
     )
     stdout, stderr = await asyncio.wait_for(
-        proc.communicate(), timeout=cfg.timeout_opencode
+        proc.communicate(), timeout=timeout if timeout is not None else cfg.timeout_opencode
     )
     prompt_file.unlink(missing_ok=True)
 
@@ -89,12 +89,12 @@ async def run_opencode(model: str, prompt: str, work_dir: Path) -> str:
     return stdout_text
 
 
-async def run(role: str, prompt: str, work_dir: Path) -> str:
-    """Dispatch đúng runner dựa theo config."""
+async def run(role: str, prompt: str, work_dir: Path, timeout: int | None = None) -> str:
+    """Dispatch đúng runner dựa theo config. timeout override per-stage nếu truyền vào."""
     cfg       = get_config()
     agent_cfg = cfg.agents[role]
 
     if agent_cfg.tool == "claude":
-        return await run_claude(prompt, work_dir)
+        return await run_claude(prompt, work_dir, timeout=timeout)
     else:
-        return await run_opencode(agent_cfg.model, prompt, work_dir)
+        return await run_opencode(agent_cfg.model, prompt, work_dir, timeout=timeout)

@@ -1,8 +1,14 @@
 # AI Team Profiles
 # =================
-# Định nghĩa các team composition cho từng loại dự án.
+# Định nghĩa các team composition + workflow cho từng loại dự án.
 # Dùng trong settings.toml: [project] profile = "fullstack"
 # Hoặc dùng CLI: python main.py --profile backend_only
+#
+# Mỗi profile có 2 field:
+#   agents          — danh sách agent enable cho profile này (bắt buộc)
+#   stages_disabled — danh sách stage bị tắt mặc định (tùy chọn)
+#                     Settings.toml [pipeline.stages] và CLI --enable-stage vẫn override được.
+# Stage hợp lệ: pm, scrum, analyst, coding, leader, fix
 
 profiles:
 
@@ -41,3 +47,22 @@ profiles:
   fs_retry:
     label: "Retry FS agents only"
     agents: [fs1, fs2, leader]
+
+  lean_fullstack:
+    label: "Lean Full-stack (Fast - skip scrum)"
+    agents: [pm, analyst, be1, fe1, leader]
+
+  backend_fast:
+    label: "Backend Only (Code-first - skip scrum & analyst)"
+    agents: [pm, be1, leader]
+
+  poc:
+    label: "POC Mode (Minimal - single agent)"
+    agents: [analyst, be1]
+
+  pm_fullstack_quick:
+    label: "PM + Fullstack Quick (no scrum, no review)"
+    # PM viết user stories, Analyst chia task cho FS, FS1+FS2 code song song.
+    # Bỏ Scrum (project nhỏ) và Leader+Fix (không cần review).
+    agents: [pm, analyst, fs1, fs2]
+    stages_disabled: [scrum, leader, fix]

@@ -1,18 +1,8 @@
 [agents]
 pm_tool = "claude"
 pm_model = ""
-scrum_tool = "claude"
-scrum_model = ""
-analyst_tool = "claude"
-analyst_model = ""
 be1_tool = "claude"
 be1_model = ""
-be2_tool = "claude"
-be2_model = ""
-fe1_tool = "claude"
-fe1_model = ""
-fe2_tool = "claude"
-fe2_model = ""
 leader_tool = "claude"
 leader_model = ""
 
@@ -29,4 +19,4 @@ frontend = "React + TypeScript + Vite + TailwindCSS"
 
 [project]
 name = "Test"
-profile = "fullstack"
+profile = "backend_fast"
