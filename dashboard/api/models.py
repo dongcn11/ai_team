@@ -106,6 +106,7 @@ class ProjectTask(Base):
     status           = Column(String, default="todo")     # todo / in_progress / review / done
     priority         = Column(String, default="medium")   # high / medium / low
     progress         = Column(Integer, default=0)         # 0-100
+    acceptance_criteria = Column(Text, nullable=True)     # acceptance criteria / notes (multi-line)
     due_at           = Column(DateTime, nullable=True)
     completed_at     = Column(DateTime, nullable=True)
     created_at       = Column(DateTime, server_default=func.now())
@@ -116,6 +117,22 @@ class ProjectTask(Base):
     documents = relationship("TaskDocument", back_populates="task", cascade="all, delete-orphan")
     comments  = relationship("TaskComment", back_populates="task", cascade="all, delete-orphan")
     subtasks  = relationship("SubTask",    back_populates="task", cascade="all, delete-orphan")
+    files     = relationship("FeatureFile", back_populates="task", cascade="all, delete-orphan")
+
+
+class FeatureFile(Base):
+    __tablename__ = "feature_files"
+
+    id                = Column(Integer, primary_key=True, index=True)
+    task_id           = Column(Integer, ForeignKey("project_tasks.id"), nullable=False)
+    filename          = Column(String, nullable=False)   # stored name on disk
+    original_filename = Column(String, nullable=False)   # name as uploaded
+    description       = Column(Text, nullable=True)
+    size              = Column(Integer, default=0)
+    content_type      = Column(String, nullable=True)
+    uploaded_at       = Column(DateTime, server_default=func.now())
+
+    task = relationship("ProjectTask", back_populates="files")
 
 
 class TaskDocument(Base):

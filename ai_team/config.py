@@ -26,12 +26,26 @@ AGENT_KEYS = {
     "leader":  "Leader Agent",
 }
 
+# Agents capable of writing backend / frontend code. Fullstack agents count for both.
+BACKEND_CAPABLE_AGENTS  = {"BE Agent 1", "BE Agent 2", "Fullstack Agent 1", "Fullstack Agent 2"}
+FRONTEND_CAPABLE_AGENTS = {"FE Agent 1", "FE Agent 2", "Fullstack Agent 1", "Fullstack Agent 2"}
+
 
 @dataclass
 class AgentCfg:
     tool:  str
     model: str
     label: str
+
+
+@dataclass
+class PipelineStage:
+    """Cấu hình cho một stage trong pipeline."""
+    stage_id: str          # pm, scrum, analyst, coding, leader, fix
+    enabled: bool = True
+    timeout_s: int = 600
+    depends_on: str | None = None  # Stage ID nếu có dependency
+    parallel_agents: list[str] | None = None  # Agents chạy song song (cho coding stage)
 
 
 @dataclass
@@ -45,6 +59,7 @@ class Config:
     timeout_opencode: int
     tech_backend:     str
     tech_frontend:    str
+    pipeline_stages:  dict[str, PipelineStage] = field(default_factory=dict)  # stage_id → config
     slack_enabled:    bool = False
     slack_token:      str  = ""
     slack_channel:    str  = "#ai-team"
@@ -57,12 +72,63 @@ def _load_profiles() -> dict:
         return yaml.safe_load(f).get("profiles", {})
 
 
-def _resolve_enabled(profile_name: str, profiles: dict) -> set[str]:
+def _resolve_profile(profile_name: str, profiles: dict) -> tuple[set[str], set[str]]:
+    """Resolve profile → (enabled_agents, stages_disabled).
+    stages_disabled là default từ profile; settings.toml [pipeline.stages] vẫn override được.
+    """
     if not profile_name or profile_name not in profiles:
-        # Mặc định: tất cả agents
-        return set(AGENT_KEYS.values())
-    keys = profiles[profile_name].get("agents", list(AGENT_KEYS.keys()))
-    return {AGENT_KEYS[k] for k in keys if k in AGENT_KEYS}
+        # Mặc định: tất cả agents, không tắt stage nào
+        return set(AGENT_KEYS.values()), set()
+    profile = profiles[profile_name]
+    keys = profile.get("agents", list(AGENT_KEYS.keys()))
+    enabled_agents = {AGENT_KEYS[k] for k in keys if k in AGENT_KEYS}
+    stages_disabled = set(profile.get("stages_disabled", []))
+    return enabled_agents, stages_disabled
+
+
+def _load_pipeline_config(raw: dict, stages_disabled_by_profile: set[str] | None = None) -> dict[str, PipelineStage]:
+    """Load pipeline stages: bắt đầu từ defaults, áp dụng profile stages_disabled,
+    rồi cuối cùng [pipeline.stages] trong settings.toml override (cụ thể nhất thắng).
+    """
+    pipeline_raw = raw.get("pipeline", {})
+    stages_raw = pipeline_raw.get("stages", {})
+    profile_disabled = stages_disabled_by_profile or set()
+
+    # Default pipeline stages nếu không có config
+    defaults = {
+        "pm": PipelineStage("pm", enabled=True, timeout_s=600),
+        "scrum": PipelineStage("scrum", enabled=True, timeout_s=600),
+        "analyst": PipelineStage("analyst", enabled=True, timeout_s=600),
+        "coding": PipelineStage("coding", enabled=True, timeout_s=1800,
+                               parallel_agents=["be1", "be2", "fe1", "fe2", "fs1", "fs2"]),
+        "leader": PipelineStage("leader", enabled=True, timeout_s=600),
+        "fix": PipelineStage("fix", enabled=True, timeout_s=600, depends_on="leader"),
+    }
+
+    # Áp dụng profile stages_disabled lên defaults trước
+    for sid in profile_disabled:
+        if sid in defaults:
+            defaults[sid].enabled = False
+
+    # Override defaults với config từ settings.toml (đặc thù project > profile)
+    result = {}
+    for stage_id, default_cfg in defaults.items():
+        stage_config = stages_raw.get(stage_id, {})
+
+        enabled = stage_config.get("enabled", default_cfg.enabled)
+        timeout_s = stage_config.get("timeout_s", default_cfg.timeout_s)
+        depends_on = stage_config.get("depends_on", default_cfg.depends_on)
+        parallel_agents = stage_config.get("parallel", default_cfg.parallel_agents)
+
+        result[stage_id] = PipelineStage(
+            stage_id=stage_id,
+            enabled=enabled,
+            timeout_s=timeout_s,
+            depends_on=depends_on,
+            parallel_agents=parallel_agents,
+        )
+
+    return result
 
 
 def _deep_merge(base: dict, override: dict) -> dict:
@@ -76,8 +142,8 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
-def load(config_path: Path | None = None, profile_override: str | None = None) -> Config:
-    path = config_path or DEFAULT_CONFIG
+def load(config_path: Path | str | None = None, profile_override: str | None = None) -> Config:
+    path = Path(config_path) if config_path else DEFAULT_CONFIG
     with open(path, "rb") as f:
         raw = tomllib.load(f)
 
@@ -103,7 +169,7 @@ def load(config_path: Path | None = None, profile_override: str | None = None) -
 
     profiles = _load_profiles()
     profile  = profile_override or raw.get("project", {}).get("profile", "")
-    enabled  = _resolve_enabled(profile, profiles)
+    enabled, profile_stages_disabled = _resolve_profile(profile, profiles)
 
     def make_agent_optional(tool_key: str, model_key: str) -> AgentCfg | None:
         if tool_key not in a:
@@ -143,6 +209,19 @@ def load(config_path: Path | None = None, profile_override: str | None = None) -
     slack_token   = slack_raw.get("bot_token", "")
     slack_enabled = bool(slack_token and not slack_token.startswith("xoxb-your"))
 
+    # Load pipeline configuration (profile defaults → settings.toml override)
+    pipeline_stages = _load_pipeline_config(raw, stages_disabled_by_profile=profile_stages_disabled)
+
+    # Strip tech_stack parts that no enabled agent can actually use. Prevents
+    # PM/Scrum/Analyst from inventing phantom BE/FE roles when the profile
+    # only includes the opposite stack.
+    tech_backend  = raw["tech_stack"]["backend"]
+    tech_frontend = raw["tech_stack"]["frontend"]
+    if not (enabled & BACKEND_CAPABLE_AGENTS):
+        tech_backend = ""
+    if not (enabled & FRONTEND_CAPABLE_AGENTS):
+        tech_frontend = ""
+
     return Config(
         agents=agents,
         enabled_agents=enabled,
@@ -151,8 +230,9 @@ def load(config_path: Path | None = None, profile_override: str | None = None) -
         docs_dir=docs_dir,
         timeout_claude=raw["timeouts"]["claude_code"],
         timeout_opencode=raw["timeouts"]["opencode"],
-        tech_backend=raw["tech_stack"]["backend"],
-        tech_frontend=raw["tech_stack"]["frontend"],
+        tech_backend=tech_backend,
+        tech_frontend=tech_frontend,
+        pipeline_stages=pipeline_stages,
         slack_enabled=slack_enabled,
         slack_token=slack_token,
         slack_channel=slack_raw.get("channel", "#ai-team"),
@@ -160,6 +240,32 @@ def load(config_path: Path | None = None, profile_override: str | None = None) -
 
 
 _config: Config | None = None
+
+
+VALID_STAGE_IDS = {"pm", "scrum", "analyst", "coding", "leader", "fix"}
+
+
+def apply_stage_overrides(
+    cfg: Config,
+    disable: list[str] | None = None,
+    enable: list[str] | None = None,
+) -> Config:
+    """Override pipeline stage enabled flags từ CLI (sau khi load config).
+    Raise ValueError nếu stage_id không hợp lệ.
+    """
+    for stage_id in (disable or []):
+        if stage_id not in VALID_STAGE_IDS:
+            raise ValueError(f"Stage '{stage_id}' không hợp lệ. Hợp lệ: {sorted(VALID_STAGE_IDS)}")
+        if stage_id in cfg.pipeline_stages:
+            cfg.pipeline_stages[stage_id].enabled = False
+
+    for stage_id in (enable or []):
+        if stage_id not in VALID_STAGE_IDS:
+            raise ValueError(f"Stage '{stage_id}' không hợp lệ. Hợp lệ: {sorted(VALID_STAGE_IDS)}")
+        if stage_id in cfg.pipeline_stages:
+            cfg.pipeline_stages[stage_id].enabled = True
+
+    return cfg
 
 
 def init(config_path: Path | None = None, profile: str | None = None) -> Config:

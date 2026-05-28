@@ -1,5 +1,5 @@
-from fastapi import APIRouter, HTTPException, Depends, Query
-from fastapi.responses import StreamingResponse
+from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File, Form
+from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
 from typing import List, Optional
 from sqlalchemy.orm import Session
@@ -8,15 +8,45 @@ import os
 import re
 import shutil
 import tomllib
+import uuid
+import yaml
 import zipfile
 from datetime import datetime
 from pathlib import Path
 
-PROFILE_AGENTS: dict[str, list[str]] = {
-    "fullstack":      ["pm", "scrum", "analyst", "be1", "be2", "fe1", "fe2", "leader"],
-    "dual_fullstack": ["pm", "scrum", "analyst", "fs1", "fs2", "leader"],
-    "backend_only":   ["pm", "scrum", "analyst", "be1", "be2", "leader"],
-}
+
+# ── Profiles loader ──────────────────────────────────────────────────────────
+# Đọc profiles từ profiles.yaml (single source of truth). File được mount vào
+# /profiles.yaml trong docker-compose. Fallback paths cho dev local.
+
+def _profiles_candidates() -> list[Path]:
+    """Build candidate paths for profiles.yaml, defensive against shallow trees."""
+    cands: list[Path] = []
+    env_path = os.getenv("PROFILES_YAML", "")
+    if env_path:
+        cands.append(Path(env_path))
+    cands.append(Path("/profiles.yaml"))  # docker mount point
+    here = Path(__file__).resolve()
+    for p in here.parents:  # walk up safely
+        cands.append(p / "profiles.yaml")
+    return cands
+
+
+def _load_profiles_yaml() -> dict[str, dict]:
+    for cand in _profiles_candidates():
+        if cand and cand.exists():
+            with open(cand, "r", encoding="utf-8") as f:
+                data = yaml.safe_load(f) or {}
+            return data.get("profiles", {}) or {}
+    return {}
+
+
+def _profile_agents() -> dict[str, list[str]]:
+    """profile_name → [agent_key list]. Load fresh mỗi lần để pick up yaml changes."""
+    profiles = _load_profiles_yaml()
+    return {name: cfg.get("agents", []) for name, cfg in profiles.items() if cfg.get("agents")}
+
+
 DEFAULT_MODEL = {
     "claude":   "",
     "opencode": "opencode/qwen3.5-plus",
@@ -24,7 +54,7 @@ DEFAULT_MODEL = {
 
 from system_config import get_system_agents
 from database import get_db
-from models import Project, ProjectTask
+from models import Project, ProjectTask, FeatureFile
 
 CLIENTS_DIR = Path(os.getenv("CLIENTS_DIR", "/clients"))
 OUTPUT_DIR  = Path(os.getenv("OUTPUT_DIR",  "/output"))
@@ -115,12 +145,15 @@ def _resolve_docs_dir(folder: Path) -> Path:
 
 
 def _folder_to_project(folder: Path) -> dict:
-    raw    = _read_toml(folder)
-    agents = get_system_agents(folder / "settings.toml")
-    tech   = raw.get("tech_stack", {})
+    raw     = _read_toml(folder)
+    agents  = get_system_agents(folder / "settings.toml")
+    tech    = raw.get("tech_stack", {})
+    project = raw.get("project", {})
+    name    = project.get("name") or folder.name.replace("_", " ").replace("-", " ").title()
     return {
         "id":          folder.name,
-        "name":        folder.name.replace("_", " ").replace("-", " ").title(),
+        "name":        name,
+        "profile":     project.get("profile", ""),
         "tech_stack":  tech,
         "agents":      agents,
         "agent_count": len(agents),
@@ -129,6 +162,26 @@ def _folder_to_project(folder: Path) -> dict:
 
 
 # ── Project endpoints ─────────────────────────────────────────────────────────
+
+@router.get("/profiles")
+def list_profiles() -> List[dict]:
+    """List tất cả profile từ profiles.yaml để dashboard render dropdown."""
+    profiles = _load_profiles_yaml()
+    result = []
+    for name, cfg in profiles.items():
+        agents = cfg.get("agents", []) or []
+        label = cfg.get("label", name)
+        # Hiển thị: "name — agent1+agent2+..."
+        agents_display = "+".join(k.upper() if k in ("pm",) else k.capitalize() for k in agents)
+        result.append({
+            "name": name,
+            "label": label,
+            "agents": agents,
+            "stages_disabled": cfg.get("stages_disabled", []) or [],
+            "display": f"{name} — {agents_display}" if agents else name,
+        })
+    return result
+
 
 @router.get("/")
 def list_projects() -> List[dict]:
@@ -162,8 +215,9 @@ def create_project(payload: ProjectCreate) -> dict:
     slug = re.sub(r"[^a-z0-9_-]", "_", payload.folder_name.strip().lower())
     if not slug:
         raise HTTPException(status_code=400, detail="Tên project không hợp lệ")
-    if payload.profile not in PROFILE_AGENTS:
-        raise HTTPException(status_code=400, detail=f"Profile không hợp lệ. Chọn: {list(PROFILE_AGENTS)}")
+    profile_agents = _profile_agents()
+    if payload.profile not in profile_agents:
+        raise HTTPException(status_code=400, detail=f"Profile không hợp lệ. Chọn: {list(profile_agents)}")
     if payload.default_tool not in DEFAULT_MODEL:
         raise HTTPException(status_code=400, detail="Tool phải là 'claude' hoặc 'opencode'")
 
@@ -175,7 +229,7 @@ def create_project(payload: ProjectCreate) -> dict:
 
     model = DEFAULT_MODEL[payload.default_tool]
     agents: dict[str, str] = {}
-    for key in PROFILE_AGENTS[payload.profile]:
+    for key in profile_agents[payload.profile]:
         agents[f"{key}_tool"]  = payload.default_tool
         agents[f"{key}_model"] = model
 
@@ -191,6 +245,45 @@ def create_project(payload: ProjectCreate) -> dict:
     }
     _write_toml(folder, raw)
     _write_local_template(folder, slug)
+    return _folder_to_project(folder)
+
+
+class ProjectPatch(BaseModel):
+    name: Optional[str] = None
+    profile: Optional[str] = None
+    backend: Optional[str] = None
+    frontend: Optional[str] = None
+    output_dir: Optional[str] = None
+
+
+@router.patch("/{folder_name}")
+def patch_project(folder_name: str, payload: ProjectPatch) -> dict:
+    """Update mutable fields in settings.toml — folder slug stays immutable."""
+    folder = CLIENTS_DIR / folder_name
+    if not folder.is_dir() or not (folder / "settings.toml").exists():
+        raise HTTPException(status_code=404, detail="Project not found")
+    raw = _read_toml(folder)
+
+    if payload.profile is not None:
+        profile_agents = _profile_agents()
+        if payload.profile and payload.profile not in profile_agents:
+            raise HTTPException(status_code=400,
+                                detail=f"Profile không hợp lệ. Chọn: {list(profile_agents)}")
+        raw.setdefault("project", {})["profile"] = payload.profile
+
+    if payload.name is not None:
+        raw.setdefault("project", {})["name"] = payload.name.strip() or folder.name
+
+    if payload.backend is not None:
+        raw.setdefault("tech_stack", {})["backend"] = payload.backend.strip()
+
+    if payload.frontend is not None:
+        raw.setdefault("tech_stack", {})["frontend"] = payload.frontend.strip()
+
+    if payload.output_dir is not None:
+        raw.setdefault("output", {})["directory"] = payload.output_dir.strip() or f"./clients/{folder_name}/output"
+
+    _write_toml(folder, raw)
     return _folder_to_project(folder)
 
 
@@ -424,6 +517,7 @@ class FeatureCreate(BaseModel):
     name: str
     description: Optional[str] = ""
     priority: str = "medium"
+    acceptance_criteria: Optional[str] = ""
 
 
 class FeatureUpdate(BaseModel):
@@ -431,12 +525,27 @@ class FeatureUpdate(BaseModel):
     description: Optional[str] = None
     status: Optional[str] = None
     priority: Optional[str] = None
+    acceptance_criteria: Optional[str] = None
+
+
+def _file_out(f: FeatureFile) -> dict:
+    return {
+        "id": f.id,
+        "filename": f.filename,
+        "original_filename": f.original_filename,
+        "description": f.description or "",
+        "size": f.size or 0,
+        "content_type": f.content_type or "",
+        "uploaded_at": f.uploaded_at.isoformat() if f.uploaded_at else None,
+    }
 
 
 def _feature_out(t: ProjectTask) -> dict:
     return {
         "id": t.id, "name": t.name, "description": t.description,
         "status": t.status, "priority": t.priority,
+        "acceptance_criteria": t.acceptance_criteria or "",
+        "files": [_file_out(f) for f in (t.files or [])],
         "created_at": t.created_at.isoformat() if t.created_at else None,
     }
 
@@ -459,7 +568,8 @@ def create_feature(folder_name: str, payload: FeatureCreate,
     folder = CLIENTS_DIR / folder_name
     proj   = _get_or_create_db_project(folder_name, db)
     task   = ProjectTask(project_id=proj.id, name=payload.name,
-                         description=payload.description, priority=payload.priority)
+                         description=payload.description, priority=payload.priority,
+                         acceptance_criteria=payload.acceptance_criteria or None)
     db.add(task)
     db.commit()
     db.refresh(task)
@@ -480,6 +590,8 @@ def update_feature(folder_name: str, task_id: int, payload: FeatureUpdate,
     if payload.description is not None: task.description = payload.description
     if payload.status      is not None: task.status      = payload.status
     if payload.priority    is not None: task.priority    = payload.priority
+    if payload.acceptance_criteria is not None:
+        task.acceptance_criteria = payload.acceptance_criteria or None
     db.commit()
     db.refresh(task)
     _sync_features_to_prd(folder, _all_features(proj.id, db))
@@ -494,9 +606,127 @@ def delete_feature(folder_name: str, task_id: int, db: Session = Depends(get_db)
                                            ProjectTask.project_id == proj.id).first()
     if not task:
         raise HTTPException(status_code=404, detail="Feature not found")
+    feature_dir = _feature_files_dir(folder, task_id)
+    if feature_dir.exists():
+        shutil.rmtree(feature_dir, ignore_errors=True)
     db.delete(task)
     db.commit()
     _sync_features_to_prd(folder, _all_features(proj.id, db))
+    return {"ok": True}
+
+
+# ── Feature file attachments ──────────────────────────────────────────────────
+
+_MAX_FILE_BYTES = 20 * 1024 * 1024  # 20 MB per file
+
+
+def _feature_files_dir(folder: Path, task_id: int) -> Path:
+    return folder / "feature_files" / str(task_id)
+
+
+def _safe_filename(name: str) -> str:
+    """Strip path components and keep a reasonable, filesystem-safe name."""
+    base = Path(name).name  # drop any directory part
+    base = re.sub(r"[^A-Za-z0-9._-]+", "_", base).strip("._-") or "file"
+    return base[:120]
+
+
+@router.post("/{folder_name}/features/{task_id}/files")
+async def upload_feature_file(
+    folder_name: str,
+    task_id: int,
+    file: UploadFile = File(...),
+    description: str = Form(""),
+    db: Session = Depends(get_db),
+) -> dict:
+    folder = CLIENTS_DIR / folder_name
+    proj   = _get_or_create_db_project(folder_name, db)
+    task   = db.query(ProjectTask).filter(ProjectTask.id == task_id,
+                                           ProjectTask.project_id == proj.id).first()
+    if not task:
+        raise HTTPException(status_code=404, detail="Feature not found")
+
+    feature_dir = _feature_files_dir(folder, task_id)
+    feature_dir.mkdir(parents=True, exist_ok=True)
+
+    safe_name   = _safe_filename(file.filename or "file")
+    stored_name = f"{uuid.uuid4().hex[:8]}_{safe_name}"
+    target      = feature_dir / stored_name
+
+    total = 0
+    with open(target, "wb") as out:
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > _MAX_FILE_BYTES:
+                out.close()
+                target.unlink(missing_ok=True)
+                raise HTTPException(status_code=413, detail=f"File quá lớn (giới hạn {_MAX_FILE_BYTES // (1024*1024)} MB)")
+            out.write(chunk)
+
+    row = FeatureFile(
+        task_id=task_id,
+        filename=stored_name,
+        original_filename=file.filename or safe_name,
+        description=description.strip() or None,
+        size=total,
+        content_type=file.content_type or "",
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return _file_out(row)
+
+
+@router.get("/{folder_name}/features/{task_id}/files/{file_id}/download")
+def download_feature_file(folder_name: str, task_id: int, file_id: int,
+                          db: Session = Depends(get_db)):
+    folder = CLIENTS_DIR / folder_name
+    row = db.query(FeatureFile).filter(FeatureFile.id == file_id,
+                                       FeatureFile.task_id == task_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="File not found")
+    path = _feature_files_dir(folder, task_id) / row.filename
+    if not path.exists():
+        raise HTTPException(status_code=404, detail="File missing on disk")
+    return FileResponse(path, filename=row.original_filename,
+                        media_type=row.content_type or "application/octet-stream")
+
+
+class FeatureFileUpdate(BaseModel):
+    description: Optional[str] = None
+
+
+@router.put("/{folder_name}/features/{task_id}/files/{file_id}")
+def update_feature_file(folder_name: str, task_id: int, file_id: int,
+                        payload: FeatureFileUpdate,
+                        db: Session = Depends(get_db)) -> dict:
+    row = db.query(FeatureFile).filter(FeatureFile.id == file_id,
+                                       FeatureFile.task_id == task_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="File not found")
+    if payload.description is not None:
+        row.description = payload.description.strip() or None
+    db.commit()
+    db.refresh(row)
+    return _file_out(row)
+
+
+@router.delete("/{folder_name}/features/{task_id}/files/{file_id}")
+def delete_feature_file(folder_name: str, task_id: int, file_id: int,
+                        db: Session = Depends(get_db)) -> dict:
+    folder = CLIENTS_DIR / folder_name
+    row = db.query(FeatureFile).filter(FeatureFile.id == file_id,
+                                       FeatureFile.task_id == task_id).first()
+    if not row:
+        raise HTTPException(status_code=404, detail="File not found")
+    path = _feature_files_dir(folder, task_id) / row.filename
+    if path.exists():
+        path.unlink(missing_ok=True)
+    db.delete(row)
+    db.commit()
     return {"ok": True}
 
 
