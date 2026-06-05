@@ -88,6 +88,32 @@ class RunSummary(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class RunJobCreate(BaseModel):
+    client_folder: str
+    profile: Optional[str] = None
+
+
+class RunJobComplete(BaseModel):
+    status: str                    # done / failed
+    error: Optional[str] = None
+
+
+class RunJobOut(BaseModel):
+    id: int
+    client_folder: str
+    project_id: Optional[int]
+    profile: Optional[str]
+    feature_ids: Optional[str]
+    status: str
+    run_id: Optional[int]
+    error: Optional[str]
+    created_at: datetime
+    started_at: Optional[datetime]
+    finished_at: Optional[datetime]
+
+    model_config = {"from_attributes": True}
+
+
 class SettingOut(BaseModel):
     key: str
     value: str

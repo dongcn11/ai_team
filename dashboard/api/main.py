@@ -3,7 +3,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from database import engine, Base
-from routers import runs, tasks, issues, settings, projects, agents, project_tasks, system
+from routers import runs, tasks, issues, settings, projects, agents, project_tasks, system, run_jobs
 
 Base.metadata.create_all(bind=engine)
 
@@ -48,6 +48,7 @@ app.include_router(projects.router,  prefix="/api/projects", tags=["projects"])
 app.include_router(agents.router,          prefix="/api/agents",         tags=["agents"])
 app.include_router(project_tasks.router,  prefix="/api/project-tasks", tags=["project-tasks"])
 app.include_router(system.router,          prefix="/api/system",       tags=["system"])
+app.include_router(run_jobs.router,        prefix="/api/run-jobs",     tags=["run-jobs"])
 
 
 @app.get("/health")
