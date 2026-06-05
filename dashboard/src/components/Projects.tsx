@@ -23,6 +23,15 @@ export default function ProjectsPage() {
   const [projRuns,    setProjRuns]    = useState<RunSummary[]>([]);
   const [activeTab,   setActiveTab]   = useState<"features" | "agents" | "prd" | "runs" | "docs">("features");
 
+  // Run queue (▶ Run button → POST /api/run-jobs; worker.py chạy tuần tự)
+  type RunJob = {
+    id: number; client_folder: string; status: string;
+    error: string | null; created_at: string;
+    started_at: string | null; finished_at: string | null;
+  };
+  const [queue,      setQueue]      = useState<RunJob[]>([]);
+  const [triggering, setTriggering] = useState(false);
+
   // Delete project
   const [showDeleteProject,  setShowDeleteProject]  = useState(false);
   const [deleteProjecting,   setDeleteProjecting]   = useState(false);
@@ -127,13 +136,49 @@ export default function ProjectsPage() {
     if (selected) loadSettingsAgents(selected.id);
   }, [selected, loadSettingsAgents]);
 
+  const loadRunsAndQueue = useCallback(async (id: string) => {
+    const [runsRes, queueRes] = await Promise.all([
+      fetch(`/api/runs?client=${id}&limit=10`),
+      fetch(`/api/run-jobs?client_folder=${id}&limit=10`),
+    ]);
+    if (runsRes.ok)  setProjRuns(await runsRes.json());
+    if (queueRes.ok) setQueue(await queueRes.json());
+  }, []);
+
   useEffect(() => {
     if (!selected) return;
-    (async () => {
-      const res = await fetch(`/api/runs?client=${selected.id}&limit=10`);
-      if (res.ok) setProjRuns(await res.json());
-    })();
-  }, [selected]);
+    const id = selected.id;
+    loadRunsAndQueue(id);
+    // Poll trong khi còn job đang chạy/chờ để cập nhật trạng thái
+    const t = setInterval(() => loadRunsAndQueue(id), 4000);
+    return () => clearInterval(t);
+  }, [selected, loadRunsAndQueue]);
+
+  const triggerRun = useCallback(async () => {
+    if (!selected) return;
+    setTriggering(true);
+    try {
+      const res = await fetch(`/api/run-jobs`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ client_folder: selected.id }),
+      });
+      if (res.ok) {
+        await loadRunsAndQueue(selected.id);
+      } else {
+        const err = await res.json().catch(() => ({}));
+        alert(`Không xếp được hàng đợi: ${err.detail || res.status}`);
+      }
+    } finally {
+      setTriggering(false);
+    }
+  }, [selected, loadRunsAndQueue]);
+
+  const cancelJob = useCallback(async (jobId: number) => {
+    if (!selected) return;
+    const res = await fetch(`/api/run-jobs/${jobId}/cancel`, { method: "POST" });
+    if (res.ok) await loadRunsAndQueue(selected.id);
+  }, [selected, loadRunsAndQueue]);
 
   const handleAddAgent = async () => {
     if (!selected) return;
@@ -611,7 +656,25 @@ export default function ProjectsPage() {
                 )}
               </div>
             </div>
-            <div style={{ display: "flex", gap: 8 }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              {(() => {
+                const active = queue.filter(j => j.status === "queued" || j.status === "running");
+                const running = active.some(j => j.status === "running");
+                return (
+                  <>
+                    {active.length > 0 && (
+                      <span style={{ fontSize: 11, color: running ? "#22c55e" : "#eab308" }}>
+                        {running ? "🔄 đang chạy" : `⏳ chờ (${active.length})`}
+                      </span>
+                    )}
+                    <button className="btn-primary" style={{ fontSize: 13, padding: "6px 16px" }}
+                      disabled={triggering} onClick={triggerRun}
+                      title="Xếp project vào hàng đợi; worker.py chạy pipeline tuần tự">
+                      {triggering ? "Đang xếp..." : "▶ Run"}
+                    </button>
+                  </>
+                );
+              })()}
               <button className="btn-danger" style={{ fontSize: 12, padding: "4px 10px" }}
                 onClick={() => { setShowDeleteProject(true); setDeleteStep("confirm"); }}>
                 🗑 Delete Project
@@ -1010,12 +1073,27 @@ export default function ProjectsPage() {
             <div style={{ marginTop: 16 }}>
               <div className="task-manager-header">
                 <h4>Orchestrator Runs ({projRuns.length})</h4>
-                <span style={{ fontSize: 11, color: "#4b5563" }}>
-                  <code style={{ background: "#1e293b", padding: "2px 6px", borderRadius: 4, fontSize: 11 }}>
-                    python main.py --config clients/{selected.id}/settings.toml --prd clients/{selected.id}/prd.md
-                  </code>
-                </span>
+                <span style={{ fontSize: 11, color: "#6b7280" }}>Dùng nút ▶ Run ở góc trên để chạy</span>
               </div>
+              {queue.length > 0 && (
+                <div className="history-list" style={{ marginBottom: 12 }}>
+                  {queue.map(j => (
+                    <div key={`job-${j.id}`} className="history-row">
+                      <span className="history-id">job#{j.id}</span>
+                      <span className="history-meta" style={{ flex: 1 }}>
+                        {j.error ? <span style={{ color: "#f87171" }} title={j.error}>{j.error.slice(0, 60)}</span> : "queue"}
+                      </span>
+                      <span className={`project-status-badge status-${j.status === "running" ? "active" : j.status === "done" ? "completed" : j.status === "failed" ? "archived" : "paused"}`}>
+                        {j.status}
+                      </span>
+                      {j.status === "queued" && (
+                        <button className="btn-muted" style={{ fontSize: 11, padding: "2px 8px", marginLeft: 8 }}
+                          onClick={() => cancelJob(j.id)}>Huỷ</button>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
               {projRuns.length === 0
                 ? <p style={{ color: "#6b7280", fontSize: 12 }}>No runs yet.</p>
                 : (

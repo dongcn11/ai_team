@@ -27,6 +27,25 @@ class Run(Base):
     issues = relationship("Issue", back_populates="run", cascade="all, delete-orphan")
 
 
+class RunJob(Base):
+    """Hàng đợi trigger pipeline từ Dashboard. worker.py (host) poll bảng này,
+    chạy tuần tự từng job qua `python main.py`. KHÔNG trùng với `runs` —
+    `runs` là bản ghi thực thi do orchestrator tự tạo khi nó khởi động."""
+    __tablename__ = "run_jobs"
+
+    id            = Column(Integer, primary_key=True, index=True)
+    client_folder = Column(String, nullable=False)   # slug → clients/{slug}
+    project_id    = Column(Integer, nullable=True)    # Project.id (để wire FEATURE_IDS)
+    profile       = Column(String, nullable=True)     # override profile (optional)
+    feature_ids   = Column(Text, nullable=True)       # csv ProjectTask.id sẽ mark done
+    status        = Column(String, default="queued")  # queued/running/done/failed/canceled
+    run_id        = Column(Integer, nullable=True)    # link sang runs.id (best-effort)
+    error         = Column(Text, nullable=True)
+    created_at    = Column(DateTime, server_default=func.now())
+    started_at    = Column(DateTime, nullable=True)
+    finished_at   = Column(DateTime, nullable=True)
+
+
 class Task(Base):
     __tablename__ = "tasks"
 
