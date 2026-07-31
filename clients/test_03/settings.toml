@@ -1,0 +1,24 @@
+[agents]
+pm_tool = "opencode"
+pm_model = "opencode/qwen3.5-plus"
+analyst_tool = "opencode"
+analyst_model = "opencode/qwen3.5-plus"
+fs1_tool = "opencode"
+fs1_model = "opencode/qwen3.6-plus"
+fs2_tool = "opencode"
+fs2_model = "opencode/minimax-m2.7"
+
+[output]
+directory = "./clients/test_03/output"
+
+[timeouts]
+claude_code = 600
+opencode = 600
+
+[tech_stack]
+backend = "Python FastAPI + SQLModel + SQLite"
+frontend = "html"
+
+[project]
+name = "Test 03"
+profile = "pm_fullstack_quick"

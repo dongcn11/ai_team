@@ -1,0 +1,32 @@
+[agents]
+pm_tool = "opencode"
+pm_model = "opencode/qwen3.5-plus"
+scrum_tool = "opencode"
+scrum_model = "opencode/qwen3.5-plus"
+analyst_tool = "opencode"
+analyst_model = "opencode/qwen3.5-plus"
+be1_tool = "opencode"
+be1_model = "opencode/qwen3.6-plus"
+be2_tool = "opencode"
+be2_model = "opencode/minimax-m2.7"
+fe1_tool = "opencode"
+fe1_model = "opencode/qwen3.5-plus"
+fe2_tool = "opencode"
+fe2_model = "opencode/qwen3.5-plus"
+leader_tool = "opencode"
+leader_model = "opencode/qwen3.6-plus"
+
+[output]
+directory = "./clients/booking/output"
+
+[timeouts]
+claude_code = 600
+opencode = 600
+
+[tech_stack]
+backend = "Laravel , Mysql , minio,docker"
+frontend = "React + TypeScript + Vite + TailwindCSS"
+
+[project]
+name = "Booking"
+profile = "fullstack"
