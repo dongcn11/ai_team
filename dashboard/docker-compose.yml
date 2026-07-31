@@ -36,6 +36,10 @@ services:
       - ../config:/config:ro
       - ../profiles.yaml:/profiles.yaml:ro
       - ../output:/output:ro
+      # Validator workflow (ai_team.workflow.graph) — thuần stdlib, không thêm dep.
+      # Thiếu mount này thì mọi endpoint ghi workflow trả 503 thay vì nhận graph
+      # chưa kiểm: xem routers/workflows.py::_graph_mod
+      - ../ai_team:/app/ai_team:ro
     depends_on:
       db:
         condition: service_healthy

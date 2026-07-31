@@ -664,8 +664,21 @@ export default function ProjectsPage() {
               {(() => {
                 const active = queue.filter(j => j.status === "queued" || j.status === "running");
                 const running = active.some(j => j.status === "running");
+                const blocked = settingsAgents.filter(a => a.tool === "claude");
                 return (
                   <>
+                    {blocked.length > 0 ? (
+                      <span style={{ fontSize: 11, color: "#ef4444", fontWeight: 600 }}
+                        title={`Pipeline se fail: ${blocked.map(a => a.key).join(", ")} dang dat tool="claude". `
+                             + "Automation khong duoc dung subscription Claude — doi sang opencode trong tab Agents."}>
+                        ⛔ {blocked.length} agent dùng Claude — sẽ fail
+                      </span>
+                    ) : (
+                      <span style={{ fontSize: 11, color: "#4b5563" }}
+                        title="Làn A — automation: pipeline chỉ chạy OpenCode. Claude Code là làn B, bạn gõ tay trong terminal, không qua dashboard.">
+                        ⚙ Làn A · OpenCode
+                      </span>
+                    )}
                     {active.length > 0 && (
                       <span style={{ fontSize: 11, color: running ? "#22c55e" : "#eab308" }}>
                         {running ? "🔄 đang chạy" : `⏳ chờ (${active.length})`}
@@ -963,6 +976,10 @@ export default function ProjectsPage() {
                       clients/{selected.id}/settings.toml
                     </code>
                   </span>
+                  <span style={{ fontSize: 11, color: "#4b5563" }}
+                    title="Làn B — Claude Code — không có mặt trong dashboard: bạn gõ `claude` tay trong terminal, ngoài pipeline.">
+                    Làn A · runtime OpenCode
+                  </span>
                   {availableKeys.length > 0 && (
                     <button className="btn-primary" style={{ fontSize: 12, padding: "4px 10px" }}
                       onClick={() => { setAddKey(availableKeys[0]); setShowAddAgent(v => !v); }}>
@@ -1018,7 +1035,15 @@ export default function ProjectsPage() {
                       <div key={a.key} className="agent-chip" style={{ position: "relative", paddingRight: 28 }}>
                         <span>{a.name}</span>
                         <span className="agent-chip-role">{a.key}</span>
-                        <span style={{ fontSize: 10, color: "#6b7280" }}>{a.tool} · {a.model}</span>
+                        {a.tool === "claude" ? (
+                          <span style={{ fontSize: 10, color: "#ef4444", fontWeight: 600 }}
+                            title={'tool="claude" bị chặn: automation không được dùng subscription Claude. '
+                                 + "Sửa settings.toml sang opencode, hoặc xoá agent rồi thêm lại."}>
+                            ⛔ claude — bị chặn
+                          </span>
+                        ) : (
+                          <span style={{ fontSize: 10, color: "#6b7280" }}>{a.tool} · {a.model}</span>
+                        )}
                         <button onClick={() => confirmRemoveAgent(a.key)}
                           style={{ position: "absolute", right: 6, top: "50%", transform: "translateY(-50%)", background: "none", border: "none", color: "#ef4444", cursor: "pointer", fontSize: 14, lineHeight: 1 }}
                           title="Remove">✕</button>

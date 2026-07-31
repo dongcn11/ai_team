@@ -100,6 +100,87 @@ export interface AgentDetail {
   projects: ProjectSummary[];
 }
 
+// ── Workflows ──
+
+export type NodeStatus  = "pending" | "running" | "done" | "failed" | "waiting" | "skipped";
+export type WfRunStatus = "queued" | "running" | "waiting" | "done" | "failed" | "canceled";
+
+export interface WfNode {
+  id: string;
+  type: string;              // slack_listener | cron | webhook | manual_trigger | task | manual_gate | action
+  label?: string;
+  runtime?: string;          // code | opencode | claude  (chỉ với type="task")
+  model?: string;
+  prompt?: string;
+  handler?: string;
+  outward?: boolean;
+  timeout_s?: number;
+}
+
+export interface WfEdge {
+  from: string;
+  to: string;
+  label?: string;
+}
+
+export interface WfGraph {
+  name?: string;
+  nodes: WfNode[];
+  edges: WfEdge[];
+}
+
+/** Kết quả validate. `bad_nodes` là node cần tô đỏ trên canvas. */
+export interface WfValidation {
+  ok: boolean;
+  errors: string[];
+  warnings: string[];
+  bad_nodes: string[];
+}
+
+export interface WorkflowSummary {
+  id: number;
+  name: string;
+  description: string | null;
+  enabled: boolean;
+  node_count: number;
+  claude_nodes: string[];    // đều đã có manual_gate chắn trước, nếu không thì không lưu được
+  created_at: string;
+}
+
+export interface WorkflowDetail {
+  id: number;
+  name: string;
+  description: string | null;
+  graph: WfGraph;
+  enabled: boolean;
+  created_at: string;
+  updated_at: string | null;
+}
+
+export interface WfApproval {
+  node_id: string;
+  approved_by: string | null;
+  approved_at: string | null;
+  note: string | null;
+}
+
+export interface WorkflowRun {
+  id: number;
+  workflow_id: number;
+  trigger_type: string;
+  status: WfRunStatus;
+  payload: Record<string, unknown>;
+  state: Record<string, NodeStatus>;
+  outputs: Record<string, string>;
+  waiting_on: string[];
+  approvals: WfApproval[];
+  log: string | null;
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
 // ── Project Tasks ──
 
 export type TaskPriority = "high" | "medium" | "low";

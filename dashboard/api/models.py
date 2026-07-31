@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Table, Float
+from sqlalchemy import Boolean, Column, Integer, String, DateTime, ForeignKey, Text, Table, Float
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from database import Base
@@ -44,6 +44,66 @@ class RunJob(Base):
     created_at    = Column(DateTime, server_default=func.now())
     started_at    = Column(DateTime, nullable=True)
     finished_at   = Column(DateTime, nullable=True)
+
+
+class Workflow(Base):
+    """Workflow do user tự vẽ. `graph_json` là định nghĩa node/edge — chỉ được
+    lưu khi `ai_team.workflow.graph.validate()` pass, nên mọi row trong bảng này
+    đã đảm bảo không có node Claude nào bị auto-trigger kích trực tiếp."""
+    __tablename__ = "workflows"
+
+    id          = Column(Integer, primary_key=True, index=True)
+    name        = Column(String, nullable=False, unique=True)
+    description = Column(Text, nullable=True)
+    graph_json  = Column(Text, nullable=False)
+    enabled     = Column(Boolean, default=True)
+    created_at  = Column(DateTime, server_default=func.now())
+    updated_at  = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    runs = relationship("WorkflowRun", back_populates="workflow",
+                        cascade="all, delete-orphan")
+
+
+class WorkflowRun(Base):
+    """Một lần chạy. `state_json` = {node_id: status} do executor cập nhật.
+    Executor trên host claim run này (tuần tự, 1 run/lần), chạy tới khi gặp gate
+    chưa duyệt rồi trả state về — không giữ process chờ."""
+    __tablename__ = "workflow_runs"
+
+    id           = Column(Integer, primary_key=True, index=True)
+    workflow_id  = Column(Integer, ForeignKey("workflows.id"), nullable=False)
+    trigger_type = Column(String, nullable=False, default="manual_trigger")
+    status       = Column(String, default="queued")   # queued/running/waiting/done/failed/canceled
+    payload_json = Column(Text, nullable=True)        # dữ liệu trigger đưa vào
+    state_json   = Column(Text, nullable=True)        # {node_id: status}
+    outputs_json = Column(Text, nullable=True)        # {node_id: output}
+    log          = Column(Text, nullable=True)
+    error        = Column(Text, nullable=True)
+    created_at   = Column(DateTime, server_default=func.now())
+    started_at   = Column(DateTime, nullable=True)
+    finished_at  = Column(DateTime, nullable=True)
+
+    workflow  = relationship("Workflow", back_populates="runs")
+    approvals = relationship("WorkflowApproval", back_populates="run",
+                             cascade="all, delete-orphan")
+
+
+class WorkflowApproval(Base):
+    """Bằng chứng có người bấm duyệt tại một `manual_gate`.
+
+    Đây là artifact quan trọng nhất của cả hệ: node `runtime="claude"` chỉ được
+    chạy khi tồn tại approval upstream và `approved_at` còn tươi. Xoá/sửa bảng
+    này = node Claude bị chặn, không phải được thả."""
+    __tablename__ = "workflow_approvals"
+
+    id          = Column(Integer, primary_key=True, index=True)
+    run_id      = Column(Integer, ForeignKey("workflow_runs.id"), nullable=False)
+    node_id     = Column(String, nullable=False)
+    approved_by = Column(String, nullable=True)
+    note        = Column(Text, nullable=True)
+    approved_at = Column(DateTime, server_default=func.now())
+
+    run = relationship("WorkflowRun", back_populates="approvals")
 
 
 class Task(Base):

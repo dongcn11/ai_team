@@ -114,6 +114,106 @@ class RunJobOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+# ── Workflow ──
+
+class WorkflowGraphIn(BaseModel):
+    """Graph thô. Validate bằng ai_team.workflow.graph.validate() trước khi lưu."""
+    name: Optional[str] = None
+    nodes: List[dict] = []
+    edges: List[dict] = []
+
+
+class WorkflowValidateOut(BaseModel):
+    ok: bool
+    errors: List[str] = []
+    warnings: List[str] = []
+    bad_nodes: List[str] = []        # canvas tô đỏ đúng node này
+
+
+class WorkflowCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    graph: WorkflowGraphIn
+    enabled: bool = True
+
+
+class WorkflowUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    graph: Optional[WorkflowGraphIn] = None
+    enabled: Optional[bool] = None
+
+
+class WorkflowOut(BaseModel):
+    id: int
+    name: str
+    description: Optional[str]
+    graph: dict
+    enabled: bool
+    created_at: datetime
+    updated_at: Optional[datetime]
+
+
+class WorkflowSummary(BaseModel):
+    id: int
+    name: str
+    description: Optional[str]
+    enabled: bool
+    node_count: int
+    claude_nodes: List[str] = []     # node dùng Claude (đều đã có gate chắn trước)
+    created_at: datetime
+
+
+class WorkflowRunStart(BaseModel):
+    trigger_type: str = "manual_trigger"
+    payload: dict = {}
+
+
+class WorkflowRunOut(BaseModel):
+    id: int
+    workflow_id: int
+    trigger_type: str
+    status: str
+    payload: dict = {}
+    state: dict = {}
+    outputs: dict = {}
+    waiting_on: List[str] = []
+    approvals: List[dict] = []
+    log: Optional[str] = None
+    error: Optional[str] = None
+    created_at: datetime
+    started_at: Optional[datetime]
+    finished_at: Optional[datetime]
+
+
+class WorkflowClaimOut(BaseModel):
+    """Executor trên host nhận đủ thứ cần để chạy tiếp, không phải query thêm."""
+    run_id: int
+    workflow_id: int
+    workflow_name: str
+    trigger_type: str
+    graph: dict
+    state: dict = {}
+    payload: dict = {}
+    # gate node_id → epoch seconds; executor dùng để kiểm tra cú bấm còn tươi
+    approvals: dict = {}
+    started_at: Optional[datetime] = None
+
+
+class WorkflowRunComplete(BaseModel):
+    status: str                      # waiting / done / failed
+    state: dict = {}
+    outputs: dict = {}
+    log: Optional[str] = None
+    error: Optional[str] = None
+
+
+class WorkflowApprove(BaseModel):
+    node_id: str
+    approved_by: Optional[str] = None
+    note: Optional[str] = None
+
+
 class SettingOut(BaseModel):
     key: str
     value: str
