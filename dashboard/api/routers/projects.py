@@ -47,10 +47,16 @@ def _profile_agents() -> dict[str, list[str]]:
     return {name: cfg.get("agents", []) for name, cfg in profiles.items() if cfg.get("agents")}
 
 
+# Chỉ "opencode". Claude Code bị chặn trong pipeline tự động — subscription cá
+# nhân không được dùng cho automation chạy nền. Xem ai_team/runner.py.
 DEFAULT_MODEL = {
-    "claude":   "",
     "opencode": "opencode/qwen3.5-plus",
 }
+BLOCKED_TOOLS = {"claude"}
+CLAUDE_BLOCKED_DETAIL = (
+    "Tool 'claude' bị chặn: pipeline tự động không được dùng subscription Claude "
+    "(rủi ro khoá account). Dùng 'opencode'."
+)
 
 from system_config import get_system_agents
 from database import get_db
@@ -118,7 +124,7 @@ def _write_local_template(folder: Path, slug: str):
         '# channel = "#ai-team"\n'
         "\n"
         "# [agents]\n"
-        '# pm_model = "claude-opus-4-7"\n'
+        '# pm_model = "opencode/qwen3.6-plus"\n'
     )
     target.write_text(template, encoding="utf-8")
 
@@ -205,7 +211,7 @@ def get_project(folder_name: str) -> dict:
 class ProjectCreate(BaseModel):
     folder_name: str
     profile: str = "fullstack"
-    default_tool: str = "claude"
+    default_tool: str = "opencode"
     backend: str = ""
     frontend: str = ""
 
@@ -218,8 +224,10 @@ def create_project(payload: ProjectCreate) -> dict:
     profile_agents = _profile_agents()
     if payload.profile not in profile_agents:
         raise HTTPException(status_code=400, detail=f"Profile không hợp lệ. Chọn: {list(profile_agents)}")
+    if payload.default_tool in BLOCKED_TOOLS:
+        raise HTTPException(status_code=400, detail=CLAUDE_BLOCKED_DETAIL)
     if payload.default_tool not in DEFAULT_MODEL:
-        raise HTTPException(status_code=400, detail="Tool phải là 'claude' hoặc 'opencode'")
+        raise HTTPException(status_code=400, detail=f"Tool phải là một trong: {sorted(DEFAULT_MODEL)}")
 
     folder = CLIENTS_DIR / slug
     if folder.exists():
@@ -388,6 +396,8 @@ class AgentFsPayload(BaseModel):
 def add_settings_agent(folder_name: str, payload: AgentFsPayload) -> List[dict]:
     if payload.key not in VALID_AGENT_KEYS:
         raise HTTPException(status_code=400, detail=f"Invalid key. Valid: {VALID_AGENT_KEYS}")
+    if payload.tool in BLOCKED_TOOLS:
+        raise HTTPException(status_code=400, detail=CLAUDE_BLOCKED_DETAIL)
     folder = CLIENTS_DIR / folder_name
     if not folder.exists():
         raise HTTPException(status_code=404, detail="Client folder not found")

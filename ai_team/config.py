@@ -142,6 +142,34 @@ def _deep_merge(base: dict, override: dict) -> dict:
     return result
 
 
+def _reject_claude_agents(agents: dict[str, AgentCfg], enabled: set[str], path: Path) -> None:
+    """Chặn `tool = "claude"` ngay lúc load config, trước khi pipeline chạy.
+
+    Pipeline này là automation không người giám sát — dùng subscription Claude cho
+    nó sẽ bị khoá account. Xem docstring `ai_team/runner.py`. Agent enabled dùng
+    claude → dừng hẳn; agent đã tắt → chỉ cảnh báo (mìn chờ, nên dọn).
+    """
+    offenders = sorted(r for r, a in agents.items() if a.tool == "claude")
+    if not offenders:
+        return
+
+    blocking = [r for r in offenders if r in enabled]
+    dormant  = [r for r in offenders if r not in enabled]
+
+    if dormant:
+        print(f"[config] ⚠️  {', '.join(dormant)} đang set tool=\"claude\" (hiện tắt) — "
+              f"đổi sang \"opencode\" trong {path} trước khi bật lại.")
+
+    if blocking:
+        keys = ", ".join(f"{r} → <key>_tool = \"opencode\"" for r in blocking)
+        raise ValueError(
+            f"Không chạy được: {', '.join(blocking)} đang dùng Claude Code.\n"
+            f"  Pipeline tự động không được dùng subscription Claude (khoá account).\n"
+            f"  Sửa trong {path}: {keys}\n"
+            f"  Cần Claude thì mở terminal gõ `claude` thủ công, đừng chạy qua worker."
+        )
+
+
 def load(config_path: Path | str | None = None, profile_override: str | None = None) -> Config:
     path = Path(config_path) if config_path else DEFAULT_CONFIG
     with open(path, "rb") as f:
@@ -192,6 +220,8 @@ def load(config_path: Path | str | None = None, profile_override: str | None = N
         agent = make_agent_optional(f"{key}_tool", f"{key}_model")
         if agent:
             agents[name] = agent
+
+    _reject_claude_agents(agents, enabled, path)
 
     def _resolve_dir(raw_str: str) -> str:
         p = Path(raw_str)
