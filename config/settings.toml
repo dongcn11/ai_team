@@ -4,17 +4,22 @@
 # Không cần sửa code trong ai_team/
 
 [agents]
-# Tool cho từng agent: "claude" hoặc "opencode"
+# Tool cho từng agent: chỉ "opencode".
+#
+# "claude" bị chặn cứng — pipeline này chạy nền không người giám sát, dùng
+# subscription Claude cho nó sẽ bị khoá account. Chi tiết: ai_team/runner.py.
+# Cần Claude Code thì mở terminal gõ `claude` thủ công, ngoài pipeline.
+#
 # Model format: provider/model-name (xem: opencode models)
 
-pm_tool     = "claude"
-pm_model    = ""                              # claude dùng account đăng nhập
+pm_tool     = "opencode"
+pm_model    = "opencode/qwen3.5-plus"
 
-scrum_tool  = "claude"
-scrum_model = ""
+scrum_tool  = "opencode"
+scrum_model = "opencode/qwen3.5-plus"
 
-analyst_tool  = "claude"
-analyst_model = ""
+analyst_tool  = "opencode"
+analyst_model = "opencode/qwen3.5-plus"
 
 be1_tool  = "opencode"
 be1_model = "opencode/qwen3.6-plus"     # Go plan: 3,300 credits
@@ -28,8 +33,8 @@ fe1_model = "opencode/qwen3.5-plus"     # Go plan: 10,200 credits
 fe2_tool  = "opencode"
 fe2_model = "opencode/qwen3.5-plus"     # Go plan: 10,200 credits
 
-leader_tool  = "claude"
-leader_model = ""                        # claude dùng account đăng nhập
+leader_tool  = "opencode"
+leader_model = "opencode/qwen3.6-plus"   # review code — dùng model mạnh hơn
 
 [slack]
 # Điền token sau khi tạo Slack App

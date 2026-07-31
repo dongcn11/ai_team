@@ -1,7 +1,23 @@
 """
 Runner
 ======
-Chạy Claude Code CLI và OpenCode CLI qua subprocess.
+Chạy OpenCode CLI qua subprocess.
+
+CHÍNH SÁCH — pipeline tự động KHÔNG dùng Claude Code
+----------------------------------------------------
+Claude Code chạy bằng subscription cá nhân. Subscription dành cho một người
+thật, ngồi máy mình, thao tác ở tốc độ người. Pipeline này thì ngược lại:
+worker chạy nền, hàng đợi nhiều project, agent song song, không ai giám sát.
+Dùng subscription theo kiểu đó = truy cập tự động + cho người khác dùng chung
+account → khoá account.
+
+Vì vậy hệ thống tách làm 2 làn:
+
+  Làn A — automation (worker.py, dashboard, clients/): chỉ OpenCode / model local.
+  Làn B — Claude Code: bạn tự mở terminal gõ tay, không qua pipeline này.
+
+`tool = "claude"` bị chặn cứng ở cả config load lẫn runner. Đừng gỡ chốt này
+để "chạy nhanh một lần" — đó chính xác là cách account bị khoá lần trước.
 """
 
 import asyncio
@@ -29,33 +45,15 @@ def write_prompt_file(prompt: str, label: str) -> Path:
     return tmp
 
 
+CLAUDE_BLOCKED_MSG = (
+    "Claude Code bị chặn trong pipeline tự động (xem docstring đầu file).\n"
+    "  Sửa: đổi <agent>_tool = \"opencode\" trong settings.toml của project.\n"
+    "  Cần Claude? Mở terminal và gõ `claude` thủ công — đừng gọi qua worker."
+)
+
+
 async def run_claude(prompt: str, work_dir: Path, timeout: int | None = None) -> str:
-    cfg         = get_config()
-    work_dir.mkdir(parents=True, exist_ok=True)
-    prompt_file = write_prompt_file(prompt, "claude")
-
-    cmd = _resolve_cmd("claude") + [
-        "-p",
-        f"Read the instructions at {prompt_file} and follow them exactly.",
-        "--allowedTools", "Read,Write,Edit,Bash",
-        "--output-format", "text",
-        "--dangerously-skip-permissions",
-    ]
-
-    proc = await asyncio.create_subprocess_exec(
-        *cmd, cwd=str(work_dir),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    stdout, stderr = await asyncio.wait_for(
-        proc.communicate(), timeout=timeout if timeout is not None else cfg.timeout_claude
-    )
-    prompt_file.unlink(missing_ok=True)
-
-    if proc.returncode != 0:
-        out_text = stdout.decode("utf-8", errors="replace")[:200]
-        err_text = stderr.decode("utf-8", errors="replace")[:400]
-        raise RuntimeError(err_text or out_text or f"exit code {proc.returncode}")
+    raise RuntimeError(CLAUDE_BLOCKED_MSG)
 
 
 async def run_opencode(model: str, prompt: str, work_dir: Path, timeout: int | None = None) -> str:
@@ -95,6 +93,6 @@ async def run(role: str, prompt: str, work_dir: Path, timeout: int | None = None
     agent_cfg = cfg.agents[role]
 
     if agent_cfg.tool == "claude":
-        return await run_claude(prompt, work_dir, timeout=timeout)
-    else:
-        return await run_opencode(agent_cfg.model, prompt, work_dir, timeout=timeout)
+        raise RuntimeError(f"[{role}] {CLAUDE_BLOCKED_MSG}")
+
+    return await run_opencode(agent_cfg.model, prompt, work_dir, timeout=timeout)

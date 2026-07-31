@@ -12,7 +12,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 from typing import List, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from database import get_db
 from models import RunJob, Project, ProjectTask
@@ -71,7 +71,20 @@ def list_jobs(
 @router.post("/claim", response_model=Optional[RunJobOut])
 def claim_job(db: Session = Depends(get_db)):
     """worker gọi đây. Trả job cũ nhất đang `queued` và đánh dấu `running`.
-    Trả null nếu hàng đợi rỗng HOẶC đã có job đang chạy (giữ tuần tự)."""
+    Trả null nếu hàng đợi rỗng HOẶC đã có job đang chạy (giữ tuần tự).
+    Job bị kẹt ở running quá 2 giờ (worker crash) sẽ tự động reset thành failed."""
+    cutoff = datetime.utcnow() - timedelta(hours=2)
+    stuck = db.query(RunJob).filter(
+        RunJob.status == "running",
+        RunJob.started_at < cutoff,
+    ).all()
+    for s in stuck:
+        s.status = "failed"
+        s.error = "Timeout: worker không báo complete sau 2 giờ (có thể crash)"
+        s.finished_at = datetime.utcnow()
+    if stuck:
+        db.commit()
+
     running = db.query(RunJob).filter(RunJob.status == "running").first()
     if running:
         return None

@@ -57,13 +57,33 @@ ai-team-orchestrator/
     └── tasks.json             ← Status 7 agents real-time
 ```
 
+## ⚠️ Chính sách: pipeline không dùng Claude Code
+
+Pipeline này chạy nền qua `worker.py`, nhiều project trong hàng đợi, agent song
+song, không ai giám sát. **Không được dùng subscription Claude cho nó** — đó là
+truy cập tự động bằng account cá nhân, và sẽ bị khoá account.
+
+Hệ thống tách 2 làn:
+
+| Làn | Dùng gì | Ai điều khiển |
+|-----|---------|---------------|
+| **A — Automation** (`worker.py`, dashboard, `clients/`) | OpenCode / model local | Hàng đợi, chạy nền |
+| **B — Claude Code** | Subscription của bạn | Bạn, gõ `claude` tay trong terminal |
+
+`tool = "claude"` bị chặn cứng ở 3 chỗ: [config load](ai_team/config.py), [runner](ai_team/runner.py),
+và [API tạo project](dashboard/api/routers/projects.py). Đừng gỡ chốt để "chạy nhanh một lần".
+
+Tuyệt đối không: nhiều account, xoay vòng account, copy OAuth token trong
+`~/.claude/.credentials.json` lên server, đổi IP qua proxy. Những việc đó biến
+khoá tạm thành khoá vĩnh viễn.
+
 ## Setup
 
 ### 1. Yêu cầu hệ thống
 
 - Python 3.11+
-- Claude Code CLI (đã cài và đăng nhập)
-- OpenCode CLI
+- OpenCode CLI (pipeline chỉ dùng cái này)
+- Claude Code CLI — tùy chọn, chỉ để bạn dùng tay ngoài pipeline
 
 ```powershell
 # Cài OpenCode (Windows)

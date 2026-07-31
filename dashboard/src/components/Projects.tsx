@@ -3,7 +3,9 @@ import { useProjects } from "../hooks/useProjects";
 import { Project, AgentFS, RunSummary } from "../types";
 
 const VALID_KEYS = ["pm","scrum","analyst","be1","be2","fe1","fe2","fs1","fs2","leader"];
-const DEFAULT_MODELS: Record<string,string> = { opencode: "opencode-go/qwen3.5-plus", claude: "" };
+// Chỉ opencode. Claude Code bị chặn trong pipeline tự động (rủi ro khoá account
+// — subscription cá nhân không dùng cho automation chạy nền). Xem ai_team/runner.py.
+const DEFAULT_MODELS: Record<string,string> = { opencode: "opencode-go/qwen3.5-plus" };
 const OPENCODE_GO_MODELS = [
   { value: "opencode-go/qwen3.5-plus",    label: "qwen3.5-plus   (Go plan)"  },
   { value: "opencode-go/qwen3.6-plus",    label: "qwen3.6-plus   (Go plan)"  },
@@ -53,7 +55,7 @@ export default function ProjectsPage() {
   const [showNewProject,   setShowNewProject]   = useState(false);
   const [npFolderName,     setNpFolderName]     = useState("");
   const [npProfile,        setNpProfile]        = useState("fullstack");
-  const [npTool,           setNpTool]           = useState("claude");
+  const [npTool,           setNpTool]           = useState("opencode");
   const [npBackend,        setNpBackend]        = useState("");
   const [npFrontend,       setNpFrontend]       = useState("");
   const [npSaving,         setNpSaving]         = useState(false);
@@ -488,9 +490,11 @@ export default function ProjectsPage() {
             <div>
               <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Default tool</label>
               <select className="setting-select" value={npTool} onChange={e => setNpTool(e.target.value)}>
-                <option value="claude">claude (Claude Code)</option>
                 <option value="opencode">opencode</option>
               </select>
+              <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
+                Claude Code không dùng trong pipeline tự động
+              </div>
             </div>
             <div />
             <div>
@@ -981,31 +985,25 @@ export default function ProjectsPage() {
                     <select className="setting-select" value={addTool}
                       onChange={e => { setAddTool(e.target.value); setAddModel(DEFAULT_MODELS[e.target.value] ?? ""); }}>
                       <option value="opencode">opencode</option>
-                      <option value="claude">claude</option>
                     </select>
                   </div>
                   <div>
                     <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Model</label>
-                    {addTool === "opencode" ? (
-                      <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
-                        <select className="setting-select" style={{ width: 260 }}
-                          value={OPENCODE_GO_MODELS.find(m => m.value === addModel) ? addModel : "other"}
-                          onChange={e => { if (e.target.value !== "other") setAddModel(e.target.value); else setAddModel(""); }}>
-                          {OPENCODE_GO_MODELS.map(m => (
-                            <option key={m.value} value={m.value}>{m.label}</option>
-                          ))}
-                        </select>
-                        {(!OPENCODE_GO_MODELS.find(m => m.value === addModel && m.value !== "other") || addModel === "") && (
-                          <input className="setting-input" style={{ width: 260 }} value={addModel}
-                            onChange={e => setAddModel(e.target.value)} placeholder="vd: opencode-go/model-name" />
-                        )}
-                      </div>
-                    ) : (
-                      <input className="setting-input" style={{ width: 220 }} value={addModel}
-                        onChange={e => setAddModel(e.target.value)} placeholder="để trống = dùng claude mặc định" />
-                    )}
+                    <div style={{ display: "flex", flexDirection: "column", gap: 4 }}>
+                      <select className="setting-select" style={{ width: 260 }}
+                        value={OPENCODE_GO_MODELS.find(m => m.value === addModel) ? addModel : "other"}
+                        onChange={e => { if (e.target.value !== "other") setAddModel(e.target.value); else setAddModel(""); }}>
+                        {OPENCODE_GO_MODELS.map(m => (
+                          <option key={m.value} value={m.value}>{m.label}</option>
+                        ))}
+                      </select>
+                      {(!OPENCODE_GO_MODELS.find(m => m.value === addModel && m.value !== "other") || addModel === "") && (
+                        <input className="setting-input" style={{ width: 260 }} value={addModel}
+                          onChange={e => setAddModel(e.target.value)} placeholder="vd: opencode-go/model-name" />
+                      )}
+                    </div>
                   </div>
-                  <button className="btn-primary" disabled={addSaving || (addTool === "opencode" && !addModel.trim())} onClick={handleAddAgent}>
+                  <button className="btn-primary" disabled={addSaving || !addModel.trim()} onClick={handleAddAgent}>
                     {addSaving ? "Saving..." : "Add"}
                   </button>
                   <button className="btn-muted" onClick={() => setShowAddAgent(false)}>Cancel</button>
