@@ -16,6 +16,10 @@ PROFILES_FILE = PROFILES_DIR / "profiles.yaml"
 if not PROFILES_FILE.exists():
     PROFILES_FILE = Path("/profiles.yaml")  # fallback: mounted at root
 
+SKILLS_DIR = Path(os.getenv("SKILLS_DIR", str(_PROJECT_ROOT / "skills")))
+if not SKILLS_DIR.exists():
+    SKILLS_DIR = Path("/skills")  # fallback: mounted at root (docker)
+
 AGENT_LABELS = {
     "pm":      "PM Agent",
     "scrum":   "Scrum Master",
@@ -93,3 +97,10 @@ def get_profiles() -> list[dict]:
             "agents": val.get("agents", []),
         })
     return result
+
+
+def get_skills() -> list[str]:
+    """Trả về tên các thư mục skill (skills/be, skills/fe, ...) để UI populate dropdown."""
+    if not SKILLS_DIR.exists():
+        return []
+    return sorted(p.name for p in SKILLS_DIR.iterdir() if p.is_dir())

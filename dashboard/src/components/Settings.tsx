@@ -9,6 +9,8 @@ const SETTING_KEYS = {
   autoClose:     { key: "auto_close_run", label: "Auto-close run",     type: "checkbox", fallback: "true" },
   refreshMs:     { key: "refresh_ms",     label: "Refresh interval (ms)", type: "number", fallback: "3000" },
   runTimeout:    { key: "run_timeout_m",  label: "Run timeout (min)",   type: "number", fallback: "30" },
+  slackSigningSecret: { key: "slack_signing_secret", label: "Slack Signing Secret", type: "password", fallback: "" },
+  slackBotToken:      { key: "slack_bot_token",      label: "Slack Bot Token",      type: "password", fallback: "" },
 } as const;
 
 export default function Settings() {
@@ -59,6 +61,11 @@ export default function Settings() {
       <div className="settings-card">
         <h2 className="settings-title">Team Settings</h2>
         <p className="settings-sub">Configure AI provider, model, and runtime options.</p>
+
+        <div style={{ background: "#0f172a", border: "1px solid #1e293b", borderRadius: 8, padding: "10px 14px", marginBottom: 16, fontSize: 12, color: "#9ca3af" }}>
+          <strong style={{ color: "#e2e8f0" }}>Slack Event Subscriptions Request URL:</strong>{" "}
+          <code>{"<public-url>"}/api/slack/events</code> — điền Signing Secret + Bot Token bên dưới trước khi bật.
+        </div>
 
         {Object.values(SETTING_KEYS).map(meta => (
           <Field key={meta.key} meta={meta} />

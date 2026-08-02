@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, List
+from typing import Optional, List, Dict, Any
 from datetime import datetime
 
 
@@ -282,6 +282,49 @@ class TaskCommentOut(BaseModel):
     author: str
     content: str
     created_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+# ── Workflow ──
+
+class WorkflowCreate(BaseModel):
+    name: str
+    description: Optional[str] = None
+    client_folder: Optional[str] = None
+    definition: Dict[str, Any] = {"nodes": [], "edges": []}
+
+
+class WorkflowUpdate(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    client_folder: Optional[str] = None
+    definition: Optional[Dict[str, Any]] = None
+    is_active: Optional[bool] = None
+
+
+class WorkflowOut(BaseModel):
+    id: int
+    project_id: Optional[int]
+    client_folder: Optional[str] = None
+    name: str
+    description: Optional[str]
+    definition: Dict[str, Any]
+    is_active: bool
+    created_at: datetime
+    updated_at: datetime
+
+    model_config = {"from_attributes": True}
+
+
+class WorkflowRunOut(BaseModel):
+    id: int
+    workflow_id: int
+    status: str
+    node_status: Dict[str, str]
+    log: List[Dict[str, Any]]
+    created_at: datetime
+    finished_at: Optional[datetime]
 
     model_config = {"from_attributes": True}
 

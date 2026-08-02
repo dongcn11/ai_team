@@ -31,11 +31,18 @@ services:
       CONFIG_DIR: /config
       PROFILES_DIR: /config
       OUTPUT_DIR: /output
+      SKILLS_DIR: /skills
+      WORKFLOW_TASKS_DIR: /workflow_tasks
+      # Đường dẫn repo trên MÁY THẬT (host) — dùng để sinh lệnh copy-paste chạy
+      # được ngoài terminal. Sửa lại nếu bạn move/clone repo sang chỗ khác.
+      HOST_PROJECT_ROOT: ${HOST_PROJECT_ROOT:-E:/MY_PROJECT/ai_team}
     volumes:
       - ../clients:/clients
       - ../config:/config:ro
       - ../profiles.yaml:/profiles.yaml:ro
       - ../output:/output:ro
+      - ../skills:/skills:ro
+      - ../workflow_tasks:/workflow_tasks
     depends_on:
       db:
         condition: service_healthy

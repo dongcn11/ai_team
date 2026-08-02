@@ -1,4 +1,4 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Table, Float
+from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Table, Float, Boolean, JSON
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from database import Base
@@ -178,6 +178,45 @@ class TaskComment(Base):
     created_at = Column(DateTime, server_default=func.now())
 
     task = relationship("ProjectTask", back_populates="comments")
+
+
+class Workflow(Base):
+    """Định nghĩa workflow kéo-thả: chuỗi trigger + action node do user tự thiết kế.
+    `definition` lưu {"nodes": [...], "edges": [...]} dạng React Flow — không tách
+    bảng riêng cho từng loại node để giữ linh hoạt khi thêm node type mới."""
+    __tablename__ = "workflows"
+
+    id          = Column(Integer, primary_key=True, index=True)
+    project_id  = Column(Integer, ForeignKey("projects.id"), nullable=True)
+    name        = Column(String, nullable=False)
+    description = Column(Text, nullable=True)
+    definition  = Column(JSON, nullable=False, default=lambda: {"nodes": [], "edges": []})
+    is_active   = Column(Boolean, default=True)
+    created_at  = Column(DateTime, server_default=func.now())
+    updated_at  = Column(DateTime, server_default=func.now(), onupdate=func.now())
+
+    runs = relationship("WorkflowRun", back_populates="workflow", cascade="all, delete-orphan")
+    project = relationship("Project")
+
+    @property
+    def client_folder(self):
+        return self.project.client_folder if self.project else None
+
+
+class WorkflowRun(Base):
+    """Log 1 lần 'Test run' của workflow. Phase 1: chỉ mô phỏng (không gọi
+    Slack/Git/opencode thật) — dùng để render trạng thái từng node lên canvas."""
+    __tablename__ = "workflow_runs"
+
+    id          = Column(Integer, primary_key=True, index=True)
+    workflow_id = Column(Integer, ForeignKey("workflows.id"), nullable=False)
+    status      = Column(String, default="running")  # running / done / failed
+    node_status = Column(JSON, default=dict)          # {node_id: "pending"|"running"|"ok"|"error"}
+    log         = Column(JSON, default=list)           # [{node_id, message, ts}]
+    created_at  = Column(DateTime, server_default=func.now())
+    finished_at = Column(DateTime, nullable=True)
+
+    workflow = relationship("Workflow", back_populates="runs")
 
 
 class SubTask(Base):

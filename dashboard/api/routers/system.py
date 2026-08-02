@@ -1,5 +1,5 @@
 from fastapi import APIRouter
-from system_config import get_system_agents, get_profiles
+from system_config import get_system_agents, get_profiles, get_skills
 
 router = APIRouter()
 
@@ -12,3 +12,8 @@ def list_system_agents():
 @router.get("/profiles")
 def list_profiles():
     return get_profiles()
+
+
+@router.get("/skills")
+def list_skills():
+    return get_skills()

@@ -1,9 +1,12 @@
+import asyncio
+
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy import text
 
 from database import engine, Base
-from routers import runs, tasks, issues, settings, projects, agents, project_tasks, system, run_jobs
+from routers import runs, tasks, issues, settings, projects, agents, project_tasks, system, run_jobs, workflows, slack_events
+from routers.workflows import poll_running_workflow_runs
 
 Base.metadata.create_all(bind=engine)
 
@@ -49,6 +52,27 @@ app.include_router(agents.router,          prefix="/api/agents",         tags=["
 app.include_router(project_tasks.router,  prefix="/api/project-tasks", tags=["project-tasks"])
 app.include_router(system.router,          prefix="/api/system",       tags=["system"])
 app.include_router(run_jobs.router,        prefix="/api/run-jobs",     tags=["run-jobs"])
+app.include_router(workflows.router,       prefix="/api/workflows",    tags=["workflows"])
+app.include_router(slack_events.router,    prefix="/api/slack",        tags=["slack"])
+
+
+_POLL_INTERVAL_S = 5
+
+
+async def _workflow_run_poll_loop():
+    """Đọc lại trạng thái các task file 'running' mỗi 5s — CHỈ đọc file,
+    không tự gọi Claude/opencode/git. Xem docstring routers/workflows.py."""
+    while True:
+        await asyncio.sleep(_POLL_INTERVAL_S)
+        try:
+            poll_running_workflow_runs()
+        except Exception as e:
+            print(f"[workflow-poll] error: {e}")
+
+
+@app.on_event("startup")
+async def _start_background_poller():
+    asyncio.create_task(_workflow_run_poll_loop())
 
 
 @app.get("/health")

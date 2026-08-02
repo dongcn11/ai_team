@@ -9,9 +9,10 @@ import Settings        from "./components/Settings";
 import ProjectsPage    from "./components/Projects";
 import AgentsPage      from "./components/Agents";
 import LogsPage        from "./components/LogsPage";
+import WorkflowsPage   from "./components/Workflows";
 import "./App.css";
 
-type Tab = "dashboard" | "projects" | "agents" | "logs" | "settings";
+type Tab = "dashboard" | "projects" | "agents" | "workflows" | "logs" | "settings";
 
 import { RunSummary } from "./types";
 
@@ -112,6 +113,9 @@ export default function App() {
             <button className={`nav-tab ${tab === "agents" ? "active" : ""}`} onClick={() => setTab("agents")}>
               Agents
             </button>
+            <button className={`nav-tab ${tab === "workflows" ? "active" : ""}`} onClick={() => setTab("workflows")}>
+              Workflows
+            </button>
             <button className={`nav-tab ${tab === "logs" ? "active" : ""}`} onClick={() => setTab("logs")}>
               Logs
             </button>
@@ -138,6 +142,7 @@ export default function App() {
       <main className="main">
         {tab === "projects"  && <ProjectsPage />}
         {tab === "agents"    && <AgentsPage />}
+        {tab === "workflows" && <WorkflowsPage />}
         {tab === "logs"      && <LogsPage />}
         {tab === "settings"  && <Settings />}
 
