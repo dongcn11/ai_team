@@ -7,6 +7,7 @@ const TYPE_ICON: Record<string, string> = {
   "action.create_mr":     "🔀",
   "action.code_review":   "👀",
   "action.custom":        "🧩",
+  "logic.condition":      "🔀",
 };
 
 function TaskRow({ task, onChanged }: { task: ActiveTask; onChanged: () => void }) {
@@ -32,10 +33,13 @@ function TaskRow({ task, onChanged }: { task: ActiveTask; onChanged: () => void 
     } catch { /* clipboard bị chặn — user tự bôi đen copy */ }
   };
 
-  const markDone = async () => {
+  const isCondition = task.node_type === "logic.condition";
+
+  const markDone = async (decision?: "true" | "false") => {
     setBusy(true);
     try {
-      const res = await fetch(`/api/workflows/runs/${task.run_id}/nodes/${task.node_id}/done`, { method: "POST" });
+      const qs = decision ? `?decision=${decision}` : "";
+      const res = await fetch(`/api/workflows/runs/${task.run_id}/nodes/${task.node_id}/done${qs}`, { method: "POST" });
       if (res.ok) onChanged();
     } finally { setBusy(false); }
   };
@@ -57,9 +61,18 @@ function TaskRow({ task, onChanged }: { task: ActiveTask; onChanged: () => void 
         <button className="btn-muted" style={{ fontSize: 11, padding: "3px 10px" }} onClick={toggle}>
           {expanded ? "Ẩn" : "Xem"}
         </button>
-        <button className="btn-primary" style={{ fontSize: 11, padding: "3px 10px" }} disabled={busy} onClick={markDone}>
-          {busy ? "..." : "✓ Đã chạy xong"}
-        </button>
+        {isCondition ? (
+          <>
+            <button className="btn-primary" style={{ fontSize: 11, padding: "3px 10px" }}
+              disabled={busy} onClick={() => markDone("true")}>{busy ? "..." : "✔ Đúng"}</button>
+            <button className="btn-danger" style={{ fontSize: 11, padding: "3px 10px" }}
+              disabled={busy} onClick={() => markDone("false")}>{busy ? "..." : "✘ Sai"}</button>
+          </>
+        ) : (
+          <button className="btn-primary" style={{ fontSize: 11, padding: "3px 10px" }} disabled={busy} onClick={() => markDone()}>
+            {busy ? "..." : "✓ Đã chạy xong"}
+          </button>
+        )}
       </div>
 
       <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 8 }}>

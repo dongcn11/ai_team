@@ -6,6 +6,7 @@ const STATUS_META: Record<NodeRunStatus, { color: string; bg: string; label: str
   running: { color: "#fbbf24", bg: "#422006", label: "chờ chạy",  dot: "◐" },
   ok:      { color: "#4ade80", bg: "#052e16", label: "xong",      dot: "●" },
   error:   { color: "#f87171", bg: "#450a0a", label: "lỗi",       dot: "✕" },
+  skipped: { color: "#64748b", bg: "#0f172a", label: "bỏ qua",    dot: "⊘" },
 };
 
 const TYPE_ICON: Record<string, string> = {
@@ -14,6 +15,7 @@ const TYPE_ICON: Record<string, string> = {
   "action.create_mr":      "🔀",
   "action.code_review":    "👀",
   "action.custom":         "🧩",
+  "logic.condition":       "🔀",
 };
 
 function fmtTime(iso: string | null) {
@@ -34,10 +36,11 @@ function StepRow({ step, runId, onChanged }: { step: RunStep; runId: number; onC
     } catch { /* clipboard bị chặn */ }
   };
 
-  const markDone = async () => {
+  const markDone = async (decision?: "true" | "false") => {
     setBusy(true);
     try {
-      const res = await fetch(`/api/workflows/runs/${runId}/nodes/${step.node_id}/done`, { method: "POST" });
+      const qs = decision ? `?decision=${decision}` : "";
+      const res = await fetch(`/api/workflows/runs/${runId}/nodes/${step.node_id}/done${qs}`, { method: "POST" });
       if (res.ok) onChanged();
     } finally { setBusy(false); }
   };
@@ -62,8 +65,25 @@ function StepRow({ step, runId, onChanged }: { step: RunStep; runId: number; onC
           <span style={{ fontSize: 10, color: meta.color, background: meta.bg, padding: "2px 8px", borderRadius: 10 }}>
             {meta.label}
           </span>
-          {step.status === "running" && (
-            <button className="btn-primary" style={{ fontSize: 10, padding: "2px 8px" }} disabled={busy} onClick={markDone}>
+          {step.branch && (
+            <span style={{
+              fontSize: 10, padding: "2px 8px", borderRadius: 10,
+              color: step.branch === "true" ? "#4ade80" : "#f87171",
+              background: step.branch === "true" ? "#052e16" : "#450a0a",
+            }}>
+              → nhánh {step.branch === "true" ? "Đúng" : "Sai"}
+            </span>
+          )}
+          {step.status === "running" && step.is_condition && (
+            <>
+              <button className="btn-primary" style={{ fontSize: 10, padding: "2px 8px" }}
+                disabled={busy} onClick={() => markDone("true")}>{busy ? "..." : "✔ Đúng"}</button>
+              <button className="btn-danger" style={{ fontSize: 10, padding: "2px 8px" }}
+                disabled={busy} onClick={() => markDone("false")}>{busy ? "..." : "✘ Sai"}</button>
+            </>
+          )}
+          {step.status === "running" && !step.is_condition && (
+            <button className="btn-primary" style={{ fontSize: 10, padding: "2px 8px" }} disabled={busy} onClick={() => markDone()}>
               {busy ? "..." : "✓ Xong"}
             </button>
           )}

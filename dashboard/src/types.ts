@@ -159,7 +159,8 @@ export type WorkflowNodeType =
   | "action.generate_code"
   | "action.create_mr"
   | "action.code_review"
-  | "action.custom";
+  | "action.custom"
+  | "logic.condition";
 
 export interface SlackMentionData {
   label: string;
@@ -194,7 +195,24 @@ export interface CustomActionData {
   prompt: string;
 }
 
-export type WorkflowNodeData = SlackMentionData | GenerateCodeData | CreateMrData | CodeReviewData | CustomActionData;
+/** Cách quyết định nhánh của node điều kiện */
+export type ConditionMode = "manual" | "auto";
+/** Phép so sánh khi mode = auto (áp lên phần '## Kết quả' của các node trước) */
+export type ConditionOperator = "contains" | "not_contains" | "equals" | "regex" | "is_empty";
+
+export interface ConditionData {
+  label: string;
+  mode: ConditionMode;
+  /** Mô tả điều kiện cho người/agent đọc khi mode = manual */
+  expression: string;
+  operator: ConditionOperator;
+  value: string;
+  true_label: string;
+  false_label: string;
+}
+
+export type WorkflowNodeData =
+  | SlackMentionData | GenerateCodeData | CreateMrData | CodeReviewData | CustomActionData | ConditionData;
 
 export interface WorkflowNode {
   id: string;
@@ -207,6 +225,9 @@ export interface WorkflowEdge {
   id: string;
   source: string;
   target: string;
+  /** "true" | "false" khi source là node điều kiện */
+  sourceHandle?: string | null;
+  targetHandle?: string | null;
 }
 
 export interface WorkflowDefinition {
@@ -227,7 +248,7 @@ export interface Workflow {
 }
 
 export type WorkflowRunStatus = "running" | "done" | "failed";
-export type NodeRunStatus = "pending" | "running" | "ok" | "error";
+export type NodeRunStatus = "pending" | "running" | "ok" | "error" | "skipped";
 
 export interface WorkflowRunLogEntry {
   node_id: string;
@@ -252,6 +273,9 @@ export interface RunStep {
   label: string;
   node_type: string;
   is_trigger: boolean;
+  is_condition: boolean;
+  /** "true" | "false" — nhánh mà node điều kiện đã chọn */
+  branch: string | null;
   status: NodeRunStatus;
   skills: string[];
   file_path: string | null;
