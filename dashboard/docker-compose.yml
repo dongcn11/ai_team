@@ -35,7 +35,7 @@ services:
       WORKFLOW_TASKS_DIR: /workflow_tasks
       # Đường dẫn repo trên MÁY THẬT (host) — dùng để sinh lệnh copy-paste chạy
       # được ngoài terminal. Sửa lại nếu bạn move/clone repo sang chỗ khác.
-      HOST_PROJECT_ROOT: ${HOST_PROJECT_ROOT:-E:/MY_PROJECT/ai_team}
+      HOST_PROJECT_ROOT: ${HOST_PROJECT_ROOT:-c:/www/ai_team_clean}
     volumes:
       - ../clients:/clients
       - ../config:/config:ro

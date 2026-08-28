@@ -1,4 +1,4 @@
-import React, { useCallback, useMemo, useRef, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import {
   ReactFlow,
   ReactFlowProvider,
@@ -19,12 +19,13 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { useWorkflows, useWorkflowRun, useSkills, useLatestRun } from "../hooks/useWorkflows";
+import { useWorkflows, useWorkflowRun, useSkills, useLatestRun, useConfigAgents } from "../hooks/useWorkflows";
 import { useProjects } from "../hooks/useProjects";
 import ActiveTasks from "./ActiveTasks";
 import RunSteps from "./RunSteps";
+import RunConsole from "./RunConsole";
 import {
-  Workflow, WorkflowNodeType, WorkflowNodeData, NodeRunStatus,
+  Workflow, WorkflowNodeType, WorkflowNodeData, NodeRunStatus, ConfigAgent,
 } from "../types";
 
 // ── Node palette ──────────────────────────────────────────────────────────
@@ -49,6 +50,27 @@ const STATUS_COLOR: Record<NodeRunStatus, string> = {
   skipped: "#475569",
 };
 
+const STATUS_BADGE: Partial<Record<NodeRunStatus, string>> = {
+  running: "tới lượt bạn",
+  ok:      "xong",
+  error:   "lỗi",
+  skipped: "bỏ qua",
+};
+
+/** Nhãn trạng thái gắn trên node lúc chạy. Trước đây trạng thái chỉ thể hiện
+ *  bằng màu viền, mà viền lại bị màu "đang chọn" đè lên → nhìn canvas không
+ *  biết bước nào đang chờ mình. */
+function StatusBadge({ status }: { status: NodeRunStatus }) {
+  const text = STATUS_BADGE[status];
+  if (!text) return null;
+  return (
+    <span style={{
+      fontSize: 9, padding: "1px 6px", borderRadius: 9, whiteSpace: "nowrap",
+      color: STATUS_COLOR[status], border: `1px solid ${STATUS_COLOR[status]}`,
+    }}>{text}</span>
+  );
+}
+
 const OPERATOR_LABEL: Record<string, string> = {
   contains:     "chứa",
   not_contains: "không chứa",
@@ -59,10 +81,12 @@ const OPERATOR_LABEL: Record<string, string> = {
 
 function nodeSummary(type: WorkflowNodeType, data: any): string {
   if (type === "trigger.slack_mention") return `#${(data.channel || "").replace(/^#/, "")}${data.keyword ? ` · "${data.keyword}"` : ""}`;
-  if (type === "action.generate_code")  return (data.skill_dirs || []).join("+") || "no skill";
+  const withAgent = (base: string) =>
+    data.agent_key ? `${base} · 🤖 ${data.agent_key}` : base;
+  if (type === "action.generate_code")  return withAgent((data.skill_dirs || []).join("+") || "no skill");
   if (type === "action.create_mr")      return `${(data.provider || "").toUpperCase()} · ${data.repo || "no repo"}`;
-  if (type === "action.code_review")    return (data.skill_dirs || []).join("+") || "no skill";
-  if (type === "action.custom")         return (data.skill_dirs || []).join("+") || "no skill";
+  if (type === "action.code_review")    return withAgent((data.skill_dirs || []).join("+") || "no skill");
+  if (type === "action.custom")         return withAgent((data.skill_dirs || []).join("+") || "no skill");
   if (type === "logic.condition") {
     if (data.mode === "auto") {
       const op = OPERATOR_LABEL[data.operator] || data.operator;
@@ -86,27 +110,32 @@ function WorkflowNodeView({ id, type, data, selected }: NodeProps) {
   return (
     <div style={{
       background: "#0f172a",
-      border: `2px solid ${selected ? "#60a5fa" : STATUS_COLOR[status]}`,
+      border: `2px solid ${STATUS_COLOR[status]}`,
+      outline: selected ? "2px solid #60a5fa" : undefined,
+      outlineOffset: 2,
       borderRadius: 10,
       padding: "10px 14px",
       minWidth: 180,
       opacity: status === "skipped" ? 0.45 : 1,
-      boxShadow: selected ? "0 0 0 2px rgba(96,165,250,0.3)" : undefined,
     }}>
-      {!isTrigger && <Handle type="target" position={Position.Top} style={PLAIN_HANDLE} />}
+      {!isTrigger && <Handle type="target" position={Position.Left} style={PLAIN_HANDLE} />}
       <div style={{ fontSize: 13, fontWeight: 600, color: "#e2e8f0", display: "flex", alignItems: "center", gap: 6 }}>
         <span>{def?.icon}</span>
-        <span>{(data as any).label || def?.label}</span>
+        <span style={{ flex: 1 }}>{(data as any).label || def?.label}</span>
+        <StatusBadge status={status} />
       </div>
       <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
         {nodeSummary(type as WorkflowNodeType, data)}
       </div>
-      <Handle type="source" position={Position.Bottom} style={PLAIN_HANDLE} />
+      <Handle type="source" position={Position.Right} style={PLAIN_HANDLE} />
     </div>
   );
 }
 
-/** Node điều kiện: 1 handle vào, 2 handle ra (Đúng bên trái, Sai bên phải). */
+/** Vị trí (theo chiều cao node) của 2 chấm ra nhánh — dùng chung cho handle và nhãn. */
+const BRANCH_TOP = { true: "31%", false: "77%" } as const;
+
+/** Node điều kiện: 1 handle vào bên trái, 2 handle ra bên phải (Đúng trên, Sai dưới). */
 function ConditionNodeView({ data, selected }: NodeProps) {
   const d = data as any;
   const status: NodeRunStatus = d._runStatus || "pending";
@@ -116,41 +145,42 @@ function ConditionNodeView({ data, selected }: NodeProps) {
     background: color, width: 18, height: 18, borderRadius: "50%",
     border: "3px solid #0f172a", cursor: "crosshair", zIndex: 5,
   });
+  const branchLabel = (kind: "true" | "false"): React.CSSProperties => ({
+    position: "absolute", right: 12, top: BRANCH_TOP[kind], transform: "translateY(-50%)",
+    fontSize: 10, whiteSpace: "nowrap",
+    color: branch !== undefined && branch !== kind ? "#475569" : (kind === "true" ? "#4ade80" : "#f87171"),
+    fontWeight: branch === kind ? 700 : 400,
+  });
   return (
     <div style={{
       background: "#0f172a",
-      border: `2px solid ${selected ? "#60a5fa" : STATUS_COLOR[status]}`,
+      border: `2px solid ${STATUS_COLOR[status]}`,
+      outline: selected ? "2px solid #60a5fa" : undefined,
+      outlineOffset: 2,
       borderRadius: 10,
-      padding: "10px 14px 22px",
-      minWidth: 220,
+      // chừa lề phải cho 2 nhãn nhánh, và cao tối thiểu để 2 chấm ra không dính nhau
+      padding: "10px 84px 10px 14px",
+      minWidth: 250,
+      minHeight: 88,
+      position: "relative",
       opacity: status === "skipped" ? 0.45 : 1,
-      boxShadow: selected ? "0 0 0 2px rgba(96,165,250,0.3)" : undefined,
     }}>
-      <Handle type="target" position={Position.Top} />
+      <Handle type="target" position={Position.Left} style={PLAIN_HANDLE} />
       <div style={{ fontSize: 13, fontWeight: 600, color: "#e2e8f0", display: "flex", alignItems: "center", gap: 6 }}>
         <span>🔀</span>
-        <span>{d.label || "Điều kiện"}</span>
+        <span style={{ flex: 1 }}>{d.label || "Điều kiện"}</span>
+        <StatusBadge status={status} />
       </div>
       <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
         {nodeSummary("logic.condition", d)}
       </div>
 
-      {/* Nhãn 2 nhánh — mỗi nhãn nằm ngay trên chấm tương ứng (25% / 75%) */}
-      <div style={{ display: "flex", marginTop: 10, fontSize: 10 }}>
-        <span style={{
-          flex: 1, textAlign: "center",
-          color: branch === "false" ? "#475569" : "#4ade80",
-          fontWeight: branch === "true" ? 700 : 400,
-        }}>✔ {d.true_label || "Đúng"}</span>
-        <span style={{
-          flex: 1, textAlign: "center",
-          color: branch === "true" ? "#475569" : "#f87171",
-          fontWeight: branch === "false" ? 700 : 400,
-        }}>✘ {d.false_label || "Sai"}</span>
-      </div>
+      {/* Nhãn 2 nhánh — mỗi nhãn nằm ngay bên trái chấm tương ứng */}
+      <span style={branchLabel("true")}>✔ {d.true_label || "Đúng"}</span>
+      <span style={branchLabel("false")}>✘ {d.false_label || "Sai"}</span>
 
-      <Handle id="true"  type="source" position={Position.Bottom} style={{ ...handleStyle("#4ade80"), left: "25%" }} />
-      <Handle id="false" type="source" position={Position.Bottom} style={{ ...handleStyle("#f87171"), left: "75%" }} />
+      <Handle id="true"  type="source" position={Position.Right} style={{ ...handleStyle("#4ade80"), top: BRANCH_TOP.true }} />
+      <Handle id="false" type="source" position={Position.Right} style={{ ...handleStyle("#f87171"), top: BRANCH_TOP.false }} />
     </div>
   );
 }
@@ -166,36 +196,65 @@ const nodeTypes = {
 
 // ── Config panel ──────────────────────────────────────────────────────────
 
-function SkillPicker({ value, onChange, skills }: { value: string[]; onChange: (v: string[]) => void; skills: string[] }) {
+function SkillPicker({ value, onChange, skills, locked = [] }: {
+  value: string[]; onChange: (v: string[]) => void; skills: string[];
+  /** Skill đến từ vai trò của agent — luôn áp, không bỏ tick được */
+  locked?: string[];
+}) {
   const toggle = (s: string) => {
     onChange(value.includes(s) ? value.filter(x => x !== s) : [...value, s]);
   };
   return (
     <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-      {skills.map(s => (
+      {skills.map(s => {
+        const isLocked = locked.includes(s);
+        const checked = isLocked || value.includes(s);
+        return (
         <label key={s} style={{
           display: "flex", alignItems: "center", gap: 4, fontSize: 12,
-          background: value.includes(s) ? "#1e3a8a" : "#1e293b",
-          border: "1px solid #334155", borderRadius: 6, padding: "3px 8px", cursor: "pointer",
-        }}>
-          <input type="checkbox" checked={value.includes(s)} onChange={() => toggle(s)} style={{ margin: 0 }} />
-          {s}
+          background: isLocked ? "#312e81" : checked ? "#1e3a8a" : "#1e293b",
+          border: `1px solid ${isLocked ? "#4338ca" : "#334155"}`,
+          borderRadius: 6, padding: "3px 8px", cursor: isLocked ? "not-allowed" : "pointer",
+          opacity: isLocked ? 0.85 : 1,
+        }} title={isLocked ? "Skill của vai trò agent đã chọn — luôn được áp" : undefined}>
+          <input type="checkbox" checked={checked} disabled={isLocked}
+            onChange={() => toggle(s)} style={{ margin: 0 }} />
+          {isLocked ? `🔒 ${s}` : s}
         </label>
-      ))}
+        );
+      })}
       {skills.length === 0 && <span style={{ fontSize: 12, color: "#4b5563" }}>Không tải được danh sách skill</span>}
     </div>
   );
 }
 
-function ConfigPanel({ node, skills, onUpdate, onDelete, onClose }: {
+function ConfigPanel({ node, skills, agents, onUpdate, onDelete, onClose }: {
   node: Node;
   skills: string[];
+  agents: ConfigAgent[];
   onUpdate: (data: any) => void;
   onDelete: () => void;
   onClose: () => void;
 }) {
   const data = node.data as any;
   const set = (patch: any) => onUpdate({ ...data, ...patch });
+
+  // Chọn agent = nhận luôn skill của vai trò đó, y như pipeline. Không cho bỏ tick
+  // để khỏi rơi vào cảnh "PM Agent nhưng đọc quy ước của leader".
+  const selectedAgent = agents.find(a => a.key === (data.agent_key || "")) || null;
+  const lockedSkills = selectedAgent ? ["shared", ...(selectedAgent.skill_dirs || [])] : [];
+
+  /** Đổi agent → bỏ những skill vai trò của agent KHÁC đang tick, giữ skill lạ do
+   *  người dùng tự thêm. Không dọn thì đổi từ Leader sang PM vẫn còn tick "leader". */
+  const changeAgent = (key: string) => {
+    const next = agents.find(a => a.key === key) || null;
+    const roleSkills = new Set(agents.flatMap(a => a.skill_dirs || []));
+    const keepMine = new Set([...(next?.skill_dirs || []), "shared"]);
+    const cleaned = (data.skill_dirs || []).filter(
+      (sk: string) => !roleSkills.has(sk) || keepMine.has(sk),
+    );
+    set({ agent_key: key || null, skill_dirs: cleaned });
+  };
 
   return (
     <div style={{ width: 320, borderLeft: "1px solid #1e293b", padding: 16, overflowY: "auto", background: "#0b1220" }}>
@@ -221,10 +280,33 @@ function ConfigPanel({ node, skills, onUpdate, onDelete, onClose }: {
 
       {(node.type === "action.generate_code" || node.type === "action.code_review" || node.type === "action.custom") && (
         <>
-          <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Skill</label>
-          <div style={{ marginBottom: 12 }}>
-            <SkillPicker value={data.skill_dirs || []} skills={skills} onChange={v => set({ skill_dirs: v })} />
+          <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Ai chạy bước này</label>
+          <select className="setting-select" style={{ width: "100%", marginBottom: 4 }}
+            value={data.agent_key || ""} onChange={e => changeAgent(e.target.value)}
+            title="Chọn agent pipeline → bước chạy bằng opencode với model của agent đó. Để trống → Claude headless (nếu bật tự chạy) hoặc bạn chạy tay.">
+            <option value="">🤖 Claude headless / bạn chạy tay</option>
+            {agents.map(a => (
+              <option key={a.key} value={a.key}>{a.name} — {a.tool} · {a.model}</option>
+            ))}
+          </select>
+          <p style={{ fontSize: 11, color: "#4b5563", marginTop: 0, marginBottom: 12 }}>
+            Chọn agent = dùng đúng tool/model khai trong <code>config/settings.toml</code>, cùng đội với pipeline
+            {selectedAgent && <> — và nhận luôn skill <b>{["shared", ...(selectedAgent.skill_dirs || [])].join(" + ")}</b> của vai trò đó</>}.
+          </p>
+
+          <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>
+            {lockedSkills.length > 0 ? "Skill thêm (ngoài skill của vai trò)" : "Skill"}
+          </label>
+          <div style={{ marginBottom: 4 }}>
+            <SkillPicker value={data.skill_dirs || []} skills={skills} locked={lockedSkills}
+              onChange={v => set({ skill_dirs: v })} />
           </div>
+          <p style={{ fontSize: 11, color: "#4b5563", marginTop: 0, marginBottom: 12 }}>
+            {lockedSkills.length > 0
+              ? <>🔒 = skill của <b>{selectedAgent?.name}</b>, luôn được áp (giống pipeline). Tick thêm ô khác
+                 chỉ khi bước này thật sự cần quy ước của vai trò khác.</>
+              : <>Nội dung <code>skills/&lt;tên&gt;/*.md</code> được nhúng thẳng vào file task (kèm <code>shared</code>).</>}
+          </p>
           <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Nội dung / prompt</label>
           <textarea className="setting-input" style={{ width: "100%", minHeight: 120, resize: "vertical", marginBottom: 12 }}
             placeholder="Mô tả yêu cầu cho agent..." value={data.prompt || ""} onChange={e => set({ prompt: e.target.value })} />
@@ -337,8 +419,8 @@ function distToSegment(p: { x: number; y: number }, a: { x: number; y: number },
 
 /**
  * Tìm đường nối gần điểm thả nhất (để chèn node vào giữa).
- * Xấp xỉ đường bezier bằng đoạn thẳng từ đáy node nguồn tới đỉnh node đích — đủ chính xác
- * vì người dùng thả vào khoảng giữa 2 node.
+ * Xấp xỉ đường bezier bằng đoạn thẳng từ cạnh phải node nguồn tới cạnh trái node đích
+ * (sơ đồ chạy ngang trái→phải) — đủ chính xác vì người dùng thả vào khoảng giữa 2 node.
  */
 function findEdgeNearPoint(
   point: { x: number; y: number }, nodes: Node[], edges: Edge[], threshold = 90,
@@ -350,22 +432,74 @@ function findEdgeNearPoint(
     const s = byId.get(e.source), t = byId.get(e.target);
     if (!s || !t) continue;
     const ss = nodeSize(s), ts = nodeSize(t);
-    const from = { x: s.position.x + ss.w / 2, y: s.position.y + ss.h };
-    const to   = { x: t.position.x + ts.w / 2, y: t.position.y };
+    const from = { x: s.position.x + ss.w, y: s.position.y + ss.h / 2 };
+    const to   = { x: t.position.x,           y: t.position.y + ts.h / 2 };
     const d = distToSegment(point, from, to);
     if (d < bestDist) { bestDist = d; best = e; }
   }
   return best;
 }
 
-function WorkflowEditor({ workflow, onBack, onSaved }: {
+/** Xếp lại toàn bộ sơ đồ theo chiều ngang trái→phải.
+ *  Cột = độ sâu xa nhất tính từ node gốc, trong 1 cột thì xếp dọc theo thứ tự y hiện tại.
+ *  Cần cho các workflow lưu từ trước (toạ độ còn xếp dọc) và cho lúc sơ đồ rối. */
+const COL_GAP = 110;   // khoảng trống giữa 2 cột
+const ROW_GAP = 40;    // khoảng trống giữa 2 node cùng cột
+
+function layoutHorizontal(nodes: Node[], edges: Edge[]): Node[] {
+  if (nodes.length === 0) return nodes;
+  const depth = new Map<string, number>(nodes.map(n => [n.id, 0]));
+  const ids = new Set(nodes.map(n => n.id));
+  // nới lỏng nhiều vòng thay vì đệ quy — sơ đồ có vòng lặp cũng không treo
+  for (let i = 0; i < nodes.length; i++) {
+    let changed = false;
+    for (const e of edges) {
+      if (!ids.has(e.source) || !ids.has(e.target)) continue;
+      const d = (depth.get(e.source) ?? 0) + 1;
+      if (d > (depth.get(e.target) ?? 0)) { depth.set(e.target, d); changed = true; }
+    }
+    if (!changed) break;
+  }
+
+  const cols = new Map<number, Node[]>();
+  for (const n of nodes) {
+    const d = depth.get(n.id) ?? 0;
+    const list = cols.get(d);
+    if (list) list.push(n); else cols.set(d, [n]);
+  }
+
+  const colKeys = [...cols.keys()].sort((a, b) => a - b);
+  const colHeight = (list: Node[]) =>
+    list.reduce((h, n) => h + nodeSize(n).h, 0) + ROW_GAP * (list.length - 1);
+  const tallest = Math.max(...colKeys.map(k => colHeight(cols.get(k)!)));
+
+  const moved = new Map<string, { x: number; y: number }>();
+  let x = 0;
+  for (const k of colKeys) {
+    const list = cols.get(k)!.sort((a, b) => a.position.y - b.position.y || a.position.x - b.position.x);
+    let y = (tallest - colHeight(list)) / 2;    // canh giữa theo cột cao nhất
+    for (const n of list) {
+      moved.set(n.id, { x, y });
+      y += nodeSize(n).h + ROW_GAP;
+    }
+    x += Math.max(...list.map(n => nodeSize(n).w)) + COL_GAP;
+  }
+  return nodes.map(n => ({ ...n, position: moved.get(n.id) ?? n.position }));
+}
+
+/** Trình soạn workflow. Dùng chung cho tab Workflows toàn cục và tab
+ *  Workflows bên trong 1 project — bọc sẵn ReactFlowProvider ở dưới. */
+export function WorkflowEditor({ workflow, onBack, onSaved, lockProject }: {
   workflow: Workflow;
   onBack: () => void;
   onSaved: () => void;
+  /** true khi mở từ trong 1 project — workflow đã thuộc project đó, không cho đổi */
+  lockProject?: boolean;
 }) {
   const skills = useSkills();
+  const configAgents = useConfigAgents();
   const wrapperRef = useRef<HTMLDivElement>(null);
-  const { screenToFlowPosition } = useReactFlow();
+  const { screenToFlowPosition, fitView } = useReactFlow();
 
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>(
     workflow.definition.nodes.map(n => ({ ...n } as unknown as Node))
@@ -380,10 +514,25 @@ function WorkflowEditor({ workflow, onBack, onSaved }: {
   const [edgeMsg, setEdgeMsg]               = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [saveMsg, setSaveMsg] = useState<string | null>(null);
+  // Bảng node và khối hướng dẫn ngốn gần hết cột trái mà chỉ cần lúc mới học
+  // → thu được về dải icon 48px, hướng dẫn mặc định gập lại.
+  const [paletteOpen, setPaletteOpen] = useState(true);
+  const [helpOpen, setHelpOpen]       = useState(false);
+
+  // Editor là overlay full màn hình → khoá cuộn trang nền, tránh trang phía sau
+  // trôi lộ ra khi lăn chuột trên canvas.
+  useEffect(() => {
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => { document.body.style.overflow = prev; };
+  }, []);
   const [runId, setRunId] = useLatestRun(workflow.id);  // khôi phục run gần nhất sau reload
+  const [consoleOpen, setConsoleOpen] = useState(false);   // màn hình chạy riêng
   const [running, setRunning] = useState(false);
   const [runError, setRunError] = useState<string | null>(null);
   const [clientFolder, setClientFolder] = useState(workflow.client_folder || "");
+  const [autoRun, setAutoRun] = useState(Boolean(workflow.auto_run));
+  const [savingAuto, setSavingAuto] = useState(false);
   const { projects } = useProjects();
 
   const run = useWorkflowRun(runId);
@@ -467,7 +616,7 @@ function WorkflowEditor({ workflow, onBack, onSaved }: {
     const isTrigger = type.startsWith("trigger.");
     const target = isTrigger ? null : findEdgeNearPoint(position, nodes, edges);
     if (target) {
-      // canh node mới nằm ngay trên đường nối
+      // canh tâm node mới nằm ngay trên đường nối
       newNode.position = { x: position.x - 100, y: position.y - 35 };
       setEdges(eds => [
         ...eds.filter(e => e.id !== target.id),
@@ -528,6 +677,15 @@ function WorkflowEditor({ workflow, onBack, onSaved }: {
     });
     setTimeout(() => setEdgeMsg(null), 4000);
   }, [setEdges]);
+
+  /** Xếp lại sơ đồ theo hàng ngang — hữu ích với workflow cũ lưu theo chiều dọc. */
+  const handleAutoLayout = useCallback(() => {
+    setNodes(nds => layoutHorizontal(nds, edges));
+    // đợi React Flow đo lại node rồi mới fit, không thì fit theo kích thước cũ
+    setTimeout(() => fitView({ padding: 0.15, duration: 300 }), 80);
+    setSaveMsg("Đã sắp xếp ngang — nhớ bấm Save");
+    setTimeout(() => setSaveMsg(null), 4000);
+  }, [setNodes, edges, fitView]);
 
   const updateSelectedData = (data: any) => {
     if (!selectedNodeId) return;
@@ -591,6 +749,34 @@ function WorkflowEditor({ workflow, onBack, onSaved }: {
     await fetch(`/api/workflows/runs/${runId}/refresh`, { method: "POST" });
   };
 
+  /** Bật/tắt tự chạy từng bước bằng Claude headless (worker trên máy bạn thực thi). */
+  const handleAutoRunChange = async (next: boolean) => {
+    setSavingAuto(true);
+    setAutoRun(next);                                  // phản hồi ngay, khỏi chờ round-trip
+    try {
+      const res = await fetch(`/api/workflows/${workflow.id}`, {
+        method: "PUT",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ auto_run: next }),
+      });
+      if (res.ok) {
+        setSaveMsg(next
+          ? "Đã bật tự chạy — cần mở 1 terminal chạy `python worker.py`"
+          : "Đã tắt tự chạy — các bước lại chờ bạn chạy tay");
+        onSaved();
+      } else {
+        setAutoRun(!next);
+        setSaveMsg("Không đổi được chế độ tự chạy");
+      }
+    } catch {
+      setAutoRun(!next);
+      setSaveMsg("Không đổi được chế độ tự chạy");
+    } finally {
+      setSavingAuto(false);
+      setTimeout(() => setSaveMsg(null), 5000);
+    }
+  };
+
   const handleProjectChange = async (folder: string) => {
     setClientFolder(folder);
     const res = await fetch(`/api/workflows/${workflow.id}`, {
@@ -598,135 +784,214 @@ function WorkflowEditor({ workflow, onBack, onSaved }: {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ client_folder: folder }),
     });
-    if (res.ok) { setSaveMsg(folder ? `Đã gắn project ${folder}` : "Đã chuyển sang chạy độc lập"); onSaved(); }
+    if (res.ok) { setSaveMsg(folder ? `Đã gắn project ${folder}` : "Đã chuyển thành mẫu — không chạy được nữa"); onSaved(); }
     else setSaveMsg("Lỗi khi đổi project");
     setTimeout(() => setSaveMsg(null), 3000);
   };
 
   return (
-    <div style={{ display: "flex", height: "calc(100vh - 140px)" }}>
-      {/* Palette */}
-      <div style={{ width: 200, borderRight: "1px solid #1e293b", padding: 12, overflowY: "auto" }}>
-        <button className="btn-muted" onClick={onBack} style={{ marginBottom: 12, width: "100%" }}>← Danh sách</button>
-        <h4 style={{ fontSize: 12, color: "#9ca3af", textTransform: "uppercase", margin: "8px 0" }}>Node</h4>
-        {NODE_DEFS.map(def => (
-          <div key={def.type} draggable
-            onDragStart={e => e.dataTransfer.setData("application/x-workflow-node", def.type)}
-            style={{
-              background: "#0f172a", border: "1px solid #1e293b", borderRadius: 8,
-              padding: "8px 10px", marginBottom: 8, cursor: "grab", fontSize: 12,
-              display: "flex", alignItems: "center", gap: 6,
-            }}>
-            <span>{def.icon}</span>
-            <span>{def.label}</span>
-          </div>
-        ))}
-        <p style={{ fontSize: 11, color: "#4b5563", marginTop: 16 }}>
-          Kéo node vào canvas. Nối 2 node: kéo từ chấm dưới của node này thả vào chấm trên của node kia —
-          hoặc <b>bấm 1 phát vào chấm nguồn rồi bấm vào chấm đích</b> (khỏi phải giữ chuột).
-        </p>
-        <p style={{ fontSize: 11, color: "#4b5563", marginTop: 8 }}>
-          <b>Chèn bước vào giữa</b>: kéo node từ đây <b>thả thẳng lên đường nối</b> (đường sẽ sáng xanh) —
-          A→B tự thành A→bước mới→B.<br />
-          <b>Đổi bước kế tiếp</b>: bấm vào đường nối → chọn lại node nguồn/đích ở thanh phía trên canvas.<br />
-          <b>Xoá nối</b>: bấm vào đường nối rồi bấm Xoá (hoặc phím Delete).
-        </p>
-        <p style={{ fontSize: 11, color: "#4b5563", marginTop: 8 }}>
-          Node <b>Điều kiện If/Else</b> có 2 chấm ra: <span style={{ color: "#4ade80" }}>xanh = Đúng</span>,{" "}
-          <span style={{ color: "#f87171" }}>đỏ = Sai</span>. Nhánh không được chọn sẽ bị bỏ qua.
-        </p>
-      </div>
-
-      {/* Canvas */}
-      <div style={{ flex: 1, display: "flex", flexDirection: "column" }}>
-        <div style={{ display: "flex", gap: 8, alignItems: "center", padding: "8px 12px", borderBottom: "1px solid #1e293b" }}>
-          <strong style={{ fontSize: 13 }}>{workflow.name}</strong>
+    // Editor chiếm trọn viewport: .main giới hạn max-width 1280px + padding 32px,
+    // canvas bị bó lại rất chật. Overlay fixed thoát khỏi khung đó — nút
+    // "← Danh sách" vẫn là đường ra nên không mất điều hướng.
+    <div style={{
+      position: "fixed", inset: 0, zIndex: 40, background: "#0b1120",
+      display: "flex", flexDirection: "column",
+    }}>
+      {/* Thanh công cụ — trải hết chiều ngang màn hình */}
+      <div style={{
+        display: "flex", gap: 8, alignItems: "center", padding: "8px 14px",
+        borderBottom: "1px solid #1e293b", background: "#0f172a", flexShrink: 0,
+      }}>
+        <button className="btn-muted" style={{ fontSize: 12, padding: "4px 10px" }}
+          onClick={onBack}>← Danh sách</button>
+        <strong style={{ fontSize: 14 }}>{workflow.name}</strong>
+        {lockProject ? (
+          <span style={{ fontSize: 12, color: "#6b7280" }}>
+            {clientFolder ? `📁 ${clientFolder}` : "📋 Mẫu"}
+          </span>
+        ) : (
           <select className="setting-select" style={{ width: 210, fontSize: 12 }}
             value={clientFolder} onChange={e => handleProjectChange(e.target.value)}
-            title="Nơi ghi file task — chọn project hoặc để chạy độc lập">
-            <option value="">📁 Chạy độc lập (workflow_tasks)</option>
+            title="Project sở hữu workflow này — cũng là nơi ghi file task. Không chọn project = mẫu, không chạy được.">
+            <option value="">📋 Mẫu — không chạy được</option>
             {projects.map(p => <option key={p.id} value={p.id}>📁 {p.name} ({p.id})</option>)}
           </select>
-          <div style={{ flex: 1 }} />
-          {saveMsg && <span style={{ fontSize: 12, color: "#6b7280" }}>{saveMsg}</span>}
-          <button className="btn-muted" disabled={saving} onClick={handleSave}>{saving ? "Đang lưu..." : "Save"}</button>
-          {run && run.status === "running" && (
-            <button className="btn-muted" onClick={handleRefresh}>🔄 Kiểm tra ngay</button>
-          )}
-          <button className="btn-primary" disabled={running} onClick={handleRun}>{running ? "Đang xử lý..." : "▶ Run"}</button>
-        </div>
-
-        {runError && <div className="state err" style={{ margin: 8 }}>{runError}</div>}
-
-        {selectedEdge && (
-          <div style={{
-            display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", flexWrap: "wrap",
-            background: "#0b1220", borderBottom: "1px solid #1e293b", fontSize: 12, color: "#93c5fd",
-          }}>
-            <span>Đường nối:</span>
-            <select className="setting-select" style={{ width: 190, fontSize: 11 }}
-              value={selectedEdge.source} onChange={e => rewireEdge(selectedEdge.id, { source: e.target.value })}>
-              {nodes.map(n => <option key={n.id} value={n.id}>{(n.data as any).label || n.id}</option>)}
-            </select>
-
-            {nodes.find(n => n.id === selectedEdge.source)?.type === "logic.condition" && (
-              <select className="setting-select" style={{ width: 110, fontSize: 11 }}
-                value={selectedEdge.sourceHandle || "true"}
-                onChange={e => rewireEdge(selectedEdge.id, { sourceHandle: e.target.value })}>
-                <option value="true">nhánh Đúng</option>
-                <option value="false">nhánh Sai</option>
-              </select>
-            )}
-
-            <span>→</span>
-            <select className="setting-select" style={{ width: 190, fontSize: 11 }}
-              value={selectedEdge.target} onChange={e => rewireEdge(selectedEdge.id, { target: e.target.value })}>
-              {nodes.map(n => <option key={n.id} value={n.id}>{(n.data as any).label || n.id}</option>)}
-            </select>
-
-            <button className="btn-danger" style={{ fontSize: 11, padding: "2px 10px" }}
-              onClick={() => deleteEdge(selectedEdge.id)}>Xoá đường nối</button>
-            <button className="btn-muted" style={{ fontSize: 11, padding: "2px 10px" }}
-              onClick={() => setSelectedEdgeId(null)}>Bỏ chọn</button>
-            {edgeMsg && <span style={{ color: "#f87171" }}>{edgeMsg}</span>}
-          </div>
         )}
-
-        <div ref={wrapperRef} style={{ flex: 1 }} onDrop={onDrop} onDragOver={onDragOver} onDragLeave={onDragLeave}>
-          <ReactFlow
-            nodes={displayNodes}
-            edges={displayEdges}
-            onNodesChange={onNodesChange}
-            onEdgesChange={onEdgesChange}
-            onConnect={onConnect}
-            nodeTypes={nodeTypes}
-            onNodeClick={(_, n) => { setSelectedNodeId(n.id); setSelectedEdgeId(null); }}
-            onEdgeClick={(_, e) => { setSelectedEdgeId(e.id); setSelectedNodeId(null); }}
-            onPaneClick={() => { setSelectedNodeId(null); setSelectedEdgeId(null); }}
-            onReconnect={onReconnect}
-            edgesReconnectable
-            deleteKeyCode={["Delete", "Backspace"]}
-            connectionRadius={45}
-            fitView
-            colorMode="dark"
-          >
-            <Background />
-            <Controls />
-            <MiniMap />
-          </ReactFlow>
-        </div>
-
-        <RunSteps workflowId={workflow.id} runId={runId} onRunChange={setRunId} />
+        <label style={{
+          display: "flex", alignItems: "center", gap: 6, fontSize: 12,
+          color: autoRun ? "#bfdbfe" : "#6b7280", cursor: savingAuto ? "wait" : "pointer",
+          background: autoRun ? "#0b1e3a" : "transparent",
+          border: `1px solid ${autoRun ? "#1e40af" : "#1e293b"}`,
+          borderRadius: 6, padding: "3px 9px", whiteSpace: "nowrap",
+        }} title={autoRun
+          ? "ĐANG BẬT: mỗi bước được worker.py trên máy bạn chạy bằng `claude -p`, tuần tự 1 bước/lần"
+          : "ĐANG TẮT: hệ thống chỉ soạn file task, bạn tự dán lệnh vào terminal"}>
+          <input type="checkbox" checked={autoRun} disabled={savingAuto}
+            onChange={e => handleAutoRunChange(e.target.checked)} style={{ margin: 0 }} />
+          🤖 Tự chạy (Claude headless)
+        </label>
+        <div style={{ flex: 1 }} />
+        {saveMsg && <span style={{ fontSize: 12, color: "#6b7280" }}>{saveMsg}</span>}
+        <button className="btn-muted" onClick={handleAutoLayout}
+          title="Xếp lại các bước thành hàng ngang trái→phải theo thứ tự chạy">⇄ Sắp xếp ngang</button>
+        <button className="btn-muted" disabled={saving} onClick={handleSave}>{saving ? "Đang lưu..." : "Save"}</button>
+        {run && run.status === "running" && (
+          <button className="btn-muted" onClick={handleRefresh}>🔄 Kiểm tra ngay</button>
+        )}
+        <button className="btn-primary" disabled={running || !clientFolder} onClick={handleRun}
+          style={!clientFolder ? { opacity: 0.45, cursor: "not-allowed" } : undefined}
+          title={!clientFolder
+            ? "Đây là mẫu — chọn project ở trên, hoặc bấm 'Dùng mẫu' ngoài danh sách để nhân bản vào 1 project rồi chạy bản sao."
+            : "Tạo lần chạy và soạn file task cho bước đầu tiên. Hệ thống KHÔNG tự gọi Claude — bạn chạy lệnh trong terminal của mình."}>
+          {running ? "Đang xử lý..." : "▶ Bắt đầu"}
+        </button>
       </div>
 
-      {selectedNode && (
-        <ConfigPanel
-          node={selectedNode}
-          skills={skills}
-          onUpdate={updateSelectedData}
-          onDelete={deleteSelected}
-          onClose={() => setSelectedNodeId(null)}
-        />
+      {runError && <div className="state err" style={{ margin: "8px 14px" }}>{runError}</div>}
+
+      {/* Hàng giữa: palette | canvas | cấu hình node */}
+      <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
+        <div style={{
+          width: paletteOpen ? 186 : 48, flexShrink: 0, background: "#0b1220",
+          borderRight: "1px solid #1e293b", padding: paletteOpen ? "10px 12px" : "10px 6px",
+          overflowY: "auto",
+        }}>
+          <div style={{ display: "flex", alignItems: "center", marginBottom: 8 }}>
+            {paletteOpen && (
+              <h4 style={{ fontSize: 11, color: "#9ca3af", textTransform: "uppercase", margin: 0, letterSpacing: 1 }}>
+                Node
+              </h4>
+            )}
+            <div style={{ flex: 1 }} />
+            <button className="btn-muted" style={{ fontSize: 11, padding: "2px 7px" }}
+              onClick={() => setPaletteOpen(o => !o)}
+              title={paletteOpen ? "Thu bảng node cho canvas rộng ra" : "Mở bảng node"}>
+              {paletteOpen ? "«" : "»"}
+            </button>
+          </div>
+
+          {NODE_DEFS.map(def => (
+            <div key={def.type} draggable title={def.label}
+              onDragStart={e => e.dataTransfer.setData("application/x-workflow-node", def.type)}
+              style={{
+                background: "#0f172a", border: "1px solid #1e293b", borderRadius: 8,
+                padding: paletteOpen ? "7px 10px" : "7px 0", marginBottom: 6,
+                cursor: "grab", fontSize: 12, display: "flex", alignItems: "center", gap: 6,
+                justifyContent: paletteOpen ? "flex-start" : "center",
+              }}>
+              <span>{def.icon}</span>
+              {paletteOpen && <span>{def.label}</span>}
+            </div>
+          ))}
+
+          {paletteOpen && (
+            <>
+              <button className="btn-muted" style={{ width: "100%", fontSize: 11, marginTop: 8, padding: "3px 8px" }}
+                onClick={() => setHelpOpen(h => !h)}>
+                {helpOpen ? "▾" : "▸"} Hướng dẫn
+              </button>
+              {helpOpen && (
+                <>
+                  <p style={{ fontSize: 11, color: "#4b5563", marginTop: 10 }}>
+                    Kéo node vào canvas. Sơ đồ chạy <b>từ trái sang phải</b>. Nối 2 node: kéo từ chấm bên phải
+                    của node này thả vào chấm bên trái của node kia — hoặc <b>bấm 1 phát vào chấm nguồn rồi bấm
+                    vào chấm đích</b> (khỏi phải giữ chuột). Sơ đồ rối thì bấm <b>⇄ Sắp xếp ngang</b> trên thanh công cụ.
+                  </p>
+                  <p style={{ fontSize: 11, color: "#4b5563", marginTop: 8 }}>
+                    <b>Chèn bước vào giữa</b>: kéo node từ đây <b>thả thẳng lên đường nối</b> (đường sẽ sáng xanh) —
+                    A→B tự thành A→bước mới→B.<br />
+                    <b>Đổi bước kế tiếp</b>: bấm vào đường nối → chọn lại node nguồn/đích ở thanh phía trên canvas.<br />
+                    <b>Xoá nối</b>: bấm vào đường nối rồi bấm Xoá (hoặc phím Delete).
+                  </p>
+                  <p style={{ fontSize: 11, color: "#4b5563", marginTop: 8 }}>
+                    Node <b>Điều kiện If/Else</b> có 2 chấm ra bên phải: <span style={{ color: "#4ade80" }}>xanh (trên) = Đúng</span>,{" "}
+                    <span style={{ color: "#f87171" }}>đỏ (dưới) = Sai</span>. Nhánh không được chọn sẽ bị bỏ qua.
+                  </p>
+                </>
+              )}
+            </>
+          )}
+        </div>
+
+        <div style={{ flex: 1, display: "flex", flexDirection: "column", minWidth: 0 }}>
+          {selectedEdge && (
+            <div style={{
+              display: "flex", alignItems: "center", gap: 8, padding: "6px 12px", flexWrap: "wrap",
+              background: "#0b1220", borderBottom: "1px solid #1e293b", fontSize: 12, color: "#93c5fd",
+            }}>
+              <span>Đường nối:</span>
+              <select className="setting-select" style={{ width: 190, fontSize: 11 }}
+                value={selectedEdge.source} onChange={e => rewireEdge(selectedEdge.id, { source: e.target.value })}>
+                {nodes.map(n => <option key={n.id} value={n.id}>{(n.data as any).label || n.id}</option>)}
+              </select>
+
+              {nodes.find(n => n.id === selectedEdge.source)?.type === "logic.condition" && (
+                <select className="setting-select" style={{ width: 110, fontSize: 11 }}
+                  value={selectedEdge.sourceHandle || "true"}
+                  onChange={e => rewireEdge(selectedEdge.id, { sourceHandle: e.target.value })}>
+                  <option value="true">nhánh Đúng</option>
+                  <option value="false">nhánh Sai</option>
+                </select>
+              )}
+
+              <span>→</span>
+              <select className="setting-select" style={{ width: 190, fontSize: 11 }}
+                value={selectedEdge.target} onChange={e => rewireEdge(selectedEdge.id, { target: e.target.value })}>
+                {nodes.map(n => <option key={n.id} value={n.id}>{(n.data as any).label || n.id}</option>)}
+              </select>
+
+              <button className="btn-danger" style={{ fontSize: 11, padding: "2px 10px" }}
+                onClick={() => deleteEdge(selectedEdge.id)}>Xoá đường nối</button>
+              <button className="btn-muted" style={{ fontSize: 11, padding: "2px 10px" }}
+                onClick={() => setSelectedEdgeId(null)}>Bỏ chọn</button>
+              {edgeMsg && <span style={{ color: "#f87171" }}>{edgeMsg}</span>}
+            </div>
+          )}
+
+          <div ref={wrapperRef} style={{ flex: 1, minHeight: 0 }}
+            onDrop={onDrop} onDragOver={onDragOver} onDragLeave={onDragLeave}>
+            <ReactFlow
+              nodes={displayNodes}
+              edges={displayEdges}
+              onNodesChange={onNodesChange}
+              onEdgesChange={onEdgesChange}
+              onConnect={onConnect}
+              nodeTypes={nodeTypes}
+              onNodeClick={(_, n) => { setSelectedNodeId(n.id); setSelectedEdgeId(null); }}
+              onEdgeClick={(_, e) => { setSelectedEdgeId(e.id); setSelectedNodeId(null); }}
+              onPaneClick={() => { setSelectedNodeId(null); setSelectedEdgeId(null); }}
+              onReconnect={onReconnect}
+              edgesReconnectable
+              deleteKeyCode={["Delete", "Backspace"]}
+              connectionRadius={45}
+              fitView
+              colorMode="dark"
+            >
+              <Background />
+              <Controls />
+              <MiniMap />
+            </ReactFlow>
+          </div>
+        </div>
+
+        {selectedNode && (
+          <ConfigPanel
+            node={selectedNode}
+            skills={skills}
+            agents={configAgents}
+            onUpdate={updateSelectedData}
+            onDelete={deleteSelected}
+            onClose={() => setSelectedNodeId(null)}
+          />
+        )}
+      </div>
+
+      <RunSteps workflowId={workflow.id} runId={runId} onRunChange={setRunId}
+        autoRun={autoRun} onOpenConsole={() => setConsoleOpen(true)} />
+
+      {consoleOpen && (
+        <RunConsole mode="overlay" initialWorkflowId={workflow.id} initialRunId={runId}
+          onClose={() => setConsoleOpen(false)} />
       )}
     </div>
   );
@@ -742,6 +1007,28 @@ export default function WorkflowsPage() {
   const [name, setName] = useState("");
   const [clientFolder, setClientFolder] = useState("");
   const [creating, setCreating] = useState(false);
+  const [cloneOf, setCloneOf]         = useState<Workflow | null>(null);
+  const [cloneFolder, setCloneFolder] = useState("");
+  const [cloneBusy, setCloneBusy]     = useState(false);
+  const [cloneErr, setCloneErr]       = useState<string | null>(null);
+
+  // Mỗi project có danh sách workflow riêng → gom theo project. Workflow không
+  // gắn project là MẪU: không chạy được, chỉ để nhân bản vào project.
+  const groups = useMemo(() => {
+    const nameOf = new Map(projects.map(p => [p.id, p.name]));
+    const byFolder = new Map<string, Workflow[]>();
+    for (const wf of workflows) {
+      const key = wf.client_folder || "";
+      byFolder.set(key, [...(byFolder.get(key) || []), wf]);
+    }
+    const entries = [...byFolder.entries()].map(([folder, list]) => ({
+      folder,
+      title: folder ? `📁 ${nameOf.get(folder) || folder}` : "📋 Mẫu — nhân bản vào project để chạy",
+      list,
+    }));
+    entries.sort((a, b) => (a.folder === "" ? 1 : b.folder === "" ? -1 : a.title.localeCompare(b.title)));
+    return entries;
+  }, [workflows, projects]);
 
   const handleCreate = async () => {
     if (!name.trim()) return;
@@ -768,6 +1055,28 @@ export default function WorkflowsPage() {
   const handleDelete = async (id: number) => {
     await fetch(`/api/workflows/${id}`, { method: "DELETE" });
     refetch();
+  };
+
+  // Nhân bản mẫu vào 1 project — bản sao tách rời hẳn, sửa nó không đụng mẫu.
+  const handleClone = async () => {
+    if (!cloneOf || !cloneFolder) return;
+    setCloneBusy(true);
+    try {
+      const qs = new URLSearchParams({ client_folder: cloneFolder });
+      const res = await fetch(`/api/workflows/${cloneOf.id}/clone?${qs}`, { method: "POST" });
+      if (res.ok) {
+        const wf = await res.json();
+        setCloneOf(null);
+        setCloneFolder("");
+        await refetch();
+        setSelected(wf);
+      } else {
+        const d = await res.json().catch(() => ({}));
+        setCloneErr(d.detail || `Lỗi ${res.status}`);
+      }
+    } finally {
+      setCloneBusy(false);
+    }
   };
 
   if (selected) {
@@ -799,14 +1108,15 @@ export default function WorkflowsPage() {
           <h3>Create Workflow</h3>
           <input className="setting-input" style={{ width: "100%", marginBottom: 8 }}
             placeholder="vd: Slack → Code → MR → Review" value={name} onChange={e => setName(e.target.value)} />
-          <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Project (tuỳ chọn — nơi ghi file task)</label>
+          <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Project sở hữu</label>
           <select className="setting-select" style={{ width: "100%", marginBottom: 4 }}
             value={clientFolder} onChange={e => setClientFolder(e.target.value)}>
-            <option value="">Chạy độc lập (workflow_tasks/wf&lt;id&gt;)</option>
+            <option value="">📋 Không chọn — tạo làm mẫu</option>
             {projects.map(p => <option key={p.id} value={p.id}>{p.name} ({p.id})</option>)}
           </select>
           <p style={{ fontSize: 11, color: "#6b7280", marginBottom: 8 }}>
-            Không chọn project → file task ghi vào <code>workflow_tasks/wf&lt;id&gt;/</code>, không liên quan project nào.
+            Có project → chạy được: task trong project đó chọn workflow này rồi bấm ▶.<br />
+            Không project → là <b>mẫu</b>: không chạy, chỉ dùng để nhân bản sang project.
           </p>
           <div style={{ display: "flex", gap: 8 }}>
             <button className="btn-primary" disabled={creating || !name.trim()} onClick={handleCreate}>
@@ -817,25 +1127,66 @@ export default function WorkflowsPage() {
         </div>
       )}
 
+      {cloneOf && (
+        <div className="card" style={{ marginBottom: 20, borderLeft: "3px solid #60a5fa" }}>
+          <h3 style={{ marginTop: 0 }}>Dùng mẫu "{cloneOf.name}"</h3>
+          <p style={{ fontSize: 12, color: "#9ca3af", marginTop: 0 }}>
+            Tạo 1 bản sao trong project bạn chọn. Bản sao chạy được và <b>tách rời hẳn</b> —
+            sửa nó không ảnh hưởng mẫu gốc.
+          </p>
+          <select className="setting-select" style={{ width: "100%", marginBottom: 8 }}
+            value={cloneFolder} onChange={e => setCloneFolder(e.target.value)}>
+            <option value="">— Chọn project —</option>
+            {projects.map(p => <option key={p.id} value={p.id}>{p.name} ({p.id})</option>)}
+          </select>
+          {cloneErr && <div className="state err" style={{ marginBottom: 8 }}>{cloneErr}</div>}
+          <div style={{ display: "flex", gap: 8 }}>
+            <button className="btn-primary" disabled={cloneBusy || !cloneFolder} onClick={handleClone}>
+              {cloneBusy ? "Đang tạo..." : "Nhân bản vào project"}
+            </button>
+            <button className="btn-muted" onClick={() => { setCloneOf(null); setCloneErr(null); }}>Huỷ</button>
+          </div>
+        </div>
+      )}
+
       {workflows.length === 0 && !showCreate && (
         <div className="state">Chưa có workflow nào. Tạo mới để bắt đầu thiết kế kéo-thả.</div>
       )}
 
-      <div className="project-grid">
-        {workflows.map(wf => (
-          <div key={wf.id} className="project-card" onClick={() => setSelected(wf)}>
-            <div className="project-card-top">
-              <span className="project-card-name">{wf.name}</span>
-              <span style={{ fontSize: 11, color: "#6b7280" }}>{wf.definition.nodes.length} node(s)</span>
-            </div>
-            {wf.description && <p className="project-card-desc">{wf.description}</p>}
-            <div style={{ display: "flex", justifyContent: "flex-end", marginTop: 8 }}>
-              <button className="btn-danger" style={{ fontSize: 11, padding: "2px 8px" }}
-                onClick={e => { e.stopPropagation(); handleDelete(wf.id); }}>Delete</button>
-            </div>
+      {groups.map(group => (
+        <div key={group.folder || "_standalone"} style={{ marginBottom: 22 }}>
+          <h4 style={{
+            margin: "0 0 10px", fontSize: 12, color: "#9ca3af",
+            textTransform: "uppercase", letterSpacing: 1,
+            display: "flex", alignItems: "center", gap: 8,
+          }}>
+            {group.title}
+            <span style={{ color: "#4b5563", letterSpacing: 0 }}>({group.list.length})</span>
+          </h4>
+          <div className="project-grid">
+            {group.list.map(wf => (
+              <div key={wf.id} className="project-card" onClick={() => setSelected(wf)}>
+                <div className="project-card-top">
+                  <span className="project-card-name">{wf.name}</span>
+                  <span style={{ fontSize: 11, color: "#6b7280" }}>{wf.definition.nodes.length} node(s)</span>
+                </div>
+                {wf.description && <p className="project-card-desc">{wf.description}</p>}
+                <div style={{ display: "flex", justifyContent: "flex-end", gap: 6, marginTop: 8 }}>
+                  {!wf.client_folder && (
+                    <button className="btn-muted" style={{ fontSize: 11, padding: "2px 8px" }}
+                      title="Tạo 1 bản sao của mẫu này trong danh sách workflow của 1 project"
+                      onClick={e => { e.stopPropagation(); setCloneErr(null); setCloneFolder(""); setCloneOf(wf); }}>
+                      ＋ Dùng mẫu
+                    </button>
+                  )}
+                  <button className="btn-danger" style={{ fontSize: 11, padding: "2px 8px" }}
+                    onClick={e => { e.stopPropagation(); handleDelete(wf.id); }}>Delete</button>
+                </div>
+              </div>
+            ))}
           </div>
-        ))}
-      </div>
+        </div>
+      ))}
     </div>
   );
 }

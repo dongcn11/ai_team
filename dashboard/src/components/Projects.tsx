@@ -1,6 +1,9 @@
 import React, { useState, useCallback, useEffect } from "react";
 import { useProjects } from "../hooks/useProjects";
-import { Project, AgentFS, RunSummary } from "../types";
+import { useProjectWorkflows } from "../hooks/useWorkflows";
+import ProjectWorkflows from "./ProjectWorkflows";
+import RunConsole from "./RunConsole";
+import { Project, AgentFS, RunSummary, TaskRunSummary } from "../types";
 
 const VALID_KEYS = ["pm","scrum","analyst","be1","be2","fe1","fe2","fs1","fs2","leader"];
 // Chỉ opencode. Claude Code bị chặn trong pipeline tự động (rủi ro khoá account
@@ -23,7 +26,12 @@ export default function ProjectsPage() {
   const { projects, loading, error, refetch } = useProjects();
   const [selected,    setSelected]    = useState<Project | null>(null);
   const [projRuns,    setProjRuns]    = useState<RunSummary[]>([]);
-  const [activeTab,   setActiveTab]   = useState<"features" | "agents" | "prd" | "runs" | "docs">("features");
+  const [activeTab,   setActiveTab]   = useState<"features" | "workflows" | "agents" | "prd" | "runs" | "docs">("features");
+
+  // Danh sách workflow của RIÊNG project đang mở — dùng cho tab Workflows và
+  // cho dropdown "Workflow" ở từng task bên tab Features.
+  const { workflows: projectWorkflows, refetch: refetchProjectWorkflows } =
+    useProjectWorkflows(selected?.id ?? null);
 
   // Run queue (▶ Run button → POST /api/run-jobs; worker.py chạy tuần tự)
   type RunJob = {
@@ -33,6 +41,9 @@ export default function ProjectsPage() {
   };
   const [queue,      setQueue]      = useState<RunJob[]>([]);
   const [triggering, setTriggering] = useState(false);
+  // Xem chi tiết / huỷ lần chạy của 1 task ngay tại danh sách Features
+  const [runDetail, setRunDetail] = useState<{ workflowId: number | null; runId: number } | null>(null);
+  const [cancellingRun, setCancellingRun] = useState<number | null>(null);
 
   // Delete project
   const [showDeleteProject,  setShowDeleteProject]  = useState(false);
@@ -95,6 +106,11 @@ export default function ProjectsPage() {
     id: number; name: string; description: string | null;
     status: string; priority: string; created_at: string;
     acceptance_criteria?: string; files?: FeatureFile[];
+    /** Workflow task này chạy theo (null = chưa chọn) */
+    workflow_id?: number | null;
+    workflow_name?: string | null;
+    /** Lần chạy workflow gần nhất của task */
+    latest_run?: TaskRunSummary | null;
   };
   // Pending attachment chosen *before* the feature exists (uploaded after create).
   type PendingFile = { id: string; file: File; description: string };
@@ -108,6 +124,9 @@ export default function ProjectsPage() {
   const [pendingFiles,    setPendingFiles]    = useState<PendingFile[]>([]);
   const [featureSaving,   setFeatureSaving]   = useState(false);
   const [featureError,    setFeatureError]    = useState("");
+  const [featureWorkflowId, setFeatureWorkflowId] = useState("");   // workflow chọn trong form tạo
+  const [runningFeatureId,  setRunningFeatureId]  = useState<number | null>(null);
+  const [featureRunError,   setFeatureRunError]   = useState<Record<number, string>>({});
 
   // Docs
   const [docFiles,    setDocFiles]    = useState<{path: string; name: string; size: number}[]>([]);
@@ -250,7 +269,7 @@ export default function ProjectsPage() {
   const resetFeatureForm = () => {
     setFeatureName(""); setFeatureDesc("");
     setFeaturePriority("medium"); setFeatureAccept("");
-    setPendingFiles([]); setFeatureError("");
+    setPendingFiles([]); setFeatureError(""); setFeatureWorkflowId("");
   };
 
   const closeAddFeatureModal = () => {
@@ -285,6 +304,7 @@ export default function ProjectsPage() {
         description: featureDesc.trim(),
         priority: featurePriority,
         acceptance_criteria: featureAccept.trim(),
+        workflow_id: featureWorkflowId ? Number(featureWorkflowId) : null,
       }),
     });
     if (!res.ok) {
@@ -346,6 +366,85 @@ export default function ProjectsPage() {
   };
 
   const markFeatureDone = (id: number) => updateFeatureStatus(id, "done");
+
+  /** Gán workflow cho 1 task (null = bỏ chọn). */
+  const setFeatureWorkflow = async (id: number, workflowId: number | null) => {
+    if (!selected) return;
+    const res = await fetch(`/api/projects/${selected.id}/features/${id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ workflow_id: workflowId }),
+    });
+    if (res.ok) {
+      const updated: Feature = await res.json();
+      setFeatures(prev => prev.map(f => f.id === id ? updated : f));
+    }
+  };
+
+  /**
+   * Chạy workflow đã chọn cho task này. Backend chỉ GHI FILE .md cho bước đầu
+   * tiên vào clients/<project>/_tasks/task<id>/ — không tự gọi Claude/opencode.
+   * Bấm lại khi đang chạy sẽ tiếp tục run cũ, không tạo run trùng.
+   */
+  const runFeatureWorkflow = async (f: Feature) => {
+    if (!selected || !f.workflow_id) return;
+    setRunningFeatureId(f.id);
+    setFeatureRunError(prev => ({ ...prev, [f.id]: "" }));
+    try {
+      const res = await fetch(`/api/workflows/${f.workflow_id}/run?task_id=${f.id}`, { method: "POST" });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        setFeatureRunError(prev => ({ ...prev, [f.id]: d.detail || `Lỗi ${res.status}` }));
+        return;
+      }
+      await loadFeatures(selected.id);
+    } finally {
+      setRunningFeatureId(null);
+    }
+  };
+
+  const runStatusColor = (status: string) =>
+    status === "done" ? "#4ade80"
+    : status === "failed" ? "#f87171"
+    : status === "cancelled" ? "#6b7280"
+    : "#fbbf24";
+
+  /** Huỷ lần chạy đang dở của 1 task. Hệ thống chỉ ngừng chờ — file task đã ghi
+   *  vẫn còn trên đĩa, bấm ▶ lần nữa sẽ tạo run mới. */
+  const cancelFeatureRun = async (f: Feature) => {
+    const runId = f.latest_run?.id;
+    if (!runId) return;
+    if (!window.confirm(
+      `Huỷ run #${runId} của task "${f.name}"?
+
+` +
+      "Các bước đang chờ bạn chạy sẽ bị bỏ qua. File task đã ghi vẫn giữ nguyên; " +
+      "bấm ▶ Chạy workflow lần nữa sẽ tạo lần chạy mới."
+    )) return;
+    setCancellingRun(runId);
+    setFeatureRunError(prev => ({ ...prev, [f.id]: "" }));
+    try {
+      const res = await fetch(`/api/workflows/runs/${runId}/cancel`, { method: "POST" });
+      if (!res.ok) {
+        const d = await res.json().catch(() => ({}));
+        setFeatureRunError(prev => ({ ...prev, [f.id]: d.detail || `Lỗi ${res.status}` }));
+        return;
+      }
+      if (selected) await loadFeatures(selected.id);
+    } finally {
+      setCancellingRun(null);
+    }
+  };
+
+  // Người dùng chạy Claude ngoài terminal rồi sửa file task → backend poll file
+  // mỗi 5s. Khi còn task đang chạy thì tab Features cũng nạp lại để badge tiến độ
+  // không đứng yên; hết task chạy là dừng poll.
+  const hasRunningWorkflow = features.some(f => f.latest_run?.status === "running");
+  useEffect(() => {
+    if (!selected || activeTab !== "features" || !hasRunningWorkflow) return;
+    const id = setInterval(() => loadFeatures(selected.id), 6000);
+    return () => clearInterval(id);
+  }, [selected, activeTab, hasRunningWorkflow, loadFeatures]);
 
   const startEditField = (field: EditableField, current: string) => {
     setEditingField(field);
@@ -689,7 +788,7 @@ export default function ProjectsPage() {
 
           {/* Tabs */}
           <div style={{ display: "flex", gap: 4, marginTop: 16, borderBottom: "1px solid #1e293b" }}>
-            {(["features","agents","prd","runs","docs"] as const).map(tab => (
+            {(["features","workflows","agents","prd","runs","docs"] as const).map(tab => (
               <button key={tab}
                 onClick={() => {
                   setActiveTab(tab as typeof activeTab);
@@ -701,6 +800,7 @@ export default function ProjectsPage() {
                   borderRadius: "6px 6px 0 0", color: activeTab === tab ? "#f1f5f9" : "#6b7280",
                   cursor: "pointer", fontSize: 13, fontWeight: activeTab === tab ? 600 : 400 }}>
                 {tab === "features" ? `Features (${features.length})`
+                  : tab === "workflows" ? `Workflows (${projectWorkflows.length})`
                   : tab === "agents" ? `Agents (${settingsAgents.length})`
                   : tab === "prd" ? "PRD"
                   : tab === "runs" ? `Runs (${projRuns.length})`
@@ -708,6 +808,14 @@ export default function ProjectsPage() {
               </button>
             ))}
           </div>
+
+          {/* Workflows tab — danh sách workflow của riêng project này */}
+          {activeTab === "workflows" && (
+            <ProjectWorkflows
+              clientFolder={selected.id}
+              onChanged={() => { refetchProjectWorkflows(); loadFeatures(selected.id); }}
+            />
+          )}
 
           {/* Features tab */}
           {activeTab === "features" && (
@@ -784,6 +892,70 @@ export default function ProjectsPage() {
                               ))}
                             </div>
                           )}
+
+                          {/* Workflow của task: chọn quy trình rồi chạy */}
+                          <div style={{ marginTop: 8, display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+                            <span style={{ fontSize: 11, color: "#6b7280" }}>Workflow</span>
+                            <select className="setting-select"
+                              style={{ width: 210, fontSize: 11, padding: "2px 6px" }}
+                              value={f.workflow_id ?? ""}
+                              onChange={e => setFeatureWorkflow(f.id, e.target.value ? Number(e.target.value) : null)}
+                              title="Quy trình task này chạy theo — quản lý ở tab Workflows của project">
+                              <option value="">— chưa chọn —</option>
+                              {projectWorkflows.map(w => (
+                                <option key={w.id} value={w.id}>{w.name}{w.is_active ? "" : " (tắt)"}</option>
+                              ))}
+                            </select>
+                            <button
+                              disabled={!f.workflow_id || runningFeatureId === f.id}
+                              onClick={() => runFeatureWorkflow(f)}
+                              style={{
+                                background: f.workflow_id ? "#1e3a8a" : "#1e293b",
+                                border: "1px solid #334155",
+                                color: f.workflow_id ? "#bfdbfe" : "#4b5563",
+                                cursor: f.workflow_id ? "pointer" : "not-allowed",
+                                fontSize: 11, padding: "3px 8px", borderRadius: 4,
+                              }}
+                              title={f.workflow_id
+                                ? "Ghi file task cho bước kế tiếp — bạn tự chạy Claude trong terminal"
+                                : "Chọn workflow trước"}>
+                              {runningFeatureId === f.id ? "Đang xử lý..." : "▶ Chạy workflow"}
+                            </button>
+                            {f.latest_run && (
+                              <button
+                                onClick={() => setRunDetail({ workflowId: f.workflow_id ?? null, runId: f.latest_run!.id })}
+                                title="Mở màn hình chạy: lệnh cần chạy, file task và tiến độ từng bước"
+                                style={{
+                                  background: "none", border: "none", padding: 0, cursor: "pointer",
+                                  fontSize: 11, color: runStatusColor(f.latest_run.status),
+                                  textDecoration: "underline", textDecorationStyle: "dotted",
+                                }}>
+                                run #{f.latest_run.id} · {f.latest_run.done_steps}/{f.latest_run.total_steps} bước · {f.latest_run.status} ↗
+                              </button>
+                            )}
+                            {f.latest_run?.status === "running" && (
+                              <button
+                                disabled={cancellingRun === f.latest_run.id}
+                                onClick={() => cancelFeatureRun(f)}
+                                title="Ngừng chờ lần chạy này — các bước đang chờ bạn sẽ bị bỏ qua"
+                                style={{
+                                  background: "#3f1d1d", border: "1px solid #7f1d1d", color: "#fca5a5",
+                                  cursor: cancellingRun === f.latest_run.id ? "wait" : "pointer",
+                                  fontSize: 11, padding: "3px 8px", borderRadius: 4,
+                                }}>
+                                {cancellingRun === f.latest_run.id ? "Đang huỷ..." : "⛔ Huỷ"}
+                              </button>
+                            )}
+                            {projectWorkflows.length === 0 && (
+                              <button onClick={() => setActiveTab("workflows")}
+                                style={{ background: "none", border: "none", color: "#60a5fa", cursor: "pointer", fontSize: 11, padding: 0 }}>
+                                Chưa có workflow — tạo ở tab Workflows →
+                              </button>
+                            )}
+                            {featureRunError[f.id] && (
+                              <span style={{ fontSize: 11, color: "#f87171" }}>{featureRunError[f.id]}</span>
+                            )}
+                          </div>
                         </div>
                         <div style={{ display: "flex", gap: 6, flexShrink: 0 }}>
                           {f.status !== "done" ? (
@@ -856,6 +1028,29 @@ export default function ProjectsPage() {
                           <option value="low">⚪ Low</option>
                         </select>
                       </div>
+                    </div>
+
+                    {/* Workflow áp dụng cho task */}
+                    <div>
+                      <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>
+                        Workflow
+                        <span style={{ fontWeight: 400, color: "#6b7280", marginLeft: 6, fontSize: 11 }}>
+                          (quy trình task này chạy theo — có thể đổi sau)
+                        </span>
+                      </label>
+                      <select className="setting-select" value={featureWorkflowId}
+                        onChange={e => setFeatureWorkflowId(e.target.value)}
+                        style={{ width: "100%", boxSizing: "border-box" }}>
+                        <option value="">— chưa chọn —</option>
+                        {projectWorkflows.map(w => (
+                          <option key={w.id} value={w.id}>{w.name}{w.is_active ? "" : " (tắt)"}</option>
+                        ))}
+                      </select>
+                      {projectWorkflows.length === 0 && (
+                        <p style={{ fontSize: 11, color: "#6b7280", margin: "4px 0 0" }}>
+                          Project chưa có workflow nào — tạo ở tab <b>Workflows</b>.
+                        </p>
+                      )}
                     </div>
 
                     {/* Description */}
@@ -1267,6 +1462,16 @@ export default function ProjectsPage() {
           ✓ {removedWorkspaceMsg}
           <button onClick={() => setRemovedWorkspaceMsg(null)} style={{ marginLeft: 12, background: "none", border: "none", color: "#86efac", cursor: "pointer", fontSize: 16, lineHeight: 1 }}>✕</button>
         </div>
+      )}
+
+      {runDetail && (
+        <RunConsole mode="overlay"
+          initialWorkflowId={runDetail.workflowId}
+          initialRunId={runDetail.runId}
+          onClose={() => {
+            setRunDetail(null);
+            if (selected) loadFeatures(selected.id);   // tiến độ có thể đã đổi
+          }} />
       )}
 
       {!selected && projects.length === 0 && (

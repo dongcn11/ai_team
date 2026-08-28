@@ -52,11 +52,17 @@ function TaskRow({ task, onChanged }: { task: ActiveTask; onChanged: () => void 
           <div style={{ fontSize: 13, color: "#e2e8f0", fontWeight: 500 }}>{task.node_label}</div>
           <div style={{ fontSize: 11, color: "#6b7280" }}>
             {task.workflow_name} · run #{task.run_id}
-            {task.client_folder ? ` · ${task.client_folder}` : " · độc lập"}
+            {task.client_folder ? ` · ${task.client_folder}` : " · (run cũ, chưa gắn project)"}
           </div>
+          {task.task_name && (
+            <div style={{ fontSize: 11, color: "#93c5fd" }} title="Task đã kích hoạt bước này">
+              🎯 {task.task_name} <span style={{ color: "#4b5563" }}>#{task.task_id}</span>
+            </div>
+          )}
         </div>
-        <span style={{ fontSize: 11, color: "#fbbf24", background: "#422006", padding: "2px 8px", borderRadius: 10 }}>
-          chờ chạy
+        <span style={{ fontSize: 11, color: "#fbbf24", background: "#422006", padding: "2px 8px", borderRadius: 10 }}
+          title="File task đã soạn xong — chờ bạn chạy lệnh trong terminal">
+          tới lượt bạn
         </span>
         <button className="btn-muted" style={{ fontSize: 11, padding: "3px 10px" }} onClick={toggle}>
           {expanded ? "Ẩn" : "Xem"}
@@ -114,7 +120,7 @@ export default function ActiveTasks() {
 
       {tasks.length === 0 ? (
         <div style={{ fontSize: 12, color: "#4b5563", background: "#0f172a", border: "1px solid #1e293b", borderRadius: 8, padding: "12px 14px" }}>
-          Không có task nào đang chờ. Bấm ▶ Run trong một workflow để tạo task.
+          Không có task nào đang chờ. Bấm ▶ Bắt đầu trong một workflow để tạo task.
         </div>
       ) : (
         tasks.map(t => (

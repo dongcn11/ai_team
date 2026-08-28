@@ -1,164 +1,108 @@
-import React, { useState } from "react";
-import { useAgents } from "../hooks/useAgents";
-import { AgentSimple, AgentDetail } from "../types";
+import React, { useEffect, useState } from "react";
+import { ConfigAgent, Profile } from "../types";
+
+/**
+ * Danh sách agent của PIPELINE — đọc thẳng từ `config/settings.toml`.
+ *
+ * Trước đây màn hình này hiển thị bảng `agents` trong DB: một bản sao chép tay,
+ * không ai đọc (pipeline `ai_team/` chỉ đọc settings.toml) và đã lệch thật —
+ * DB ghi Analyst = qwen3.6-plus trong khi settings.toml là qwen3.5-plus. Giờ chỉ
+ * còn một nguồn sự thật, và màn hình này là chỗ XEM chứ không phải chỗ sửa.
+ *
+ * Lưu ý: đây là làn A (pipeline OpenCode chạy qua `main.py`). Bước trong Workflow
+ * KHÔNG dùng những agent này — xem chú thích cuối trang.
+ */
+
+function useConfigAgents() {
+  const [agents, setAgents]     = useState<ConfigAgent[]>([]);
+  const [profiles, setProfiles] = useState<Profile[]>([]);
+  const [loading, setLoading]   = useState(true);
+  const [error, setError]       = useState<string | null>(null);
+
+  useEffect(() => {
+    Promise.all([
+      fetch("/api/system/agents").then(r => r.ok ? r.json() : Promise.reject()),
+      fetch("/api/system/profiles").then(r => r.ok ? r.json() : []).catch(() => []),
+    ])
+      .then(([a, p]) => { setAgents(a); setProfiles(p); setError(null); })
+      .catch(() => setError("Không đọc được config/settings.toml"))
+      .finally(() => setLoading(false));
+  }, []);
+
+  return { agents, profiles, loading, error };
+}
 
 export default function AgentsPage() {
-  const { agents, loading, error, refetch } = useAgents();
-  const [showCreate, setShowCreate] = useState(false);
-  const [selected,   setSelected]   = useState<AgentDetail | null>(null);
-  const [saving,     setSaving]     = useState(false);
-  const [name,       setName]       = useState("");
-  const [role,       setRole]       = useState("");
-  const [model,      setModel]      = useState("gpt-4o");
-  const [status,     setStatus]     = useState("available");
-  const [desc,       setDesc]       = useState("");
+  const { agents, profiles, loading, error } = useConfigAgents();
 
-  const handleCreate = async () => {
-    if (!name.trim() || !role.trim()) return;
-    setSaving(true);
-    try {
-      await fetch("/api/agents/", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          name: name.trim(),
-          role: role.trim(),
-          model,
-          status,
-          description: desc.trim() || null,
-        }),
-      });
-      setName(""); setRole(""); setModel("gpt-4o"); setStatus("available"); setDesc("");
-      setShowCreate(false);
-      refetch();
-    } finally { setSaving(false); }
-  };
-
-  const handleDelete = async (id: number) => {
-    await fetch(`/api/agents/${id}`, { method: "DELETE" });
-    setSelected(null);
-    refetch();
-  };
-
-  const openAgent = async (id: number) => {
-    const res = await fetch(`/api/agents/${id}`);
-    if (res.ok) setSelected(await res.json());
-  };
-
-  const updateStatus = async (id: number, newStatus: string) => {
-    await fetch(`/api/agents/${id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ status: newStatus }),
-    });
-    if (selected) openAgent(selected.id);
-    refetch();
-  };
-
-  if (loading) return <div className="state">Loading agents...</div>;
+  if (loading) return <div className="state">Đang đọc config/settings.toml...</div>;
   if (error)   return <div className="state err">{error}</div>;
+
+  /** Profile nào bật agent này — cho biết nó có thực sự chạy hay chỉ nằm trong config */
+  const profilesOf = (key: string) =>
+    profiles.filter(p => (p.agents || []).includes(key)).map(p => p.label || p.key);
 
   return (
     <div className="projects-page">
       <div className="page-header">
-        <h2>Agents</h2>
-        <button className="btn-primary" onClick={() => setShowCreate(true)}>+ New Agent</button>
+        <h2>Agents của pipeline</h2>
+        <span style={{ fontSize: 12, color: "#6b7280" }}>
+          nguồn: <code>config/settings.toml</code> — chỉ đọc
+        </span>
       </div>
 
-      {showCreate && (
-        <div className="card" style={{ marginBottom: 20 }}>
-          <h3>Create Agent</h3>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-            <div>
-              <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Name</label>
-              <input className="setting-input" style={{ width: "100%" }} placeholder="e.g. Code Reviewer" value={name} onChange={e => setName(e.target.value)} />
-            </div>
-            <div>
-              <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Role</label>
-              <input className="setting-input" style={{ width: "100%" }} placeholder="e.g. reviewer" value={role} onChange={e => setRole(e.target.value)} />
-            </div>
-            <div>
-              <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Model</label>
-              <select className="setting-select" style={{ width: "100%" }} value={model} onChange={e => setModel(e.target.value)}>
-                <option value="gpt-4o">gpt-4o</option>
-                <option value="gpt-4-turbo">gpt-4-turbo</option>
-                <option value="claude-sonnet-4">claude-sonnet-4</option>
-                <option value="gemini-pro">gemini-pro</option>
-              </select>
-            </div>
-            <div>
-              <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Status</label>
-              <select className="setting-select" style={{ width: "100%" }} value={status} onChange={e => setStatus(e.target.value)}>
-                <option value="available">Available</option>
-                <option value="busy">Busy</option>
-                <option value="offline">Offline</option>
-              </select>
-            </div>
-          </div>
-          <textarea className="setting-input" style={{ width: "100%", marginTop: 8, resize: "vertical", minHeight: 60 }}
-            placeholder="Description (optional)" value={desc} onChange={e => setDesc(e.target.value)} />
-          <div style={{ display: "flex", gap: 8, marginTop: 12 }}>
-            <button className="btn-primary" disabled={saving || !name.trim() || !role.trim()} onClick={handleCreate}>{saving ? "Creating..." : "Create"}</button>
-            <button className="btn-muted" onClick={() => { setShowCreate(false); setName(""); setRole(""); setDesc(""); }}>Cancel</button>
-          </div>
-        </div>
-      )}
+      <p style={{ fontSize: 12, color: "#9ca3af", marginTop: 0, marginBottom: 16, lineHeight: 1.6 }}>
+        Đây là đội chạy <b>pipeline</b> (<code>python main.py</code> qua worker) — chỉ dùng OpenCode
+        theo chính sách trong README. Sửa tool/model thì sửa <code>config/settings.toml</code>;
+        muốn khác cho riêng 1 project thì vào <b>Projects → tab Agents</b> của project đó.
+      </p>
 
-      {selected && (
-        <div className="card" style={{ marginBottom: 20 }}>
-          <div className="project-detail-header">
-            <div>
-              <h3>{selected.name}</h3>
-              <p style={{ fontSize: 13, color: "#6b7280" }}>{selected.role} &middot; {selected.model}</p>
-            </div>
-            <div style={{ display: "flex", gap: 8 }}>
-              <select className="setting-select" style={{ width: 130 }} value={selected.status}
-                onChange={e => updateStatus(selected.id, e.target.value)}>
-                <option value="available">Available</option>
-                <option value="busy">Busy</option>
-                <option value="offline">Offline</option>
-              </select>
-              <button className="btn-muted" onClick={() => setSelected(null)}>Close</button>
-              <button className="btn-danger" onClick={() => handleDelete(selected.id)}>Delete</button>
-            </div>
-          </div>
-          {selected.description && <p className="setting-sub" style={{ marginBottom: 16 }}>{selected.description}</p>}
-
-          {selected.projects.length > 0 && (
-            <>
-              <h4 style={{ fontSize: 13, fontWeight: 600, marginBottom: 8 }}>Assigned Projects</h4>
-              <div className="project-grid" style={{ gridTemplateColumns: "1fr" }}>
-                {selected.projects.map(p => (
-                  <div key={p.id} className="project-card">
-                    <div className="project-card-top">
-                      <span>{p.name}</span>
-                      <span style={{ fontSize: 11, color: "#6b7280" }}>{p.id}</span>
-                    </div>
-                  </div>
-                ))}
-              </div>
-            </>
-          )}
-        </div>
-      )}
-
-      {!selected && agents.length === 0 && (
-        <div className="state">No agents yet. Create one to get started.</div>
+      {agents.length === 0 && (
+        <div className="state">Không tìm thấy agent nào trong config/settings.toml.</div>
       )}
 
       <div className="project-grid">
-        {agents.map(a => (
-          <div key={a.id} className="project-card" onClick={() => openAgent(a.id)}>
-            <div className="project-card-top">
-              <span className="project-card-name">{a.name}</span>
-              <span className={`agent-status-badge status-${a.status}`}>{a.status}</span>
+        {agents.map(a => {
+          const inProfiles = profilesOf(a.key);
+          const isClaude = a.tool === "claude";
+          return (
+            <div key={a.key} className="project-card" style={{ cursor: "default" }}>
+              <div className="project-card-top">
+                <span className="project-card-name">{a.name}</span>
+                <span style={{
+                  fontSize: 10, padding: "2px 7px", borderRadius: 10,
+                  color: isClaude ? "#fca5a5" : "#86efac",
+                  background: isClaude ? "#450a0a" : "#052e16",
+                  border: `1px solid ${isClaude ? "#7f1d1d" : "#166534"}`,
+                }} title={isClaude
+                  ? "tool = claude bị chặn trong pipeline (xem README) — pipeline sẽ dừng khi load config"
+                  : "công cụ chạy agent này"}>
+                  {a.tool}
+                </span>
+              </div>
+              <div style={{ fontSize: 11, color: "#6b7280", marginTop: 2 }}>
+                <code>{a.key}</code> · {a.model}
+              </div>
+              {a.description && <p className="project-card-desc">{a.description}</p>}
+              <div style={{ fontSize: 11, color: "#4b5563", marginTop: 8 }}>
+                {inProfiles.length > 0
+                  ? <>Profile bật: {inProfiles.join(", ")}</>
+                  : <>Không profile nào bật agent này</>}
+              </div>
             </div>
-            <p className="project-card-desc" style={{ fontSize: 12 }}>
-              {a.role} &middot; {a.model}
-            </p>
-            {a.description && <p className="project-card-desc">{a.description}</p>}
-          </div>
-        ))}
+          );
+        })}
+      </div>
+
+      <div style={{
+        marginTop: 24, padding: "12px 16px", borderRadius: 8,
+        background: "#0b1220", border: "1px solid #1e293b", fontSize: 12,
+        color: "#9ca3af", lineHeight: 1.7, maxWidth: 900,
+      }}>
+        <b style={{ color: "#e2e8f0" }}>Workflow không dùng những agent này.</b> Một bước trong Workflow
+        sinh ra file task rồi do <b>bạn</b> chạy, hoặc do <b>Claude headless</b> chạy nếu workflow bật
+        công tắc tự chạy. Cái mà node workflow chọn là <b>skill</b> (thư mục <code>skills/</code>) —
+        nội dung skill được nhúng thẳng vào file task, giống cách pipeline nhét skill vào prompt agent.
       </div>
     </div>
   );

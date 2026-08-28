@@ -114,6 +114,32 @@ class RunJobOut(BaseModel):
     model_config = {"from_attributes": True}
 
 
+class WorkflowStepJobOut(BaseModel):
+    id: int
+    run_id: int
+    node_id: str
+    node_label: Optional[str]
+    client_folder: Optional[str]
+    file_path: Optional[str]
+    prompt: str
+    tool: str = "claude"
+    model: Optional[str] = None
+    status: str
+    output: Optional[str]
+    error: Optional[str]
+    created_at: datetime
+    started_at: Optional[datetime]
+    finished_at: Optional[datetime]
+
+    model_config = {"from_attributes": True}
+
+
+class WorkflowStepJobComplete(BaseModel):
+    status: str            # done | failed
+    output: Optional[str] = None
+    error: Optional[str] = None
+
+
 class SettingOut(BaseModel):
     key: str
     value: str
@@ -299,6 +325,7 @@ class WorkflowUpdate(BaseModel):
     name: Optional[str] = None
     description: Optional[str] = None
     client_folder: Optional[str] = None
+    auto_run: Optional[bool] = None
     definition: Optional[Dict[str, Any]] = None
     is_active: Optional[bool] = None
 
@@ -311,6 +338,7 @@ class WorkflowOut(BaseModel):
     description: Optional[str]
     definition: Dict[str, Any]
     is_active: bool
+    auto_run: bool = False
     created_at: datetime
     updated_at: datetime
 
@@ -320,6 +348,7 @@ class WorkflowOut(BaseModel):
 class WorkflowRunOut(BaseModel):
     id: int
     workflow_id: int
+    task_id: Optional[int] = None
     status: str
     node_status: Dict[str, str]
     log: List[Dict[str, Any]]

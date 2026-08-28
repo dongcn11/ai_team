@@ -10,9 +10,10 @@ import ProjectsPage    from "./components/Projects";
 import AgentsPage      from "./components/Agents";
 import LogsPage        from "./components/LogsPage";
 import WorkflowsPage   from "./components/Workflows";
+import RunConsole      from "./components/RunConsole";
 import "./App.css";
 
-type Tab = "dashboard" | "projects" | "agents" | "workflows" | "logs" | "settings";
+type Tab = "dashboard" | "projects" | "agents" | "workflows" | "runs" | "logs" | "settings";
 
 import { RunSummary } from "./types";
 
@@ -116,6 +117,10 @@ export default function App() {
             <button className={`nav-tab ${tab === "workflows" ? "active" : ""}`} onClick={() => setTab("workflows")}>
               Workflows
             </button>
+            <button className={`nav-tab ${tab === "runs" ? "active" : ""}`} onClick={() => setTab("runs")}
+              title="Màn hình chạy — lệnh cần chạy, file task và tiến độ từng bước">
+              Lần chạy
+            </button>
             <button className={`nav-tab ${tab === "logs" ? "active" : ""}`} onClick={() => setTab("logs")}>
               Logs
             </button>
@@ -143,6 +148,7 @@ export default function App() {
         {tab === "projects"  && <ProjectsPage />}
         {tab === "agents"    && <AgentsPage />}
         {tab === "workflows" && <WorkflowsPage />}
+        {tab === "runs"      && <RunConsole />}
         {tab === "logs"      && <LogsPage />}
         {tab === "settings"  && <Settings />}
 

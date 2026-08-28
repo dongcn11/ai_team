@@ -77,6 +77,25 @@ Tuyệt đối không: nhiều account, xoay vòng account, copy OAuth token tro
 `~/.claude/.credentials.json` lên server, đổi IP qua proxy. Những việc đó biến
 khoá tạm thành khoá vĩnh viễn.
 
+### Ngoại lệ hẹp: workflow bật "Tự chạy (Claude headless)"
+
+Workflow của dashboard có công tắc `auto_run` (mặc định **tắt**). Bật lên thì
+mỗi bước được xếp vào hàng đợi [`workflow_step_jobs`](dashboard/api/routers/workflow_jobs.py)
+và `worker.py` chạy `claude -p "<prompt>"` cho **1 bước một lúc**.
+
+Đây vẫn là làn B chứ không phải làn A, vì 3 giới hạn được giữ nguyên:
+
+- **bạn tự bật** cho từng workflow, không có mặc định bật;
+- chạy trên **máy của chính bạn**, bằng phiên đăng nhập của bạn (`worker.py`
+  không dockerize, không đọc token đi đâu);
+- **tuần tự 1 bước/lần** — `/claim` không trả job mới khi còn job đang chạy —
+  và log hiện ngay trong terminal worker để bạn giám sát.
+
+Không dùng `--dangerously-skip-permissions`; mặc định là
+`--permission-mode acceptEdits`, đổi được qua biến môi trường `CLAUDE_ARGS`.
+Đừng biến công tắc này thành "chạy nền nhiều project song song" — lúc đó nó
+đúng là cái mà chính sách trên cấm.
+
 ## Setup
 
 ### 1. Yêu cầu hệ thống

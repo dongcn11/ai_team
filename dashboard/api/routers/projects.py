@@ -60,7 +60,7 @@ CLAUDE_BLOCKED_DETAIL = (
 
 from system_config import get_system_agents
 from database import get_db
-from models import Project, ProjectTask, FeatureFile
+from models import Project, ProjectTask, FeatureFile, Workflow, WorkflowRun
 
 CLIENTS_DIR = Path(os.getenv("CLIENTS_DIR", "/clients"))
 OUTPUT_DIR  = Path(os.getenv("OUTPUT_DIR",  "/output"))
@@ -528,6 +528,8 @@ class FeatureCreate(BaseModel):
     description: Optional[str] = ""
     priority: str = "medium"
     acceptance_criteria: Optional[str] = ""
+    # Workflow (trong danh sách của chính project này) mà task sẽ chạy theo.
+    workflow_id: Optional[int] = None
 
 
 class FeatureUpdate(BaseModel):
@@ -536,6 +538,31 @@ class FeatureUpdate(BaseModel):
     status: Optional[str] = None
     priority: Optional[str] = None
     acceptance_criteria: Optional[str] = None
+    # None ở đây có nghĩa "bỏ chọn workflow", nên phải phân biệt với "không
+    # gửi field" — dùng model_fields_set thay vì so sánh None.
+    workflow_id: Optional[int] = None
+
+
+def _validated_workflow_id(workflow_id: Optional[int], proj_id: int,
+                           db: Session) -> Optional[int]:
+    """Task chỉ được chọn workflow nằm trong danh sách của CHÍNH project mình.
+
+    Workflow chưa gắn project là mẫu — không chạy được, nên cho task chọn nó chỉ
+    dẫn tới lỗi lúc bấm ▶. Muốn dùng mẫu thì nhân bản nó vào project trước
+    (POST /api/workflows/{id}/clone)."""
+    if not workflow_id:
+        return None
+    wf = db.query(Workflow).filter(Workflow.id == workflow_id).first()
+    if not wf:
+        raise HTTPException(status_code=404, detail="Workflow không tồn tại")
+    if wf.project_id is None:
+        raise HTTPException(status_code=400,
+                            detail="Đây là mẫu (chưa gắn project) — hãy nhân bản mẫu "
+                                   "vào project này rồi chọn bản sao")
+    if wf.project_id != proj_id:
+        raise HTTPException(status_code=400,
+                            detail="Workflow này thuộc project khác")
+    return wf.id
 
 
 def _file_out(f: FeatureFile) -> dict:
@@ -550,20 +577,53 @@ def _file_out(f: FeatureFile) -> dict:
     }
 
 
-def _feature_out(t: ProjectTask) -> dict:
+def _run_out(run: Optional[WorkflowRun]) -> Optional[dict]:
+    """Tóm tắt lần chạy workflow gần nhất của 1 task — đủ để vẽ badge tiến độ
+    trên danh sách task mà không phải gọi thêm API."""
+    if not run:
+        return None
+    node_status = run.node_status or {}
+    return {
+        "id": run.id,
+        "status": run.status,
+        "total_steps": len(node_status),
+        "done_steps": sum(1 for v in node_status.values() if v in ("ok", "skipped")),
+        "created_at": run.created_at.isoformat() if run.created_at else None,
+    }
+
+
+def _latest_runs_by_task(db: Session, task_ids: List[int]) -> dict:
+    """{task_id: WorkflowRun mới nhất} — 1 query cho cả danh sách."""
+    if not task_ids:
+        return {}
+    runs = (db.query(WorkflowRun)
+              .filter(WorkflowRun.task_id.in_(task_ids))
+              .order_by(WorkflowRun.id).all())
+    return {r.task_id: r for r in runs}  # id tăng dần → cái cuối là mới nhất
+
+
+def _feature_out(t: ProjectTask, run: Optional[WorkflowRun] = None) -> dict:
     return {
         "id": t.id, "name": t.name, "description": t.description,
         "status": t.status, "priority": t.priority,
         "acceptance_criteria": t.acceptance_criteria or "",
+        "workflow_id": t.workflow_id,
+        "workflow_name": t.workflow.name if t.workflow else None,
+        "latest_run": _run_out(run),
         "files": [_file_out(f) for f in (t.files or [])],
         "created_at": t.created_at.isoformat() if t.created_at else None,
     }
 
 
+def _feature_out_one(t: ProjectTask, db: Session) -> dict:
+    return _feature_out(t, _latest_runs_by_task(db, [t.id]).get(t.id))
+
+
 def _all_features(proj_id: int, db: Session) -> list:
     tasks = db.query(ProjectTask).filter(ProjectTask.project_id == proj_id)\
                .order_by(ProjectTask.created_at).all()
-    return [_feature_out(t) for t in tasks]
+    latest = _latest_runs_by_task(db, [t.id for t in tasks])
+    return [_feature_out(t, latest.get(t.id)) for t in tasks]
 
 
 @router.get("/{folder_name}/features")
@@ -579,12 +639,13 @@ def create_feature(folder_name: str, payload: FeatureCreate,
     proj   = _get_or_create_db_project(folder_name, db)
     task   = ProjectTask(project_id=proj.id, name=payload.name,
                          description=payload.description, priority=payload.priority,
-                         acceptance_criteria=payload.acceptance_criteria or None)
+                         acceptance_criteria=payload.acceptance_criteria or None,
+                         workflow_id=_validated_workflow_id(payload.workflow_id, proj.id, db))
     db.add(task)
     db.commit()
     db.refresh(task)
     _sync_features_to_prd(folder, _all_features(proj.id, db))
-    return _feature_out(task)
+    return _feature_out_one(task, db)
 
 
 @router.put("/{folder_name}/features/{task_id}")
@@ -602,10 +663,12 @@ def update_feature(folder_name: str, task_id: int, payload: FeatureUpdate,
     if payload.priority    is not None: task.priority    = payload.priority
     if payload.acceptance_criteria is not None:
         task.acceptance_criteria = payload.acceptance_criteria or None
+    if "workflow_id" in payload.model_fields_set:
+        task.workflow_id = _validated_workflow_id(payload.workflow_id, proj.id, db)
     db.commit()
     db.refresh(task)
     _sync_features_to_prd(folder, _all_features(proj.id, db))
-    return _feature_out(task)
+    return _feature_out_one(task, db)
 
 
 @router.delete("/{folder_name}/features/{task_id}")

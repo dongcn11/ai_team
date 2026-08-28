@@ -17,6 +17,7 @@ from datetime import datetime, timedelta
 from database import get_db
 from models import RunJob, Project, ProjectTask
 from schemas import RunJobCreate, RunJobComplete, RunJobOut
+import worker_heartbeat
 
 router = APIRouter()
 
@@ -73,6 +74,7 @@ def claim_job(db: Session = Depends(get_db)):
     """worker gọi đây. Trả job cũ nhất đang `queued` và đánh dấu `running`.
     Trả null nếu hàng đợi rỗng HOẶC đã có job đang chạy (giữ tuần tự).
     Job bị kẹt ở running quá 2 giờ (worker crash) sẽ tự động reset thành failed."""
+    worker_heartbeat.touch()
     cutoff = datetime.utcnow() - timedelta(hours=2)
     stuck = db.query(RunJob).filter(
         RunJob.status == "running",

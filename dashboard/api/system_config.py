@@ -48,6 +48,23 @@ AGENT_DESCRIPTIONS = {
 
 AGENT_STATUS_ORDER = ["available", "busy", "offline"]
 
+# Skill đi kèm vai trò — bản sao theo KEY của ROLE_SKILL_DIRS trong
+# ai_team/skill_loader.py (bên đó map theo tên hiển thị). Sửa một bên thì sửa cả
+# hai, nếu không cùng một agent sẽ đọc bộ quy ước khác nhau ở 2 làn.
+# `shared` mọi vai trò đều đọc nên không liệt kê ở đây.
+AGENT_SKILL_DIRS = {
+    "pm":      ["pm"],
+    "scrum":   ["scrum"],
+    "analyst": ["analyst"],
+    "be1":     ["be"],
+    "be2":     ["be"],
+    "fe1":     ["fe"],
+    "fe2":     ["fe"],
+    "fs1":     ["be", "fe"],
+    "fs2":     ["be", "fe"],
+    "leader":  ["leader"],
+}
+
 
 def get_system_agents(config_path: Path | None = None) -> list[dict]:
     """Trả về danh sách agent từ settings.toml (global hoặc project-specific)."""
@@ -75,6 +92,8 @@ def get_system_agents(config_path: Path | None = None) -> list[dict]:
                 "tool":        tool,
                 "status":      "available",
                 "description": AGENT_DESCRIPTIONS.get(key, ""),
+                # Skill mặc định của vai trò — UI hiện dạng chip khoá, backend luôn nhúng
+                "skill_dirs":  AGENT_SKILL_DIRS.get(key, []),
             })
 
     return result

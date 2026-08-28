@@ -62,6 +62,28 @@ export interface AgentFS {
   description: string | null;
 }
 
+/** Agent đọc từ config/settings.toml — nguồn sự thật của pipeline (làn A) */
+export interface ConfigAgent {
+  key: string;
+  name: string;
+  role: string;
+  model: string;
+  tool: string;
+  status: string;
+  description: string;
+  /** Skill mặc định của vai trò (chưa gồm `shared`) — node chọn agent thì nhận luôn */
+  skill_dirs: string[];
+}
+
+/** Profile trong profiles.yaml — quyết định agent nào được bật */
+export interface Profile {
+  key: string;
+  label: string;
+  agents: string[];
+}
+
+/** @deprecated bảng `agents` trong DB — bản sao chép tay, pipeline không đọc.
+ *  Chỉ còn dùng cho ProjectTask.assigned_agent_id. Xem components/Agents.tsx. */
 export interface AgentSimple {
   id: number;
   name: string;
@@ -172,6 +194,9 @@ export interface GenerateCodeData {
   label: string;
   skill_dirs: string[];
   prompt: string;
+  /** Key agent pipeline (pm/be1/leader...) chạy bước này bằng opencode.
+   *  Bỏ trống = Claude headless hoặc bạn chạy tay. */
+  agent_key?: string | null;
 }
 
 export interface CreateMrData {
@@ -187,12 +212,18 @@ export interface CodeReviewData {
   label: string;
   skill_dirs: string[];
   prompt: string;
+  /** Key agent pipeline (pm/be1/leader...) chạy bước này bằng opencode.
+   *  Bỏ trống = Claude headless hoặc bạn chạy tay. */
+  agent_key?: string | null;
 }
 
 export interface CustomActionData {
   label: string;
   skill_dirs: string[];
   prompt: string;
+  /** Key agent pipeline (pm/be1/leader...) chạy bước này bằng opencode.
+   *  Bỏ trống = Claude headless hoặc bạn chạy tay. */
+  agent_key?: string | null;
 }
 
 /** Cách quyết định nhánh của node điều kiện */
@@ -235,6 +266,15 @@ export interface WorkflowDefinition {
   edges: WorkflowEdge[];
 }
 
+/** Tóm tắt lần chạy workflow gần nhất của 1 task — hiển thị trên hàng task */
+export interface TaskRunSummary {
+  id: number;
+  status: WorkflowRunStatus;
+  total_steps: number;
+  done_steps: number;
+  created_at: string | null;
+}
+
 export interface Workflow {
   id: number;
   project_id: number | null;
@@ -243,11 +283,13 @@ export interface Workflow {
   description: string | null;
   definition: WorkflowDefinition;
   is_active: boolean;
+  /** Bật = mỗi bước được worker trên máy bạn tự chạy bằng `claude -p` */
+  auto_run: boolean;
   created_at: string;
   updated_at: string;
 }
 
-export type WorkflowRunStatus = "running" | "done" | "failed";
+export type WorkflowRunStatus = "running" | "done" | "failed" | "cancelled";
 export type NodeRunStatus = "pending" | "running" | "ok" | "error" | "skipped";
 
 export interface WorkflowRunLogEntry {
@@ -259,6 +301,8 @@ export interface WorkflowRunLogEntry {
 export interface WorkflowRun {
   id: number;
   workflow_id: number;
+  /** Task (feature) đã kích hoạt run này — null nếu chạy tay trong editor */
+  task_id: number | null;
   status: WorkflowRunStatus;
   node_status: Record<string, NodeRunStatus>;
   log: WorkflowRunLogEntry[];
@@ -280,6 +324,8 @@ export interface RunStep {
   skills: string[];
   file_path: string | null;
   command: string | null;
+  /** Agent pipeline chạy bước này (null = Claude headless / bạn chạy tay) */
+  agent: { key: string; name: string; tool: string; model: string } | null;
   result: string;
   started_at: string | null;
   finished_at: string | null;
@@ -299,11 +345,34 @@ export interface RunDetail {
   steps: RunStep[];
 }
 
+/** 1 bước đã xếp hàng cho worker chạy bằng Claude headless */
+export interface WorkflowStepJob {
+  id: number;
+  run_id: number;
+  node_id: string;
+  node_label: string | null;
+  client_folder: string | null;
+  file_path: string | null;
+  prompt: string;
+  /** "claude" (headless) hoặc "opencode" khi node chọn agent pipeline */
+  tool: string;
+  model: string | null;
+  status: "queued" | "running" | "done" | "failed" | "canceled";
+  output: string | null;
+  error: string | null;
+  created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
 /** 1 step đang chờ người dùng tự chạy bằng tay */
 export interface ActiveTask {
   workflow_id: number;
   workflow_name: string;
   client_folder: string | null;
+  /** Task (feature) đã kích hoạt bước này — null nếu chạy tay từ editor */
+  task_id: number | null;
+  task_name: string | null;
   run_id: number;
   node_id: string;
   node_label: string;

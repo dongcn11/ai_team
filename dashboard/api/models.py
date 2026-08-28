@@ -120,6 +120,9 @@ class ProjectTask(Base):
     id               = Column(Integer, primary_key=True, index=True)
     project_id       = Column(Integer, ForeignKey("projects.id"), nullable=False)
     assigned_agent_id = Column(Integer, ForeignKey("agents.id"), nullable=True)
+    # Workflow mà task này chạy theo. Mỗi project có danh sách workflow riêng,
+    # mỗi task chọn 1 workflow trong danh sách đó (NULL = chưa chọn).
+    workflow_id      = Column(Integer, ForeignKey("workflows.id"), nullable=True)
     name             = Column(String, nullable=False)
     description      = Column(Text, nullable=True)
     status           = Column(String, default="todo")     # todo / in_progress / review / done
@@ -133,6 +136,8 @@ class ProjectTask(Base):
 
     project  = relationship("Project", back_populates="tasks")
     agent    = relationship("Agent", back_populates="tasks")
+    workflow = relationship("Workflow", back_populates="tasks")
+    workflow_runs = relationship("WorkflowRun", back_populates="task", cascade="all, delete-orphan")
     documents = relationship("TaskDocument", back_populates="task", cascade="all, delete-orphan")
     comments  = relationship("TaskComment", back_populates="task", cascade="all, delete-orphan")
     subtasks  = relationship("SubTask",    back_populates="task", cascade="all, delete-orphan")
@@ -192,15 +197,51 @@ class Workflow(Base):
     description = Column(Text, nullable=True)
     definition  = Column(JSON, nullable=False, default=lambda: {"nodes": [], "edges": []})
     is_active   = Column(Boolean, default=True)
+    # BẬT = mỗi bước được host worker tự chạy bằng `claude -p` (headless) thay vì
+    # chờ người dùng dán lệnh vào terminal. Mặc định TẮT — xem docstring
+    # WorkflowStepJob về giới hạn cố ý của chế độ này.
+    auto_run    = Column(Boolean, default=False)
     created_at  = Column(DateTime, server_default=func.now())
     updated_at  = Column(DateTime, server_default=func.now(), onupdate=func.now())
 
     runs = relationship("WorkflowRun", back_populates="workflow", cascade="all, delete-orphan")
     project = relationship("Project")
+    tasks = relationship("ProjectTask", back_populates="workflow")
 
     @property
     def client_folder(self):
         return self.project.client_folder if self.project else None
+
+
+class WorkflowStepJob(Base):
+    """Hàng đợi 1 bước workflow cho worker trên host chạy bằng Claude headless.
+
+    Tại sao phải qua hàng đợi: API chạy trong container — không có CLI `claude`,
+    không có thư mục repo thật, không có phiên đăng nhập của bạn. worker.py chạy
+    TRÊN MÁY BẠN mới chạy được, nên API chỉ ghi job, worker poll và thực thi.
+
+    Giới hạn cố ý (khác hẳn pipeline `ai_team/` — nơi Claude Code bị chặn cứng):
+    chỉ chạy trên máy của chính bạn, bằng đăng nhập của bạn, TUẦN TỰ 1 bước/lần,
+    và phải bật thủ công cho từng workflow (`workflows.auto_run`)."""
+    __tablename__ = "workflow_step_jobs"
+
+    id            = Column(Integer, primary_key=True, index=True)
+    run_id        = Column(Integer, ForeignKey("workflow_runs.id"), nullable=False)
+    node_id       = Column(String, nullable=False)
+    node_label    = Column(String, nullable=True)
+    client_folder = Column(String, nullable=True)    # slug project → cwd cho CLI
+    file_path     = Column(Text, nullable=True)      # đường dẫn file task (tương đối repo)
+    prompt        = Column(Text, nullable=False)     # prompt truyền cho CLI
+    # Công cụ chạy bước này: "claude" (headless, mặc định) hoặc "opencode" khi node
+    # chọn 1 agent của pipeline. Model đi kèm agent đó.
+    tool          = Column(String, default="claude")
+    model         = Column(String, nullable=True)
+    status        = Column(String, default="queued") # queued/running/done/failed/canceled
+    output        = Column(Text, nullable=True)      # stdout cắt ngắn, để soi khi lỗi
+    error         = Column(Text, nullable=True)
+    created_at    = Column(DateTime, server_default=func.now())
+    started_at    = Column(DateTime, nullable=True)
+    finished_at   = Column(DateTime, nullable=True)
 
 
 class WorkflowRun(Base):
@@ -210,13 +251,17 @@ class WorkflowRun(Base):
 
     id          = Column(Integer, primary_key=True, index=True)
     workflow_id = Column(Integer, ForeignKey("workflows.id"), nullable=False)
-    status      = Column(String, default="running")  # running / done / failed
+    # Task đã kích hoạt lần chạy này (NULL = chạy thủ công từ trình soạn workflow
+    # hoặc từ trigger Slack, không gắn task nào).
+    task_id     = Column(Integer, ForeignKey("project_tasks.id"), nullable=True)
+    status      = Column(String, default="running")  # running / done / failed / cancelled
     node_status = Column(JSON, default=dict)          # {node_id: "pending"|"running"|"ok"|"error"}
     log         = Column(JSON, default=list)           # [{node_id, message, ts}]
     created_at  = Column(DateTime, server_default=func.now())
     finished_at = Column(DateTime, nullable=True)
 
     workflow = relationship("Workflow", back_populates="runs")
+    task     = relationship("ProjectTask", back_populates="workflow_runs")
 
 
 class SubTask(Base):
