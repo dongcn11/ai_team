@@ -48,6 +48,16 @@ AGENT_DESCRIPTIONS = {
 
 AGENT_STATUS_ORDER = ["available", "busy", "offline"]
 
+# Các vùng code trong thư mục dự án. Key = key trong [tech_stack] của settings.toml,
+# value = (tên thư mục con, nhãn hiển thị). Định nghĩa ở đây để API, file task và UI
+# cùng nói một thứ; thêm vùng mới chỉ cần thêm 1 dòng.
+# Thư mục backend/frontend trùng quy ước pipeline (ai_team/orchestrator.py::_work_dir_for_role).
+WORKSPACE_AREAS: dict[str, tuple[str, str]] = {
+    "backend":     ("backend",     "Backend"),
+    "frontend":    ("frontend",    "Frontend"),
+    "server_side": ("server-side", "Server-side"),
+}
+
 # Skill đi kèm vai trò — bản sao theo KEY của ROLE_SKILL_DIRS trong
 # ai_team/skill_loader.py (bên đó map theo tên hiển thị). Sửa một bên thì sửa cả
 # hai, nếu không cùng một agent sẽ đọc bộ quy ước khác nhau ở 2 làn.

@@ -2,6 +2,7 @@ import React, { useCallback, useEffect, useMemo, useState } from "react";
 import { useWorkflows, useStepJobs, useWorkerStatus } from "../hooks/useWorkflows";
 import { STATUS_META, TYPE_ICON, StepRow, fmtTime, useCopy, useMarkDone } from "./RunSteps";
 import { RunDetail, RunStep, WorkflowRun, WorkflowStepJob } from "../types";
+import ActiveTasks from "./ActiveTasks";
 
 /**
  * Màn hình chạy riêng.
@@ -381,6 +382,14 @@ export default function RunConsole({ mode = "page", initialWorkflowId = null, in
           🔄 Làm mới
         </button>
       </div>
+
+      {/* Mọi bước đang chờ, gom từ mọi workflow — trước đây nằm ở đầu tab Workflows,
+          chỗ đó chỉ để soạn sơ đồ nên nhìn rối; việc phải làm thuộc về màn hình này. */}
+      {mode === "page" && (
+        <div style={{ paddingTop: 16 }}>
+          <ActiveTasks onOpenRun={(wfId, rId) => { setWorkflowId(wfId); setRunId(rId); }} />
+        </div>
+      )}
 
       {/* Thân: cột trái = việc phải làm, cột phải = toàn bộ bước */}
       <div style={{

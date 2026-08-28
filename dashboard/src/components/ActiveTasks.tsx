@@ -10,7 +10,10 @@ const TYPE_ICON: Record<string, string> = {
   "logic.condition":      "🔀",
 };
 
-function TaskRow({ task, onChanged }: { task: ActiveTask; onChanged: () => void }) {
+function TaskRow({ task, onChanged, onOpenRun }: {
+  task: ActiveTask; onChanged: () => void;
+  onOpenRun?: (workflowId: number, runId: number) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
   const [content, setContent]   = useState<string | null>(null);
   const [busy, setBusy]         = useState(false);
@@ -51,7 +54,17 @@ function TaskRow({ task, onChanged }: { task: ActiveTask; onChanged: () => void 
         <div style={{ flex: 1, minWidth: 0 }}>
           <div style={{ fontSize: 13, color: "#e2e8f0", fontWeight: 500 }}>{task.node_label}</div>
           <div style={{ fontSize: 11, color: "#6b7280" }}>
-            {task.workflow_name} · run #{task.run_id}
+            {onOpenRun ? (
+              <button onClick={() => onOpenRun(task.workflow_id, task.run_id)}
+                title="Mở lần chạy này ở bảng bên dưới"
+                style={{
+                  background: "none", border: "none", padding: 0, cursor: "pointer",
+                  fontSize: 11, color: "#93c5fd", textDecoration: "underline",
+                  textDecorationStyle: "dotted",
+                }}>
+                {task.workflow_name} · run #{task.run_id} ↗
+              </button>
+            ) : <>{task.workflow_name} · run #{task.run_id}</>}
             {task.client_folder ? ` · ${task.client_folder}` : " · (run cũ, chưa gắn project)"}
           </div>
           {task.task_name && (
@@ -107,7 +120,10 @@ function TaskRow({ task, onChanged }: { task: ActiveTask; onChanged: () => void 
   );
 }
 
-export default function ActiveTasks() {
+export default function ActiveTasks({ onOpenRun }: {
+  /** Có thì mỗi task bấm được để mở đúng lần chạy đó */
+  onOpenRun?: (workflowId: number, runId: number) => void;
+} = {}) {
   const { tasks, loading, refetch } = useActiveTasks();
 
   if (loading) return null;
@@ -124,7 +140,7 @@ export default function ActiveTasks() {
         </div>
       ) : (
         tasks.map(t => (
-          <TaskRow key={`${t.run_id}-${t.node_id}`} task={t} onChanged={refetch} />
+          <TaskRow key={`${t.run_id}-${t.node_id}`} task={t} onChanged={refetch} onOpenRun={onOpenRun} />
         ))
       )}
     </div>

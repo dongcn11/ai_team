@@ -4,6 +4,7 @@ from pydantic import BaseModel
 from typing import List, Optional
 from sqlalchemy.orm import Session
 import io
+import json
 import os
 import re
 import shutil
@@ -58,7 +59,7 @@ CLAUDE_BLOCKED_DETAIL = (
     "(rủi ro khoá account). Dùng 'opencode'."
 )
 
-from system_config import get_system_agents
+from system_config import get_system_agents, WORKSPACE_AREAS
 from database import get_db
 from models import Project, ProjectTask, FeatureFile, Workflow, WorkflowRun
 
@@ -77,12 +78,61 @@ router = APIRouter()
 
 # ── TOML helpers ──────────────────────────────────────────────────────────────
 
+def _toml_error(folder: Path) -> Optional[str]:
+    """Mô tả lỗi cú pháp của settings.toml, None nếu file ổn."""
+    f = folder / "settings.toml"
+    if not f.exists():
+        return None
+    try:
+        with open(f, "rb") as fh:
+            tomllib.load(fh)
+        return None
+    except tomllib.TOMLDecodeError as e:
+        return str(e)
+    except OSError as e:
+        return f"không đọc được file: {e}"
+
+
 def _read_toml(folder: Path) -> dict:
+    """Đọc settings.toml, file hỏng thì trả {} thay vì ném.
+
+    Một project có settings.toml sai cú pháp từng làm CẢ trang Projects trắng
+    (500 ở /api/projects) — hỏng 1 folder mà mất hết. Giờ folder hỏng vẫn hiện,
+    kèm cờ config_error để biết mà sửa. Đường ghi dùng _read_toml_strict."""
     f = folder / "settings.toml"
     if not f.exists():
         return {}
-    with open(f, "rb") as fh:
-        return tomllib.load(fh)
+    try:
+        with open(f, "rb") as fh:
+            return tomllib.load(fh)
+    except (tomllib.TOMLDecodeError, OSError):
+        return {}
+
+
+def _read_toml_strict(folder: Path) -> dict:
+    """Dùng trước khi GHI: file hỏng thì báo lỗi rõ, tuyệt đối không ghi đè.
+
+    Nếu để _read_toml lenient chạy ở đường ghi, ta sẽ lấy {} rồi _write_toml
+    ghi lại file rỗng — xoá sạch cấu hình của người ta chỉ vì 1 dấu backslash."""
+    err = _toml_error(folder)
+    if err:
+        raise HTTPException(
+            status_code=400,
+            detail=f"clients/{folder.name}/settings.toml sai cú pháp TOML ({err}). "
+                   f"Sửa file rồi thử lại — API không ghi đè để tránh mất cấu hình.",
+        )
+    return _read_toml(folder)
+
+
+def _toml_str(v) -> str:
+    """Chuoi TOML basic-string da escape.
+
+    Dung json.dumps vi bo escape cua JSON trung voi TOML o dung nhung ky tu can:
+    dau gach nguoc, dau nhay kep, xuong dong, tab. Truoc day ghi tran nen duong
+    dan Windows kieu C:(gach nguoc)www lam file TOML hong -> ca trang Projects 500.
+    ensure_ascii=False de giu nguyen tieng Viet.
+    """
+    return json.dumps(str(v), ensure_ascii=False)
 
 
 def _write_toml(folder: Path, raw: dict):
@@ -97,7 +147,9 @@ def _write_toml(folder: Path, raw: dict):
             elif isinstance(v, int):
                 lines.append(f"{k} = {v}")
             else:
-                lines.append(f'{k} = "{v}"')
+                # Escape thật sự: đường dẫn Windows "C:\www\x" mà ghi trần sẽ
+                # tạo TOML hỏng (\w không phải escape hợp lệ) và làm 500 cả trang.
+                lines.append(f"{k} = {_toml_str(v)}")
         lines.append("")
     (folder / "settings.toml").write_text("\n".join(lines), encoding="utf-8")
 
@@ -127,6 +179,57 @@ def _write_local_template(folder: Path, slug: str):
         '# pm_model = "opencode/qwen3.6-plus"\n'
     )
     target.write_text(template, encoding="utf-8")
+
+
+# Thu muc code cua project: <output>/backend + <output>/frontend, tao ngay luc tao
+# project chu khong doi den luc chay feature. Cung quy uoc voi pipeline
+# (ai_team/orchestrator.py::_work_dir_for_role) va voi khoi "Noi lam viec" trong file task.
+def _workspace_subdirs(raw: dict) -> list[str]:
+    """Thư mục con cần dựng: đúng những vùng project khai tech stack.
+
+    Không khai gì thì dựng backend/ + frontend/ cho có chỗ bắt đầu."""
+    tech = raw.get("tech_stack") or {}
+    dirs = [folder for key, (folder, _label) in WORKSPACE_AREAS.items()
+            if str(tech.get(key) or "").strip()]
+    return dirs or ["backend", "frontend"]
+
+
+def _is_abs_path(p: str) -> bool:
+    return bool(re.match(r"^[A-Za-z]:[\/]", p)) or p.startswith("/")
+
+
+def _ensure_workspace(folder: Path, directory: str, subdirs: Optional[list] = None) -> dict:
+    """Tao thu muc code + backend/ + frontend/ cho project.
+
+    API chay trong container nen chi voi toi duoc cac mount: clients/ (ghi duoc),
+    output/ (chi doc). Duong dan tuyet doi kieu C:/www/x nam ngoai container -> khong
+    tao duoc; luc do tra ve san lenh mkdir de nguoi dung dan vao terminal, thay vi im
+    lang roi de agent tu doan cho ghi code.
+    """
+    subdirs = subdirs or ["backend", "frontend"]
+    raw_dir = (directory or "").replace(chr(92), "/").strip() or f"./clients/{folder.name}/output"
+    host_path = raw_dir.rstrip("/") if _is_abs_path(raw_dir) else raw_dir.lstrip("./").rstrip("/")
+    mk = " ".join(f'"{host_path}/{d}"' for d in subdirs)
+
+    if _is_abs_path(raw_dir):
+        return {"created": False, "path": host_path,
+                "reason": "Thu muc nam ngoai container nen dashboard khong tao duoc",
+                "mkdir_cmd": f"mkdir {mk}"}
+
+    # Tuong doi -> quy ve trong repo. Chi tao duoc phan nam trong clients/ (mount ghi duoc).
+    target = (CLIENTS_DIR / Path(host_path).relative_to("clients")) if host_path.startswith("clients/")         else None
+    if target is None:
+        return {"created": False, "path": host_path,
+                "reason": "Chi tu tao duoc thu muc nam trong clients/",
+                "mkdir_cmd": f"mkdir {mk}"}
+    try:
+        for d in subdirs:
+            (target / d).mkdir(parents=True, exist_ok=True)
+    except OSError as e:
+        return {"created": False, "path": host_path, "reason": str(e),
+                "mkdir_cmd": f"mkdir {mk}"}
+    return {"created": True, "path": host_path,
+            "subdirs": [f"{host_path}/{d}" for d in subdirs]}
 
 
 def _resolve_dir(folder: Path, key: str, fallback: Path) -> Path:
@@ -164,6 +267,7 @@ def _folder_to_project(folder: Path) -> dict:
         "agents":      agents,
         "agent_count": len(agents),
         "output_dir":  raw.get("output", {}).get("directory", f"./output/{folder.name}"),
+        "config_error": _toml_error(folder),
     }
 
 
@@ -214,6 +318,9 @@ class ProjectCreate(BaseModel):
     default_tool: str = "opencode"
     backend: str = ""
     frontend: str = ""
+    server_side: str = ""
+    # Thư mục code của dự án. Bỏ trống → ./clients/<slug>/output
+    output_dir: str = ""
 
 
 @router.post("/")
@@ -244,16 +351,21 @@ def create_project(payload: ProjectCreate) -> dict:
     raw: dict = {
         "project": {"name": slug.replace("_", " ").replace("-", " ").title(), "profile": payload.profile},
         "agents":  agents,
-        "output":  {"directory": f"./clients/{slug}/output"},
+        "output":  {"directory": (payload.output_dir or "").strip() or f"./clients/{slug}/output"},
         "timeouts": {"claude_code": 600, "opencode": 600},
         "tech_stack": {
             "backend":  payload.backend  or "Python FastAPI + SQLModel + SQLite",
             "frontend": payload.frontend or "React + TypeScript + Vite + TailwindCSS",
+            # Chỉ ghi khi có khai — dự án không có phần server-side thì đừng bịa ra
+            # thư mục cho agent hiểu nhầm.
+            **({"server_side": payload.server_side} if payload.server_side.strip() else {}),
         },
     }
     _write_toml(folder, raw)
     _write_local_template(folder, slug)
-    return _folder_to_project(folder)
+    # Dựng sẵn khung code ngay lúc tạo project, không đợi tới lúc chạy feature
+    workspace = _ensure_workspace(folder, raw["output"]["directory"], _workspace_subdirs(raw))
+    return {**_folder_to_project(folder), "workspace": workspace}
 
 
 class ProjectPatch(BaseModel):
@@ -261,6 +373,7 @@ class ProjectPatch(BaseModel):
     profile: Optional[str] = None
     backend: Optional[str] = None
     frontend: Optional[str] = None
+    server_side: Optional[str] = None
     output_dir: Optional[str] = None
 
 
@@ -270,7 +383,7 @@ def patch_project(folder_name: str, payload: ProjectPatch) -> dict:
     folder = CLIENTS_DIR / folder_name
     if not folder.is_dir() or not (folder / "settings.toml").exists():
         raise HTTPException(status_code=404, detail="Project not found")
-    raw = _read_toml(folder)
+    raw = _read_toml_strict(folder)
 
     if payload.profile is not None:
         profile_agents = _profile_agents()
@@ -288,11 +401,24 @@ def patch_project(folder_name: str, payload: ProjectPatch) -> dict:
     if payload.frontend is not None:
         raw.setdefault("tech_stack", {})["frontend"] = payload.frontend.strip()
 
+    if payload.server_side is not None:
+        tech = raw.setdefault("tech_stack", {})
+        if payload.server_side.strip():
+            tech["server_side"] = payload.server_side.strip()
+        else:
+            tech.pop("server_side", None)     # xoá trắng = dự án không có vùng này
+
+    workspace = None
     if payload.output_dir is not None:
-        raw.setdefault("output", {})["directory"] = payload.output_dir.strip() or f"./clients/{folder_name}/output"
+        raw["output"] = {**raw.get("output", {}),
+                         "directory": payload.output_dir.strip() or f"./clients/{folder_name}/output"}
+        workspace = _ensure_workspace(folder, raw["output"]["directory"], _workspace_subdirs(raw))
 
     _write_toml(folder, raw)
-    return _folder_to_project(folder)
+    out = _folder_to_project(folder)
+    if workspace is not None:
+        out["workspace"] = workspace
+    return out
 
 
 # ── Delete / Backup ───────────────────────────────────────────────────────────
@@ -401,7 +527,7 @@ def add_settings_agent(folder_name: str, payload: AgentFsPayload) -> List[dict]:
     folder = CLIENTS_DIR / folder_name
     if not folder.exists():
         raise HTTPException(status_code=404, detail="Client folder not found")
-    raw = _read_toml(folder)
+    raw = _read_toml_strict(folder)
     agents = raw.setdefault("agents", {})
     if f"{payload.key}_tool" in agents:
         raise HTTPException(status_code=409, detail=f"Agent '{payload.key}' already exists")
@@ -429,7 +555,7 @@ def remove_settings_agent(
     cleanup: bool = Query(False, description="Xóa workspace code của agent"),
 ) -> dict:
     folder = CLIENTS_DIR / folder_name
-    raw = _read_toml(folder)
+    raw = _read_toml_strict(folder)
     agents = raw.get("agents", {})
     if f"{agent_key}_tool" not in agents:
         raise HTTPException(status_code=404, detail=f"Agent '{agent_key}' not found")

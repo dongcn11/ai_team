@@ -38,6 +38,7 @@ của chính họ — hệ thống chỉ chuẩn bị file và theo dõi trạng
 import copy
 import os
 import re
+import tomllib
 from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
@@ -48,7 +49,7 @@ from sqlalchemy import desc
 
 from database import get_db, SessionLocal
 from models import Workflow, WorkflowRun, WorkflowStepJob, Project, ProjectTask
-from system_config import SKILLS_DIR, get_system_agents
+from system_config import SKILLS_DIR, WORKSPACE_AREAS, get_system_agents
 from schemas import WorkflowCreate, WorkflowUpdate, WorkflowOut, WorkflowRunOut
 from routers.projects import _get_or_create_db_project
 
@@ -447,6 +448,94 @@ def _task_context(db: Session, run: WorkflowRun) -> str:
     return "\n".join(lines) + "\n\n"
 
 
+def _project_workspace(wf: Workflow) -> Optional[str]:
+    """Thư mục code của project trên MÁY THẬT — để ghi vào file task.
+
+    Không nói thì agent tự đoán: nó thấy file task nằm trong clients/<slug>/_tasks/
+    nên để code ngay cạnh đó, trong khi clients/ chỉ là nơi chứa cấu hình project
+    và file task của dashboard.
+
+    Đọc [output] directory trong clients/<slug>/settings.toml:
+      - đường dẫn tuyệt đối (C:/www/x) → giữ nguyên, CLI chạy trên host nên dùng được
+      - đường dẫn tương đối → quy về gốc repo, vì CLI chạy với cwd = gốc repo
+    """
+    slug = wf.client_folder
+    if not slug:
+        return None
+    directory = str((_project_settings(wf).get("output") or {}).get("directory") or "")
+    if not directory:
+        return f"clients/{slug}/output"
+    d = directory.replace(chr(92), "/").strip()
+    if re.match(r"^[A-Za-z]:/", d) or d.startswith("/"):
+        return d.rstrip("/")
+    return d.lstrip("./").rstrip("/")
+
+
+def _project_settings(wf: Workflow) -> dict:
+    """settings.toml của project, {} nếu thiếu hoặc hỏng."""
+    if not wf.client_folder:
+        return {}
+    cfg = CLIENTS_DIR / wf.client_folder / "settings.toml"
+    if not cfg.exists():
+        return {}
+    try:
+        with open(cfg, "rb") as fh:
+            return tomllib.load(fh)
+    except Exception:
+        return {}                    # settings.toml hỏng → coi như chưa cấu hình
+
+
+# Vai trò agent → vùng code mặc định. Pipeline còn chia tiếp be1/be2 vì các agent
+# chạy song song; workflow chạy tuần tự 1 bước/lần nên không cần, chia thêm chỉ làm
+# code nằm rải rác.
+_ROLE_AREA = {
+    "be1": "backend", "be2": "backend",
+    "fe1": "frontend", "fe2": "frontend",
+}
+
+
+def _workspace_section(wf: Workflow, node: dict) -> str:
+    """Khối "Nơi làm việc" chèn vào đầu mỗi file task.
+
+    Chia rõ: **code** nằm trong thư mục dự án (các vùng khai trong WORKSPACE_AREAS),
+    còn **spec** (prd.md, file task) ở lại clients/<slug>/. Không nói thì agent để
+    lẫn code vào clients/ vì file task nằm ở đó.
+
+    Chỉ liệt kê vùng nào project thật sự khai tech stack — dự án chỉ có backend thì
+    không việc gì phải bịa ra frontend/ cho agent hiểu nhầm."""
+    ws = _project_workspace(wf)
+    if not ws:
+        return ""
+    tech = (_project_settings(wf).get("tech_stack") or {})
+    areas = [(key, folder, label, str(tech.get(key) or "").strip())
+             for key, (folder, label) in WORKSPACE_AREAS.items()
+             if str(tech.get(key) or "").strip()]
+    if not areas:      # chưa khai gì → vẫn nêu 2 vùng cơ bản để có chỗ mà đặt code
+        areas = [(k, WORKSPACE_AREAS[k][0], WORKSPACE_AREAS[k][1], "")
+                 for k in ("backend", "frontend")]
+
+    lines = ["## Nơi làm việc", f"Code của dự án nằm trong `{ws}` — chưa có thì tạo:"]
+    for _key, folder, label, stack in areas:
+        lines.append(f"- `{ws}/{folder}` — {label}{f' ({stack})' if stack else ''}")
+
+    agent = _node_agent(node)
+    area_key = _ROLE_AREA.get(agent["key"]) if agent else None
+    folder = WORKSPACE_AREAS.get(area_key, ("", ""))[0] if area_key else ""
+    if folder:
+        lines.append(f"- Bước này do **{agent['name']}** chạy → làm trong `{ws}/{folder}`.")
+    else:
+        lines.append("- Đặt code đúng vùng của nó; thứ dùng chung (docker-compose, README, "
+                     "script) để ở gốc thư mục dự án.")
+
+    lines += [
+        "",
+        f"Spec thì ngược lại — vẫn ở `clients/{wf.client_folder}/`: `prd.md` (yêu cầu dự án) và "
+        f"`_tasks/` (các file task như file này). Đọc thoải mái nhưng **đừng ghi code vào đó**.",
+        "",
+    ]
+    return "\n".join(lines) + "\n"
+
+
 def _task_file_path(tasks_dir: Path, workflow_id: int, run_id: int, node_id: str) -> Path:
     return tasks_dir / f"wf{workflow_id}_run{run_id}_{node_id}.md"
 
@@ -574,7 +663,8 @@ RESULT_HEADING = "## Kết quả"
 
 
 def _write_task_file(path: Path, workflow_id: int, run_id: int, node: dict,
-                     context: str = "", task_id: Optional[int] = None) -> None:
+                     context: str = "", task_id: Optional[int] = None,
+                     workspace: str = "") -> None:
     is_condition = node.get("type") == CONDITION_TYPE
     content = (
         "---\n"
@@ -587,6 +677,7 @@ def _write_task_file(path: Path, workflow_id: int, run_id: int, node: dict,
         f"node_type: {node.get('type', '')}\n"
         "---\n\n"
         f"{context}"
+        f"{workspace}"
         f"{_task_body(node)}\n"
         f"{RESULT_HEADING}\n"
         "<!-- Ghi tóm tắt kết quả vào đây (file đã sửa, MR link, ghi chú...). "
@@ -810,7 +901,8 @@ def advance_run(db: Session, run: WorkflowRun, trigger_message: Optional[str] = 
 
             path = _task_file_path(tasks_dir(), wf.id, run.id, nid)
             _write_task_file(path, wf.id, run.id, node,
-                             context=task_context(), task_id=run.task_id)
+                             context=task_context(), task_id=run.task_id,
+                             workspace=_workspace_section(wf, node))
             node_status[nid] = "running"
             log.append({
                 "node_id": nid,

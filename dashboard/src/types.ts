@@ -98,17 +98,21 @@ export interface Project {
   id: string;
   name: string;
   profile?: string;
-  tech_stack: { backend?: string; frontend?: string };
+  tech_stack: { backend?: string; frontend?: string; server_side?: string };
   agents: AgentFS[];
   agent_count: number;
   output_dir: string;
+  /** settings.toml sai cú pháp TOML — project vẫn hiện nhưng không đọc được cấu hình */
+  config_error?: string | null;
 }
 
 export interface ProjectSummary {
   id: string;
   name: string;
-  tech_stack: { backend?: string; frontend?: string };
+  tech_stack: { backend?: string; frontend?: string; server_side?: string };
   agent_count: number;
+  /** settings.toml sai cú pháp TOML — project vẫn hiện để còn biết mà sửa */
+  config_error?: string | null;
 }
 
 export interface AgentDetail {

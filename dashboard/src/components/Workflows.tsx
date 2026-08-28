@@ -21,7 +21,6 @@ import {
 import "@xyflow/react/dist/style.css";
 import { useWorkflows, useWorkflowRun, useSkills, useLatestRun, useConfigAgents } from "../hooks/useWorkflows";
 import { useProjects } from "../hooks/useProjects";
-import ActiveTasks from "./ActiveTasks";
 import RunSteps from "./RunSteps";
 import RunConsole from "./RunConsole";
 import {
@@ -1100,8 +1099,6 @@ export default function WorkflowsPage() {
         <h2>Workflows</h2>
         <button className="btn-primary" onClick={() => setShowCreate(true)}>+ New Workflow</button>
       </div>
-
-      <ActiveTasks />
 
       {showCreate && (
         <div className="card" style={{ marginBottom: 20 }}>

@@ -6,6 +6,9 @@ import RunConsole from "./RunConsole";
 import { Project, AgentFS, RunSummary, TaskRunSummary } from "../types";
 
 const VALID_KEYS = ["pm","scrum","analyst","be1","be2","fe1","fe2","fs1","fs2","leader"];
+/** Đường dẫn tuyệt đối (C:\..., C:/..., /...) — dashboard trong Docker không đọc được. */
+const isAbsPath = (p: string) => /^([A-Za-z]:[\\/]|\/)/.test(p || "");
+
 // Chỉ opencode. Claude Code bị chặn trong pipeline tự động (rủi ro khoá account
 // — subscription cá nhân không dùng cho automation chạy nền). Xem ai_team/runner.py.
 const DEFAULT_MODELS: Record<string,string> = { opencode: "opencode-go/qwen3.5-plus" };
@@ -51,7 +54,7 @@ export default function ProjectsPage() {
   const [deleteStep,         setDeleteStep]         = useState<"confirm"|"done">("confirm");
 
   // Inline-editable project header fields
-  type EditableField = "name" | "backend" | "frontend" | "output_dir" | "profile";
+  type EditableField = "name" | "backend" | "frontend" | "server_side" | "output_dir";
   const [editingField, setEditingField] = useState<EditableField | null>(null);
   const [editDraft,    setEditDraft]    = useState("");
   const [editSaving,   setEditSaving]   = useState(false);
@@ -65,22 +68,16 @@ export default function ProjectsPage() {
   // New project form
   const [showNewProject,   setShowNewProject]   = useState(false);
   const [npFolderName,     setNpFolderName]     = useState("");
-  const [npProfile,        setNpProfile]        = useState("fullstack");
   const [npTool,           setNpTool]           = useState("opencode");
   const [npBackend,        setNpBackend]        = useState("");
   const [npFrontend,       setNpFrontend]       = useState("");
+  const [npServerSide,     setNpServerSide]     = useState("");
+  const [npOutputDir,      setNpOutputDir]      = useState("");
   const [npSaving,         setNpSaving]         = useState(false);
+  /** Kết quả dựng thư mục code (backend/ + frontend/) sau khi tạo/đổi output dir */
+  type Workspace = { created: boolean; path: string; subdirs?: string[]; reason?: string; mkdir_cmd?: string };
+  const [workspaceNote, setWorkspaceNote] = useState<Workspace | null>(null);
   const [npError,          setNpError]          = useState("");
-
-  // Profiles list — load từ /api/projects/profiles (đọc từ profiles.yaml)
-  type ProfileInfo = { name: string; label: string; agents: string[]; stages_disabled: string[]; display: string };
-  const [profilesList, setProfilesList] = useState<ProfileInfo[]>([]);
-  useEffect(() => {
-    fetch("/api/projects/profiles")
-      .then(r => r.ok ? r.json() : [])
-      .then((data: ProfileInfo[]) => setProfilesList(data))
-      .catch(() => setProfilesList([]));
-  }, []);
 
   // Agent management
   const [settingsAgents, setSettingsAgents] = useState<AgentFS[]>([]);
@@ -463,8 +460,8 @@ export default function ProjectsPage() {
     if (editingField === "name")       body.name       = editDraft;
     if (editingField === "backend")    body.backend    = editDraft;
     if (editingField === "frontend")   body.frontend   = editDraft;
+    if (editingField === "server_side") body.server_side = editDraft;
     if (editingField === "output_dir") body.output_dir = editDraft;
-    if (editingField === "profile")    body.profile    = editDraft;
 
     const res = await fetch(`/api/projects/${selected.id}`, {
       method: "PATCH",
@@ -472,7 +469,8 @@ export default function ProjectsPage() {
       body: JSON.stringify(body),
     });
     if (res.ok) {
-      const updated: Project = await res.json();
+      const updated: Project & { workspace?: Workspace } = await res.json();
+      if (updated.workspace) setWorkspaceNote(updated.workspace);
       setSelected(prev => prev ? { ...prev, ...updated } : prev);
       refetch();
       cancelEditField();
@@ -503,15 +501,18 @@ export default function ProjectsPage() {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
         folder_name: npFolderName.trim(),
-        profile:     npProfile,
         default_tool: npTool,
         backend:     npBackend.trim(),
         frontend:    npFrontend.trim(),
+        server_side: npServerSide.trim(),
+        output_dir:  npOutputDir.trim(),
       }),
     });
     if (res.ok) {
+      const created = await res.json().catch(() => ({}));
+      setWorkspaceNote(created.workspace ?? null);
       setShowNewProject(false);
-      setNpFolderName(""); setNpBackend(""); setNpFrontend("");
+      setNpFolderName(""); setNpBackend(""); setNpFrontend(""); setNpServerSide(""); setNpOutputDir("");
       await refetch();
     } else {
       const d = await res.json().catch(() => ({}));
@@ -563,28 +564,14 @@ export default function ProjectsPage() {
               </div>
             </div>
             <div>
-              <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Profile</label>
-              <select className="setting-select" value={npProfile} onChange={e => setNpProfile(e.target.value)}>
-                {profilesList.length === 0 ? (
-                  <>
-                    <option value="fullstack">fullstack — PM+Scrum+Analyst+BE1+BE2+FE1+FE2+Leader</option>
-                    <option value="dual_fullstack">dual_fullstack — PM+Scrum+Analyst+FS1+FS2+Leader</option>
-                    <option value="backend_only">backend_only — PM+Scrum+Analyst+BE1+BE2+Leader</option>
-                  </>
-                ) : (
-                  profilesList.map(p => (
-                    <option key={p.name} value={p.name}>
-                      {p.name} — {p.agents.map(a => a.toUpperCase()).join("+")}
-                      {p.stages_disabled.length > 0 ? ` · skip:${p.stages_disabled.join(",")}` : ""}
-                    </option>
-                  ))
-                )}
-              </select>
-              {profilesList.find(p => p.name === npProfile)?.label && (
-                <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
-                  {profilesList.find(p => p.name === npProfile)?.label}
-                </div>
-              )}
+              <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Thư mục code</label>
+              <input className="setting-input" placeholder={`mặc định: ./clients/${npFolderName || "<slug>"}/output`}
+                value={npOutputDir} onChange={e => setNpOutputDir(e.target.value)} />
+              <div style={{ fontSize: 11, color: "#4b5563", marginTop: 4 }}>
+                Tạo sẵn <code>backend/</code> + <code>frontend/</code> trong đó. Đường dẫn tuyệt đối
+                (vd <code>C:/www/{npFolderName || "slug"}</code>) thì dashboard không tạo hộ được —
+                sẽ đưa bạn lệnh mkdir để dán.
+              </div>
             </div>
             <div>
               <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Default tool</label>
@@ -601,13 +588,19 @@ export default function ProjectsPage() {
               <input className="setting-input" placeholder="Python FastAPI + SQLModel + SQLite"
                 value={npBackend} onChange={e => setNpBackend(e.target.value)} />
             </div>
-            {npProfile !== "backend_only" && (
-              <div>
-                <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Frontend tech stack</label>
-                <input className="setting-input" placeholder="React + TypeScript + Vite + TailwindCSS"
-                  value={npFrontend} onChange={e => setNpFrontend(e.target.value)} />
+            <div>
+              <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Frontend tech stack</label>
+              <input className="setting-input" placeholder="React + TypeScript + Vite + TailwindCSS"
+                value={npFrontend} onChange={e => setNpFrontend(e.target.value)} />
+            </div>
+            <div>
+              <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Server-side tech stack</label>
+              <input className="setting-input" placeholder="vd: Node.js SSR / Nginx + deploy script"
+                value={npServerSide} onChange={e => setNpServerSide(e.target.value)} />
+              <div style={{ fontSize: 11, color: "#4b5563", marginTop: 4 }}>
+                Bỏ trống nếu dự án không có phần này — khai thì mới có thư mục <code>server-side/</code>.
               </div>
-            )}
+            </div>
           </div>
           {npError && <p style={{ color: "#ef4444", fontSize: 13, marginTop: 8 }}>{npError}</p>}
           <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
@@ -653,38 +646,6 @@ export default function ProjectsPage() {
                   title="Folder slug — không sửa được">
                   <span className="project-link-icon">&#x1f4c1;</span> clients/{selected.id}
                 </span>
-
-                {/* Profile */}
-                {editingField === "profile" ? (
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                    <select className="setting-select" value={editDraft}
-                      onChange={e => setEditDraft(e.target.value)}
-                      style={{ width: 220, fontSize: 11, padding: "2px 6px", boxSizing: "border-box" }}>
-                      {profilesList.length === 0 ? (
-                        <>
-                          <option value="fullstack">fullstack</option>
-                          <option value="dual_fullstack">dual_fullstack</option>
-                          <option value="backend_only">backend_only</option>
-                        </>
-                      ) : profilesList.map(p => (
-                        <option key={p.name} value={p.name}>{p.name}</option>
-                      ))}
-                    </select>
-                    <button onClick={saveEditField} disabled={editSaving}
-                      style={{ background: "none", border: "none", color: "#86efac", cursor: "pointer", fontSize: 13 }}
-                      title="Lưu">✓</button>
-                    <button onClick={cancelEditField} disabled={editSaving}
-                      style={{ background: "none", border: "none", color: "#9ca3af", cursor: "pointer", fontSize: 13 }}
-                      title="Huỷ">✕</button>
-                  </span>
-                ) : (
-                  <span className="project-link"
-                    style={{ background: "#172554", borderColor: "#3b82f655", cursor: "pointer" }}
-                    onClick={() => startEditField("profile", selected.profile || "")}
-                    title="Click để đổi profile">
-                    🧩 {selected.profile || "—"} <span style={{ color: "#6b7280", fontSize: 9 }}>✏️</span>
-                  </span>
-                )}
 
                 {/* Backend */}
                 {editingField === "backend" ? (
@@ -734,6 +695,31 @@ export default function ProjectsPage() {
                   </span>
                 )}
 
+                {/* Server-side (chỉ hiện khi dự án có khai) */}
+                {editingField === "server_side" ? (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                    <input className="setting-input" value={editDraft} autoFocus
+                      onChange={e => setEditDraft(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === "Enter") saveEditField();
+                        if (e.key === "Escape") cancelEditField();
+                      }}
+                      placeholder="để trống = bỏ vùng server-side"
+                      style={{ width: 280, fontSize: 11, padding: "2px 6px", boxSizing: "border-box" }} />
+                    <button onClick={saveEditField} disabled={editSaving}
+                      style={{ background: "none", border: "none", color: "#86efac", cursor: "pointer", fontSize: 13 }}>✓</button>
+                    <button onClick={cancelEditField} disabled={editSaving}
+                      style={{ background: "none", border: "none", color: "#9ca3af", cursor: "pointer", fontSize: 13 }}>✕</button>
+                  </span>
+                ) : (
+                  <span className="project-link"
+                    style={{ background: "#2e1a1a", borderColor: "#f9731655", cursor: "pointer" }}
+                    onClick={() => startEditField("server_side", selected.tech_stack?.server_side || "")}
+                    title="Click để sửa server-side stack (để trống = dự án không có vùng này)">
+                    SS: {selected.tech_stack?.server_side || "—"} <span style={{ color: "#6b7280", fontSize: 9 }}>✏️</span>
+                  </span>
+                )}
+
                 {/* Output dir */}
                 {editingField === "output_dir" ? (
                   <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
@@ -753,8 +739,16 @@ export default function ProjectsPage() {
                   <span className="project-link"
                     style={{ background: "#1a1a1a", borderColor: "#374151", fontSize: 10, cursor: "pointer" }}
                     onClick={() => startEditField("output_dir", selected.output_dir)}
-                    title="Click để sửa output directory">
-                    📂 {selected.output_dir} <span style={{ color: "#6b7280", fontSize: 9 }}>✏️</span>
+                    title={isAbsPath(selected.output_dir)
+                      ? "Agent trên máy bạn sẽ ghi code vào đây. Nhưng dashboard chạy trong Docker nên "
+                        + "KHÔNG đọc được thư mục tuyệt đối ngoài repo — tab Docs sẽ rơi về ./output/<project>. "
+                        + "Muốn dashboard xem được thì dùng đường dẫn tương đối trong repo."
+                      : "Click để sửa output directory"}>
+                    📂 {selected.output_dir}
+                    {isAbsPath(selected.output_dir) && (
+                      <span style={{ color: "#fbbf24", marginLeft: 4 }} >⚠</span>
+                    )}
+                    <span style={{ color: "#6b7280", fontSize: 9 }}> ✏️</span>
                   </span>
                 )}
               </div>
@@ -1464,6 +1458,38 @@ export default function ProjectsPage() {
         </div>
       )}
 
+      {/* Kết quả dựng thư mục code — báo rõ đã tạo hay phải tự chạy mkdir */}
+      {workspaceNote && (
+        <div style={{
+          position: "fixed", bottom: 24, right: 24, zIndex: 200, maxWidth: 520,
+          borderRadius: 8, padding: "12px 16px", fontSize: 13, lineHeight: 1.6,
+          background: workspaceNote.created ? "#14532d" : "#1c1408",
+          border: `1px solid ${workspaceNote.created ? "#166534" : "#78350f"}`,
+          color: workspaceNote.created ? "#86efac" : "#fde68a",
+        }}>
+          <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
+            <div style={{ flex: 1 }}>
+              {workspaceNote.created ? (
+                <>✓ Đã tạo thư mục code: <code>{workspaceNote.path}</code> (kèm <code>backend/</code> và{" "}
+                  <code>frontend/</code>)</>
+              ) : (
+                <>
+                  ⚠ Chưa tạo được <code>{workspaceNote.path}</code> — {workspaceNote.reason}.<br />
+                  Mở terminal và dán lệnh này:
+                  <code style={{
+                    display: "block", marginTop: 6, padding: "6px 8px", borderRadius: 6,
+                    background: "#0b1220", color: "#bfdbfe", fontSize: 12,
+                    whiteSpace: "pre-wrap", wordBreak: "break-all", userSelect: "all",
+                  }}>{workspaceNote.mkdir_cmd}</code>
+                </>
+              )}
+            </div>
+            <button onClick={() => setWorkspaceNote(null)}
+              style={{ background: "none", border: "none", color: "inherit", cursor: "pointer", fontSize: 16, lineHeight: 1 }}>✕</button>
+          </div>
+        </div>
+      )}
+
       {runDetail && (
         <RunConsole mode="overlay"
           initialWorkflowId={runDetail.workflowId}
@@ -1480,11 +1506,19 @@ export default function ProjectsPage() {
 
       <div className="project-grid">
         {projects.map(p => (
-          <div key={p.id} className="project-card" onClick={() => openProject(p.id)}>
+          <div key={p.id} className="project-card" onClick={() => openProject(p.id)}
+            style={p.config_error ? { borderColor: "#7f1d1d" } : undefined}>
             <div className="project-card-top">
               <span className="project-card-name">{p.name}</span>
               <span className="project-link" style={{ fontSize: 10, padding: "2px 6px" }}>{p.id}</span>
             </div>
+            {p.config_error && (
+              <p style={{ fontSize: 11, color: "#fca5a5", margin: "6px 0 0", lineHeight: 1.5 }}
+                title={p.config_error}>
+                ⚠ settings.toml sai cú pháp TOML — sửa file rồi Refresh.<br />
+                <span style={{ color: "#7f1d1d" }}>{p.config_error}</span>
+              </p>
+            )}
             {p.tech_stack?.backend && (
               <p className="project-card-desc" style={{ color: "#22c55e" }}>{p.tech_stack.backend}</p>
             )}
