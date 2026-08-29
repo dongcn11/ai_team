@@ -3,6 +3,7 @@ import { useWorkflows, useStepJobs, useWorkerStatus } from "../hooks/useWorkflow
 import { STATUS_META, TYPE_ICON, StepRow, fmtTime, useCopy, useMarkDone } from "./RunSteps";
 import { RunDetail, RunStep, WorkflowRun, WorkflowStepJob } from "../types";
 import ActiveTasks from "./ActiveTasks";
+import { useOpenQuestions, QuestionCard } from "./AgentQuestions";
 
 /**
  * Màn hình chạy riêng.
@@ -302,6 +303,10 @@ export default function RunConsole({ mode = "page", initialWorkflowId = null, in
     [detail],
   );
 
+  // Bước đang chờ dev chốt (agent ghi "## Cần xác nhận" + status: blocked).
+  // Trả lời ngay tại đây thay vì phải mở file task ra đọc rồi sửa tay.
+  const { questions, reload: reloadQuestions } = useOpenQuestions(runId);
+
   const pct = detail && detail.total_steps > 0
     ? Math.round((detail.done_steps / detail.total_steps) * 100) : 0;
   const statusText = detail?.status === "done" ? "hoàn thành"
@@ -448,13 +453,26 @@ export default function RunConsole({ mode = "page", initialWorkflowId = null, in
             </div>
           )}
 
+          {detail && questions.length > 0 && (
+            <div className="aq-panel" style={{ marginBottom: 14 }}>
+              <div className="aq-head">
+                <span className="aq-badge">{questions.length}</span>
+                Agent đang chờ bạn xác nhận
+              </div>
+              {questions.map(q => (
+                <QuestionCard key={q.id} q={q}
+                  onAnswered={() => { reloadQuestions(); refresh(); refetchJobs(); }} />
+              ))}
+            </div>
+          )}
+
           {detail && waiting.map(s => (
             <ConsoleActionCard key={s.node_id} step={s} runId={detail.run_id}
               job={jobByNode[s.node_id]}
               onChanged={() => { refresh(); refetchJobs(); }} />
           ))}
 
-          {detail && waiting.length === 0 && (
+          {detail && waiting.length === 0 && questions.length === 0 && (
             <div style={{
               fontSize: 13, color: detail.status === "done" ? "#4ade80"
                 : detail.status === "failed" ? "#fca5a5" : "#9ca3af",
@@ -484,8 +502,8 @@ export default function RunConsole({ mode = "page", initialWorkflowId = null, in
                   <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
                     <span>{TYPE_ICON[s.node_type] || "📄"}</span>
                     <strong style={{ fontSize: 13, color: "#e2e8f0" }}>{s.label}</strong>
-                    <span style={{ fontSize: 11, color: STATUS_META[s.status].color }}>
-                      {STATUS_META[s.status].label}
+                    <span style={{ fontSize: 11, color: (STATUS_META[s.status] ?? STATUS_META.pending).color }}>
+                      {(STATUS_META[s.status] ?? STATUS_META.pending).label}
                     </span>
                     <div style={{ flex: 1 }} />
                     <span style={{ fontSize: 11, color: "#4b5563" }}>

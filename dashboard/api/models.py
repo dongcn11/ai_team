@@ -236,6 +236,10 @@ class WorkflowStepJob(Base):
     # chọn 1 agent của pipeline. Model đi kèm agent đó.
     tool          = Column(String, default="claude")
     model         = Column(String, nullable=True)
+    # Thư mục code của project — worker truyền lại cho CLI qua --add-dir. Không có
+    # thì Claude headless chạy với cwd=repo sẽ không được phép đọc/ghi thư mục code
+    # nằm ngoài repo, và MỌI bước của project đó cùng chết một lỗi quyền.
+    add_dirs      = Column(JSON, default=list)
     status        = Column(String, default="queued") # queued/running/done/failed/canceled
     output        = Column(Text, nullable=True)      # stdout cắt ngắn, để soi khi lỗi
     error         = Column(Text, nullable=True)
@@ -262,6 +266,33 @@ class WorkflowRun(Base):
 
     workflow = relationship("Workflow", back_populates="runs")
     task     = relationship("ProjectTask", back_populates="workflow_runs")
+
+
+class AgentQuestion(Base):
+    """Việc agent cần người quyết, đẩy ngược lên dashboard thay vì đoán bừa.
+
+    Agent gặp chỗ thiếu thông tin (chưa chốt phạm vi, thiếu quyền thư mục, phải
+    chọn giữa 2 cách làm) thì ghi mục '## Cần xác nhận' vào file task và đặt
+    `status: blocked`. Vòng poll của workflow đọc file, dựng câu hỏi ở đây và
+    dừng bước đó lại. Dev trả lời trên web -> câu trả lời được ghi ngược vào
+    file task, bước quay về `pending` và chạy tiếp.
+
+    Cố ý đi qua file task chứ không phải kênh riêng: chạy tay và chạy tự động
+    dùng chung một đường, không lệch trạng thái."""
+    __tablename__ = "agent_questions"
+
+    id            = Column(Integer, primary_key=True, index=True)
+    run_id        = Column(Integer, ForeignKey("workflow_runs.id"), nullable=False)
+    workflow_id   = Column(Integer, nullable=True)
+    node_id       = Column(String, nullable=False)
+    node_label    = Column(String, nullable=True)
+    client_folder = Column(String, nullable=True)
+    task_file     = Column(Text, nullable=True)     # đường dẫn file task (tương đối repo)
+    question      = Column(Text, nullable=False)
+    status        = Column(String, default="open")  # open / answered
+    answer        = Column(Text, nullable=True)
+    created_at    = Column(DateTime, server_default=func.now())
+    answered_at   = Column(DateTime, nullable=True)
 
 
 class SubTask(Base):

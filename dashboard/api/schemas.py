@@ -124,6 +124,8 @@ class WorkflowStepJobOut(BaseModel):
     prompt: str
     tool: str = "claude"
     model: Optional[str] = None
+    # Thư mục code của project — worker truyền cho CLI qua --add-dir
+    add_dirs: List[str] = []
     status: str
     output: Optional[str]
     error: Optional[str]
@@ -132,6 +134,27 @@ class WorkflowStepJobOut(BaseModel):
     finished_at: Optional[datetime]
 
     model_config = {"from_attributes": True}
+
+
+class AgentQuestionOut(BaseModel):
+    id: int
+    run_id: int
+    workflow_id: Optional[int] = None
+    node_id: str
+    node_label: Optional[str] = None
+    client_folder: Optional[str] = None
+    task_file: Optional[str] = None
+    question: str
+    status: str
+    answer: Optional[str] = None
+    created_at: datetime
+    answered_at: Optional[datetime] = None
+
+    model_config = {"from_attributes": True}
+
+
+class AgentQuestionAnswer(BaseModel):
+    answer: str
 
 
 class WorkflowStepJobComplete(BaseModel):

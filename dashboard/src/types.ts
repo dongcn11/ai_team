@@ -102,6 +102,11 @@ export interface Project {
   agents: AgentFS[];
   agent_count: number;
   output_dir: string;
+  /** "split" = tách backend/frontend, "mono" = dự án gộp 1 thư mục (Laravel Blade…) */
+  code_layout?: "split" | "mono";
+  /** Thư mục riêng cho từng vùng; trống = <output_dir>/backend, <output_dir>/frontend */
+  backend_dir?: string;
+  frontend_dir?: string;
   /** settings.toml sai cú pháp TOML — project vẫn hiện nhưng không đọc được cấu hình */
   config_error?: string | null;
 }
@@ -294,7 +299,8 @@ export interface Workflow {
 }
 
 export type WorkflowRunStatus = "running" | "done" | "failed" | "cancelled";
-export type NodeRunStatus = "pending" | "running" | "ok" | "error" | "skipped";
+/** "blocked" = agent đã hỏi và đang chờ dev xác nhận trên web (xem AgentQuestions) */
+export type NodeRunStatus = "pending" | "running" | "ok" | "error" | "skipped" | "blocked";
 
 export interface WorkflowRunLogEntry {
   node_id: string;

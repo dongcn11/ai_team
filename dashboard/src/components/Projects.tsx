@@ -54,7 +54,8 @@ export default function ProjectsPage() {
   const [deleteStep,         setDeleteStep]         = useState<"confirm"|"done">("confirm");
 
   // Inline-editable project header fields
-  type EditableField = "name" | "backend" | "frontend" | "server_side" | "output_dir";
+  type EditableField = "name" | "backend" | "frontend" | "server_side"
+                     | "output_dir" | "backend_dir" | "frontend_dir";
   const [editingField, setEditingField] = useState<EditableField | null>(null);
   const [editDraft,    setEditDraft]    = useState("");
   const [editSaving,   setEditSaving]   = useState(false);
@@ -73,11 +74,30 @@ export default function ProjectsPage() {
   const [npFrontend,       setNpFrontend]       = useState("");
   const [npServerSide,     setNpServerSide]     = useState("");
   const [npOutputDir,      setNpOutputDir]      = useState("");
+  /** "split" = code tách backend/frontend, "mono" = dự án gộp 1 thư mục (Laravel Blade…) */
+  const [npLayout,         setNpLayout]         = useState<"split" | "mono">("split");
+  const [npBackendDir,     setNpBackendDir]     = useState("");
+  const [npFrontendDir,    setNpFrontendDir]    = useState("");
   const [npSaving,         setNpSaving]         = useState(false);
-  /** Kết quả dựng thư mục code (backend/ + frontend/) sau khi tạo/đổi output dir */
-  type Workspace = { created: boolean; path: string; subdirs?: string[]; reason?: string; mkdir_cmd?: string };
+  /** Kết quả soát thư mục code sau khi tạo/đổi đường dẫn. Dashboard KHÔNG tự tạo
+      thư mục — thiếu cái nào thì liệt kê ra kèm lệnh mkdir để dev tự tạo. */
+  type Workspace = {
+    ok: boolean; path: string; targets: string[];
+    exists: string[]; missing: string[];
+    /** Nằm ngoài container nên dashboard không kiểm tra được — dev tự xem */
+    unknown: string[];
+    mkdir_cmd?: string;
+  };
   const [workspaceNote, setWorkspaceNote] = useState<Workspace | null>(null);
   const [npError,          setNpError]          = useState("");
+
+  // Token GitHub riêng của project (lưu ở settings.local.toml, không qua DB)
+  type GitCfg = { configured: boolean; hint: string; username: string };
+  const [gitCfg,      setGitCfg]      = useState<GitCfg | null>(null);
+  const [gitEditing,  setGitEditing]  = useState(false);
+  const [gitToken,    setGitToken]    = useState("");
+  const [gitUser,     setGitUser]     = useState("");
+  const [gitSaving,   setGitSaving]   = useState(false);
 
   // Agent management
   const [settingsAgents, setSettingsAgents] = useState<AgentFS[]>([]);
@@ -153,6 +173,7 @@ export default function ProjectsPage() {
   useEffect(() => {
     if (selected) loadSettingsAgents(selected.id);
   }, [selected, loadSettingsAgents]);
+
 
   const loadRunsAndQueue = useCallback(async (id: string) => {
     const [runsRes, queueRes] = await Promise.all([
@@ -461,7 +482,9 @@ export default function ProjectsPage() {
     if (editingField === "backend")    body.backend    = editDraft;
     if (editingField === "frontend")   body.frontend   = editDraft;
     if (editingField === "server_side") body.server_side = editDraft;
-    if (editingField === "output_dir") body.output_dir = editDraft;
+    if (editingField === "output_dir")   body.output_dir   = editDraft;
+    if (editingField === "backend_dir")  body.backend_dir  = editDraft;
+    if (editingField === "frontend_dir") body.frontend_dir = editDraft;
 
     const res = await fetch(`/api/projects/${selected.id}`, {
       method: "PATCH",
@@ -477,6 +500,78 @@ export default function ProjectsPage() {
     }
     setEditSaving(false);
   };
+
+  /** Đổi kiểu bố trí code (tách BE/FE ↔ gộp 1 thư mục) ngay trên header. */
+  const saveLayout = async (layout: "split" | "mono") => {
+    if (!selected || selected.code_layout === layout) return;
+    setEditSaving(true);
+    const res = await fetch(`/api/projects/${selected.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ layout }),
+    });
+    if (res.ok) {
+      const updated: Project & { workspace?: Workspace } = await res.json();
+      if (updated.workspace) setWorkspaceNote(updated.workspace);
+      setSelected(prev => prev ? { ...prev, ...updated } : prev);
+      refetch();
+    }
+    setEditSaving(false);
+  };
+
+  /** Chip sửa nhanh 1 đường dẫn ở header project. */
+  const dirChip = (field: EditableField, label: string, value: string, hint: string) =>
+    editingField === field ? (
+      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+        <input className="setting-input" value={editDraft} autoFocus
+          onChange={e => setEditDraft(e.target.value)}
+          onKeyDown={e => {
+            if (e.key === "Enter") saveEditField();
+            if (e.key === "Escape") cancelEditField();
+          }}
+          style={{ width: 280, fontSize: 11, padding: "2px 6px", boxSizing: "border-box" }} />
+        <button onClick={saveEditField} disabled={editSaving}
+          style={{ background: "none", border: "none", color: "#86efac", cursor: "pointer", fontSize: 13 }}>✓</button>
+        <button onClick={cancelEditField} disabled={editSaving}
+          style={{ background: "none", border: "none", color: "#9ca3af", cursor: "pointer", fontSize: 13 }}>✕</button>
+      </span>
+    ) : (
+      <span className="project-link"
+        style={{ background: "#1a1a1a", borderColor: "#374151", fontSize: 10, cursor: "pointer" }}
+        onClick={() => startEditField(field, value)} title={hint}>
+        {label}: {value || "theo thư mục code"}
+        {isAbsPath(value) && <span style={{ color: "#fbbf24", marginLeft: 4 }}>⚠</span>}
+        <span style={{ color: "#6b7280", fontSize: 9 }}> ✏️</span>
+      </span>
+    );
+
+  const loadGit = useCallback(async (id: string) => {
+    const res = await fetch(`/api/projects/${id}/git`);
+    if (res.ok) setGitCfg(await res.json());
+  }, []);
+
+  const saveGit = async (token: string) => {
+    if (!selected) return;
+    setGitSaving(true);
+    const res = await fetch(`/api/projects/${selected.id}/git`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ token, username: gitUser.trim() }),
+    });
+    if (res.ok) {
+      setGitCfg(await res.json());
+      setGitToken("");
+      setGitEditing(false);
+    }
+    setGitSaving(false);
+  };
+
+  useEffect(() => {
+    if (!selected) { setGitCfg(null); return; }
+    loadGit(selected.id);
+    setGitEditing(false);
+    setGitToken("");
+  }, [selected, loadGit]);
 
   const loadDocs = useCallback(async (id: string) => {
     const res = await fetch(`/api/projects/${id}/docs`);
@@ -506,6 +601,9 @@ export default function ProjectsPage() {
         frontend:    npFrontend.trim(),
         server_side: npServerSide.trim(),
         output_dir:  npOutputDir.trim(),
+        layout:      npLayout,
+        backend_dir:  npLayout === "split" ? npBackendDir.trim()  : "",
+        frontend_dir: npLayout === "split" ? npFrontendDir.trim() : "",
       }),
     });
     if (res.ok) {
@@ -513,6 +611,7 @@ export default function ProjectsPage() {
       setWorkspaceNote(created.workspace ?? null);
       setShowNewProject(false);
       setNpFolderName(""); setNpBackend(""); setNpFrontend(""); setNpServerSide(""); setNpOutputDir("");
+      setNpLayout("split"); setNpBackendDir(""); setNpFrontendDir("");
       await refetch();
     } else {
       const d = await res.json().catch(() => ({}));
@@ -537,6 +636,11 @@ export default function ProjectsPage() {
     setDeleteProjecting(false);
   };
 
+  /** Thư mục code mặc định khi bỏ trống — dùng làm placeholder cho 2 ô BE/FE. */
+  const codeRoot = npOutputDir.trim().replace(/[\\/]+$/, "")
+    || `./clients/${npFolderName || "<slug>"}/output`;
+  const codeRootPlaceholder = `mặc định: ./clients/${npFolderName || "<slug>"}/output`;
+
   if (loading) return <div className="state">Loading projects...</div>;
   if (error)   return <div className="state err">{error}</div>;
 
@@ -553,52 +657,92 @@ export default function ProjectsPage() {
       {showNewProject && (
         <div className="card" style={{ marginBottom: 20 }}>
           <h4 style={{ marginTop: 0, marginBottom: 16 }}>Tạo Project mới</h4>
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
-            <div>
-              <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Tên folder (slug) *</label>
-              <input className="setting-input" placeholder="vd: my_project"
-                value={npFolderName} onChange={e => setNpFolderName(e.target.value.toLowerCase().replace(/\s+/g, "_"))}
-                onKeyDown={e => e.key === "Enter" && createProject()} />
-              <div style={{ fontSize: 11, color: "#4b5563", marginTop: 4 }}>
-                → clients/<strong>{npFolderName || "folder_name"}</strong>/
+          <div className="np-form">
+            <div className="np-grid">
+              <div className="np-field">
+                <label className="setting-label">Tên folder (slug) *</label>
+                <input className="setting-input" placeholder="vd: my_project"
+                  value={npFolderName} onChange={e => setNpFolderName(e.target.value.toLowerCase().replace(/\s+/g, "_"))}
+                  onKeyDown={e => e.key === "Enter" && createProject()} />
+                <div className="np-hint">→ clients/<strong>{npFolderName || "folder_name"}</strong>/</div>
+              </div>
+              <div className="np-field">
+                <label className="setting-label">Default tool</label>
+                <select className="setting-select" value={npTool} onChange={e => setNpTool(e.target.value)}>
+                  <option value="opencode">opencode</option>
+                </select>
+                <div className="np-hint">Claude Code không dùng trong pipeline tự động</div>
               </div>
             </div>
-            <div>
-              <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Thư mục code</label>
-              <input className="setting-input" placeholder={`mặc định: ./clients/${npFolderName || "<slug>"}/output`}
-                value={npOutputDir} onChange={e => setNpOutputDir(e.target.value)} />
-              <div style={{ fontSize: 11, color: "#4b5563", marginTop: 4 }}>
-                Tạo sẵn <code>backend/</code> + <code>frontend/</code> trong đó. Đường dẫn tuyệt đối
-                (vd <code>C:/www/{npFolderName || "slug"}</code>) thì dashboard không tạo hộ được —
-                sẽ đưa bạn lệnh mkdir để dán.
+
+            {/* Thư mục code — 1 ô khi dự án gộp, 3 ô khi tách backend/frontend */}
+            <div className="np-section">
+              <div className="np-section-title">Thư mục code</div>
+              <div className="np-seg">
+                <button type="button" aria-pressed={npLayout === "split"} onClick={() => setNpLayout("split")}>
+                  Tách backend / frontend
+                </button>
+                <button type="button" aria-pressed={npLayout === "mono"} onClick={() => setNpLayout("mono")}>
+                  Gộp 1 thư mục
+                </button>
               </div>
-            </div>
-            <div>
-              <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Default tool</label>
-              <select className="setting-select" value={npTool} onChange={e => setNpTool(e.target.value)}>
-                <option value="opencode">opencode</option>
-              </select>
-              <div style={{ fontSize: 11, color: "#6b7280", marginTop: 4 }}>
-                Claude Code không dùng trong pipeline tự động
+              <div className="np-hint" style={{ marginTop: -6 }}>
+                {npLayout === "mono"
+                  ? <>Dự án không tách BE/FE (Laravel Blade, WordPress…) — code nằm thẳng trong thư mục dưới đây.</>
+                  : <>Agent làm việc trong <code>backend/</code> + <code>frontend/</code> của thư mục gốc, trừ khi bạn khai thư mục riêng cho từng vùng.</>}
               </div>
+
+              <div className="np-field">
+                <label className="setting-label">
+                  {npLayout === "mono" ? "Thư mục code của dự án" : "Thư mục gốc"}
+                </label>
+                <input className="setting-input" placeholder={codeRootPlaceholder}
+                  value={npOutputDir} onChange={e => setNpOutputDir(e.target.value)} />
+                <div className="np-hint">
+                  Dashboard <strong>không tự tạo thư mục</strong> — thiếu cái nào thì báo lại kèm lệnh{" "}
+                  <code>mkdir</code> để bạn tự tạo. Đường dẫn tuyệt đối (vd{" "}
+                  <code>C:/www/{npFolderName || "slug"}</code>) nằm ngoài container nên dashboard cũng
+                  không kiểm tra được.
+                </div>
+              </div>
+
+              {npLayout === "split" && (
+                <div className="np-grid">
+                  <div className="np-field">
+                    <label className="setting-label">Thư mục backend</label>
+                    <input className="setting-input" placeholder={`${codeRoot}/backend`}
+                      value={npBackendDir} onChange={e => setNpBackendDir(e.target.value)} />
+                    <div className="np-hint">Bỏ trống = nằm trong thư mục gốc. Khai riêng nếu backend là repo tách rời.</div>
+                  </div>
+                  <div className="np-field">
+                    <label className="setting-label">Thư mục frontend</label>
+                    <input className="setting-input" placeholder={`${codeRoot}/frontend`}
+                      value={npFrontendDir} onChange={e => setNpFrontendDir(e.target.value)} />
+                    <div className="np-hint">Bỏ trống = nằm trong thư mục gốc.</div>
+                  </div>
+                </div>
+              )}
             </div>
-            <div />
-            <div>
-              <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Backend tech stack</label>
-              <input className="setting-input" placeholder="Python FastAPI + SQLModel + SQLite"
-                value={npBackend} onChange={e => setNpBackend(e.target.value)} />
-            </div>
-            <div>
-              <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Frontend tech stack</label>
-              <input className="setting-input" placeholder="React + TypeScript + Vite + TailwindCSS"
-                value={npFrontend} onChange={e => setNpFrontend(e.target.value)} />
-            </div>
-            <div>
-              <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Server-side tech stack</label>
-              <input className="setting-input" placeholder="vd: Node.js SSR / Nginx + deploy script"
-                value={npServerSide} onChange={e => setNpServerSide(e.target.value)} />
-              <div style={{ fontSize: 11, color: "#4b5563", marginTop: 4 }}>
-                Bỏ trống nếu dự án không có phần này — khai thì mới có thư mục <code>server-side/</code>.
+
+            <div className="np-section">
+              <div className="np-section-title">Tech stack</div>
+              <div className="np-grid">
+                <div className="np-field">
+                  <label className="setting-label">Backend</label>
+                  <input className="setting-input" placeholder="Python FastAPI + SQLModel + SQLite"
+                    value={npBackend} onChange={e => setNpBackend(e.target.value)} />
+                </div>
+                <div className="np-field">
+                  <label className="setting-label">Frontend</label>
+                  <input className="setting-input" placeholder="React + TypeScript + Vite + TailwindCSS"
+                    value={npFrontend} onChange={e => setNpFrontend(e.target.value)} />
+                </div>
+                <div className="np-field">
+                  <label className="setting-label">Server-side</label>
+                  <input className="setting-input" placeholder="vd: Node.js SSR / Nginx + deploy script"
+                    value={npServerSide} onChange={e => setNpServerSide(e.target.value)} />
+                  <div className="np-hint">Bỏ trống nếu dự án không có phần này — khai thì mới có thư mục <code>server-side/</code>.</div>
+                </div>
               </div>
             </div>
           </div>
@@ -750,6 +894,69 @@ export default function ProjectsPage() {
                     )}
                     <span style={{ color: "#6b7280", fontSize: 9 }}> ✏️</span>
                   </span>
+                )}
+
+                {/* Kiểu bố trí code: tách BE/FE hay gộp 1 thư mục (Laravel Blade…) */}
+                <span className="project-link"
+                  style={{ background: "#1a1a1a", borderColor: "#374151", fontSize: 10,
+                           cursor: editSaving ? "wait" : "pointer" }}
+                  onClick={() => saveLayout(selected.code_layout === "mono" ? "split" : "mono")}
+                  title={selected.code_layout === "mono"
+                    ? "Dự án gộp 1 thư mục — code nằm thẳng trong thư mục code. Click để chuyển sang tách backend/frontend."
+                    : "Code tách backend/ + frontend/. Click để chuyển sang gộp 1 thư mục (Laravel Blade, WordPress…)."}>
+                  {selected.code_layout === "mono" ? "🧱 gộp 1 thư mục" : "🧩 tách BE/FE"}
+                  <span style={{ color: "#6b7280", fontSize: 9 }}> ⇄</span>
+                </span>
+
+                {/* Token GitHub riêng của project — agent dùng token này để push,
+                    khỏi phải chốt cứng 1 tài khoản trong git config --global */}
+                {gitEditing ? (
+                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
+                    <input className="setting-input" type="password" autoFocus
+                      placeholder="ghp_… (dán token, không hiện lại)"
+                      value={gitToken} onChange={e => setGitToken(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === "Enter" && gitToken.trim()) saveGit(gitToken.trim());
+                        if (e.key === "Escape") { setGitEditing(false); setGitToken(""); }
+                      }}
+                      style={{ width: 240, fontSize: 11, padding: "2px 6px", boxSizing: "border-box" }} />
+                    <input className="setting-input" placeholder="tài khoản (tuỳ chọn)"
+                      value={gitUser} onChange={e => setGitUser(e.target.value)}
+                      style={{ width: 130, fontSize: 11, padding: "2px 6px", boxSizing: "border-box" }} />
+                    <button onClick={() => saveGit(gitToken.trim())} disabled={gitSaving || !gitToken.trim()}
+                      style={{ background: "none", border: "none", color: "#86efac", cursor: "pointer", fontSize: 13 }}
+                      title="Lưu vào clients/<slug>/settings.local.toml">✓</button>
+                    {gitCfg?.configured && (
+                      <button onClick={() => saveGit("")} disabled={gitSaving}
+                        style={{ background: "none", border: "none", color: "#fca5a5", cursor: "pointer", fontSize: 11 }}
+                        title="Xoá token — quay lại để Git Credential Manager tự hỏi">xoá</button>
+                    )}
+                    <button onClick={() => { setGitEditing(false); setGitToken(""); }} disabled={gitSaving}
+                      style={{ background: "none", border: "none", color: "#9ca3af", cursor: "pointer", fontSize: 13 }}>✕</button>
+                  </span>
+                ) : (
+                  <span className="project-link"
+                    style={{ background: "#1a1a1a", borderColor: "#374151", fontSize: 10, cursor: "pointer" }}
+                    onClick={() => { setGitUser(gitCfg?.username || ""); setGitEditing(true); }}
+                    title={gitCfg?.configured
+                      ? "Token GitHub riêng của project (settings.local.toml). Click để thay hoặc xoá."
+                      : "Chưa có token riêng — agent push sẽ để Git Credential Manager hỏi tài khoản, "
+                        + "và tiến trình chạy nền sẽ treo ở hộp thoại đó. Click để dán token."}>
+                    {gitCfg?.configured
+                      ? `🔑 token ${gitCfg.hint}${gitCfg.username ? ` · ${gitCfg.username}` : ""}`
+                      : "🔑 chưa có token"}
+                    <span style={{ color: "#6b7280", fontSize: 9 }}> ✏️</span>
+                  </span>
+                )}
+
+                {/* Đường dẫn riêng cho từng vùng — chỉ có nghĩa khi dự án tách BE/FE */}
+                {selected.code_layout !== "mono" && (
+                  <>
+                    {dirChip("backend_dir", "BE dir", selected.backend_dir || "",
+                             "Thư mục code backend. Bỏ trống = <thư mục code>/backend")}
+                    {dirChip("frontend_dir", "FE dir", selected.frontend_dir || "",
+                             "Thư mục code frontend. Bỏ trống = <thư mục code>/frontend")}
+                  </>
                 )}
               </div>
             </div>
@@ -1458,24 +1665,37 @@ export default function ProjectsPage() {
         </div>
       )}
 
-      {/* Kết quả dựng thư mục code — báo rõ đã tạo hay phải tự chạy mkdir */}
+      {/* Soát thư mục code — dashboard không tạo hộ, chỉ báo còn thiếu gì */}
       {workspaceNote && (
         <div style={{
           position: "fixed", bottom: 24, right: 24, zIndex: 200, maxWidth: 520,
           borderRadius: 8, padding: "12px 16px", fontSize: 13, lineHeight: 1.6,
-          background: workspaceNote.created ? "#14532d" : "#1c1408",
-          border: `1px solid ${workspaceNote.created ? "#166534" : "#78350f"}`,
-          color: workspaceNote.created ? "#86efac" : "#fde68a",
+          background: workspaceNote.ok ? "#14532d" : "#1c1408",
+          border: `1px solid ${workspaceNote.ok ? "#166534" : "#78350f"}`,
+          color: workspaceNote.ok ? "#86efac" : "#fde68a",
         }}>
           <div style={{ display: "flex", alignItems: "flex-start", gap: 10 }}>
             <div style={{ flex: 1 }}>
-              {workspaceNote.created ? (
-                <>✓ Đã tạo thư mục code: <code>{workspaceNote.path}</code> (kèm <code>backend/</code> và{" "}
-                  <code>frontend/</code>)</>
+              {workspaceNote.ok ? (
+                <>✓ Thư mục code đã sẵn sàng:{" "}
+                  {workspaceNote.targets.map((t, i) => (
+                    <span key={t}>{i > 0 && ", "}<code>{t}</code></span>
+                  ))}
+                </>
               ) : (
                 <>
-                  ⚠ Chưa tạo được <code>{workspaceNote.path}</code> — {workspaceNote.reason}.<br />
-                  Mở terminal và dán lệnh này:
+                  ⚠ Chưa có thư mục code — dashboard không tạo hộ, bạn tự tạo giúp:
+                  <ul style={{ margin: "6px 0 0", paddingLeft: 18 }}>
+                    {workspaceNote.missing.map(t => <li key={t}><code>{t}</code></li>)}
+                    {workspaceNote.unknown.map(t => (
+                      <li key={t}><code>{t}</code>{" "}
+                        <span style={{ color: "#a8a29e", fontSize: 12 }}>
+                          (nằm ngoài container nên dashboard không kiểm tra được)
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                  <div style={{ marginTop: 8 }}>Mở terminal và dán lệnh này:</div>
                   <code style={{
                     display: "block", marginTop: 6, padding: "6px 8px", borderRadius: 6,
                     background: "#0b1220", color: "#bfdbfe", fontSize: 12,

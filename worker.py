@@ -46,6 +46,7 @@ from pathlib import Path
 
 import shlex
 import shutil
+import tomllib
 
 # Console Windows mặc định cp1252 — log có emoji sẽ ném UnicodeEncodeError và
 # giết luôn job đang chạy. Ép UTF-8, ký tự nào không vẽ được thì thay thế.
@@ -55,7 +56,7 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-API   = os.getenv("DASHBOARD_API_URL", "http://localhost:8000")
+API   = os.getenv("DASHBOARD_API_URL", "http://localhost:8100")
 ROOT  = Path(__file__).resolve().parent
 POLL  = int(os.getenv("WORKER_POLL_S", "3"))
 
@@ -115,6 +116,7 @@ def _run_job(job: dict):
     env["AI_TEAM_PROJECT_ID"] = str(job.get("project_id") or "")
     env["FEATURE_IDS"]        = job.get("feature_ids") or ""
     env.setdefault("DASHBOARD_API_URL", API)
+    env.update(_project_git_env(slug))
 
     cmd = [
         sys.executable, "main.py",
@@ -158,6 +160,72 @@ def _resolve_claude() -> str | None:
     return _resolve_bin(CLAUDE_BIN)
 
 
+def _add_dirs(job: dict) -> list[str]:
+    """Thư mục code của project, để truyền cho CLI qua --add-dir.
+
+    API tính sẵn từ [output] trong settings.toml (thư mục gốc + từng vùng BE/FE).
+    Đường dẫn tương đối thì quy về gốc repo vì đó là cwd của tiến trình con."""
+    out = []
+    for raw in (job.get("add_dirs") or []):
+        d = str(raw).strip()
+        if not d:
+            continue
+        p = Path(d)
+        out.append(str(p if p.is_absolute() else (ROOT / p)))
+    return out
+
+
+def _project_git_env(slug: str | None) -> dict:
+    """Token GitHub RIENG cho tung project, doc tu clients/<slug>/settings.local.toml:
+
+        [git]
+        token    = "ghp_..."      # hoac PAT cua to chuc / GitHub App installation token
+        username = "dongcn11"     # tuy chon, mac dinh x-access-token
+
+    Vi sao khong chot 1 tai khoan trong git config --global: moi project co the day
+    len mot to chuc / mot tai khoan khac nhau. Chot cung la sai ngay project thu hai.
+
+    Token chi song trong env cua tien trinh con — khong ghi vao .git/config, khong
+    qua API, khong vao DB. settings.local.toml da nam trong .gitignore.
+
+    Tra ve env de merge; khong khai token thi tra {} (giu nguyen hanh vi cu:
+    Git Credential Manager tu hoi).
+    """
+    if not slug:
+        return {}
+    cfg = {}
+    for name in ("settings.local.toml", "settings.toml"):
+        f = ROOT / "clients" / slug / name
+        if not f.exists():
+            continue
+        try:
+            with open(f, "rb") as fh:
+                cfg = {**(tomllib.load(fh).get("git") or {}), **cfg}
+        except Exception as e:
+            print(f"[worker] !  Khong doc duoc [git] trong {f}: {e}")
+    token = str(cfg.get("token") or "").strip()
+    if not token:
+        return {}
+    user = str(cfg.get("username") or "x-access-token").strip()
+
+    # Helper doc token tu env. Dat qua GIT_CONFIG_* de KHONG cham vao file config
+    # nao ca. Entry rong o vi tri 0 xoa danh sach helper thua ke tu global (Git
+    # Credential Manager) — khong xoa thi GCM van bat hop thoai chon tai khoan
+    # va tien trinh headless treo cho toi luc timeout.
+    return {
+        "GH_TOKEN": token,
+        "GITHUB_TOKEN": token,
+        "GIT_TERMINAL_PROMPT": "0",          # thà lỗi ngay còn hơn treo chờ nhập tay
+        "GIT_CONFIG_COUNT": "2",
+        "GIT_CONFIG_KEY_0": "credential.helper",
+        "GIT_CONFIG_VALUE_0": "",
+        "GIT_CONFIG_KEY_1": "credential.helper",
+        "GIT_CONFIG_VALUE_1": (
+            "!f() { echo username=" + user + "; echo password=$GH_TOKEN; }; f"
+        ),
+    }
+
+
 def _claim_step() -> dict | None:
     """Job bước workflow (chạy bằng Claude headless). Server giữ tuần tự."""
     return _req("/api/workflow-jobs/claim", body={}, method="POST")
@@ -197,6 +265,8 @@ def _run_step_job(job: dict):
         if model:
             cmd += ["--model", model]
         cmd += [*OPENCODE_ARGS, "-f", job.get("file_path") or ""]
+        # opencode nhận thư mục làm việc qua cwd chứ không có --add-dir; nó chạy với
+        # cwd = gốc repo giống pipeline nên giữ nguyên.
     else:
         binary = _resolve_claude()
         if not binary:
@@ -207,12 +277,23 @@ def _run_step_job(job: dict):
             _complete_step(job_id, "failed", error=msg)
             return
         cmd = [binary, "-p", job["prompt"], *CLAUDE_ARGS]
+        # Thư mục code của project thường nằm NGOÀI repo (settings.toml khai
+        # output.directory tuyệt đối). Worker chạy với cwd = gốc repo nên nếu không
+        # mở quyền, Claude headless không đọc/ghi được chỗ đó và MỌI bước của
+        # project ấy cùng chết một lỗi — không riêng bước đầu.
+        for d in _add_dirs(job):
+            cmd += ["--add-dir", d]
 
     print(f"\n[worker] 🤖 Step job #{job_id} — {label} (run #{job['run_id']})")
+    git_env = _project_git_env(job.get("client_folder"))
+    env = {**os.environ, **git_env}
+
     print(f"[worker]    engine: {tool}{f' · {model}' if model else ''}")
     print(f"[worker]    {job.get('file_path') or ''}")
+    if git_env:
+        print("[worker]    git: dùng token riêng của project (settings.local.toml)")
     try:
-        proc = subprocess.run(cmd, cwd=str(ROOT), capture_output=True, text=True,
+        proc = subprocess.run(cmd, cwd=str(ROOT), env=env, capture_output=True, text=True,
                               encoding="utf-8", errors="replace", timeout=STEP_TIMEOUT_S)
     except (FileNotFoundError, OSError) as e:
         msg = (f"Không chạy được '{binary}': {e}. Cài CLI đó rồi đăng nhập, "

@@ -48,9 +48,9 @@ from sqlalchemy.orm import Session
 from sqlalchemy import desc
 
 from database import get_db, SessionLocal
-from models import Workflow, WorkflowRun, WorkflowStepJob, Project, ProjectTask
+from models import AgentQuestion, Workflow, WorkflowRun, WorkflowStepJob, Project, ProjectTask
 from system_config import SKILLS_DIR, WORKSPACE_AREAS, get_system_agents
-from schemas import WorkflowCreate, WorkflowUpdate, WorkflowOut, WorkflowRunOut
+from schemas import AgentQuestionOut, AgentQuestionAnswer, WorkflowCreate, WorkflowUpdate, WorkflowOut, WorkflowRunOut
 from routers.projects import _get_or_create_db_project
 
 router = APIRouter()
@@ -108,7 +108,9 @@ def _task_prompt(path: Path, is_condition: bool = False, tool: str = "claude") -
     prompt = (
         f"{ref}Thực hiện task trong file này. "
         "Xong thì ghi tóm tắt vào mục '## Kết quả' và đổi 'status: pending' "
-        "thành 'status: done' ngay trong file đó."
+        "thành 'status: done' ngay trong file đó. "
+        "Nếu vướng chỗ cần người quyết thì đừng đoán: ghi mục 'Cần xác nhận' vào file, "
+        "đổi 'status: pending' thành 'status: blocked' rồi dừng — dev sẽ trả lời trên dashboard."
     )
     if is_condition:
         prompt += (
@@ -118,7 +120,8 @@ def _task_prompt(path: Path, is_condition: bool = False, tool: str = "claude") -
     return prompt
 
 
-def _task_command(path: Path, is_condition: bool = False, agent: Optional[dict] = None) -> str:
+def _task_command(path: Path, is_condition: bool = False, agent: Optional[dict] = None,
+                  wf_add_dirs: Optional[list] = None) -> str:
     """Lệnh copy-paste chạy được trên máy thật — đúng engine mà bước này dùng.
 
     Claude Code KHÔNG có flag `-f` (đó là opencode). Prompt truyền dạng positional
@@ -131,7 +134,22 @@ def _task_command(path: Path, is_condition: bool = False, agent: Optional[dict] 
         prompt = _task_prompt(path, is_condition, tool="opencode")
         return (f'{cd}opencode run "{prompt}" --model {agent["model"]} '
                 f'-f {_host_relpath(path)}')
-    return f'{cd}claude "{_task_prompt(path, is_condition)}"'
+    add = "".join(f' --add-dir "{d}"' for d in (wf_add_dirs or []))
+    return f'{cd}claude "{_task_prompt(path, is_condition)}"{add}'
+
+
+def _job_add_dirs(wf: Workflow) -> list:
+    """Thư mục code của project để worker truyền cho CLI qua --add-dir.
+
+    Worker chạy với cwd = gốc repo, nên thư mục code nằm ngoài repo (vd
+    E:/MY_PROJECT/x) mặc định KHÔNG được CLI cho phép đọc/ghi — thiếu chỗ này thì
+    mọi bước của project đó cùng chết một lỗi quyền, không riêng bước đầu."""
+    ws = _project_workspace(wf)
+    if not ws:
+        return []
+    dirs = list(_workspace_areas(wf, ws).values()) or [ws]
+    # Thư mục gốc luôn có mặt: thứ dùng chung (docker-compose, README) nằm ở đó.
+    return sorted({ws, *dirs})
 
 
 def _enqueue_step_job(db: Session, wf: Workflow, run: WorkflowRun, node: dict,
@@ -154,6 +172,7 @@ def _enqueue_step_job(db: Session, wf: Workflow, run: WorkflowRun, node: dict,
     agent = _node_agent(node)
     tool = "opencode" if agent else "claude"
     db.add(WorkflowStepJob(
+        add_dirs=_job_add_dirs(wf),
         run_id=run.id,
         node_id=node["id"],
         node_label=(node.get("data", {}) or {}).get("label") or node["id"],
@@ -164,6 +183,122 @@ def _enqueue_step_job(db: Session, wf: Workflow, run: WorkflowRun, node: dict,
         model=agent["model"] if agent else None,
         status="queued",
     ))
+
+
+# ── Câu hỏi của agent (chờ dev xác nhận trên web) ─────────────────────────
+
+def _upsert_question(db: Session, wf: Workflow, run: WorkflowRun, node: dict,
+                     path: Path, question: str) -> AgentQuestion:
+    """Ghi câu hỏi của 1 bước, mỗi (run, node) chỉ giữ 1 câu đang mở.
+
+    Vòng poll chạy 5s/lần nên nếu tạo mới mỗi vòng thì một bước bị chặn sẽ đẻ ra
+    hàng trăm câu hỏi trùng nhau."""
+    q = (db.query(AgentQuestion)
+           .filter(AgentQuestion.run_id == run.id,
+                   AgentQuestion.node_id == node["id"],
+                   AgentQuestion.status == "open")
+           .first())
+    if q:
+        if q.question != question:      # agent sửa lại câu hỏi thì cập nhật
+            q.question = question
+            db.commit()
+        return q
+    q = AgentQuestion(
+        run_id=run.id,
+        workflow_id=wf.id,
+        node_id=node["id"],
+        node_label=(node.get("data", {}) or {}).get("label") or node["id"],
+        client_folder=wf.client_folder,
+        task_file=_host_relpath(path),
+        question=question,
+        status="open",
+    )
+    db.add(q)
+    db.commit()
+    db.refresh(q)
+    return q
+
+
+@router.get("/questions", response_model=List[AgentQuestionOut])
+def list_questions(status: str = "open", client_folder: Optional[str] = None,
+                   run_id: Optional[int] = None, limit: int = 50,
+                   db: Session = Depends(get_db)):
+    """Việc agent đang chờ dev chốt. Dashboard poll cái này để hiện banner."""
+    q = db.query(AgentQuestion).order_by(desc(AgentQuestion.id))
+    if status:
+        q = q.filter(AgentQuestion.status == status)
+    if client_folder:
+        q = q.filter(AgentQuestion.client_folder == client_folder)
+    if run_id is not None:
+        q = q.filter(AgentQuestion.run_id == run_id)
+    return q.limit(limit).all()
+
+
+@router.post("/questions/{question_id}/answer", response_model=AgentQuestionOut)
+def answer_question(question_id: int, payload: AgentQuestionAnswer,
+                    db: Session = Depends(get_db)):
+    """Dev trả lời → ghi thẳng vào file task rồi mở lại bước đó.
+
+    Câu trả lời đi vào file chứ không giữ riêng trong DB: agent chạy lại sẽ đọc
+    được ngay trong ngữ cảnh của nó, và người chạy tay cũng thấy y hệt."""
+    q = db.query(AgentQuestion).filter(AgentQuestion.id == question_id).first()
+    if not q:
+        raise HTTPException(status_code=404, detail="Không có câu hỏi này")
+    if q.status != "open":
+        raise HTTPException(status_code=400, detail="Câu hỏi này đã được trả lời")
+    answer = (payload.answer or "").strip()
+    if not answer:
+        raise HTTPException(status_code=400, detail="Chưa nhập câu trả lời")
+
+    run = db.query(WorkflowRun).filter(WorkflowRun.id == q.run_id).first()
+    wf  = db.query(Workflow).filter(Workflow.id == run.workflow_id).first() if run else None
+    if run is None or wf is None:
+        raise HTTPException(status_code=404, detail="Lần chạy đã bị xoá")
+
+    path = _task_file_path(_client_tasks_dir(db, wf, run), wf.id, run.id, q.node_id)
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"Không tìm thấy file task {path}")
+
+    content = path.read_text(encoding="utf-8", errors="replace")
+    stamp   = datetime.utcnow().strftime("%Y-%m-%d %H:%M UTC")
+    # Nối thêm chứ không ghi đè: một bước có thể phải hỏi lại vài lần.
+    content = content.rstrip() + (
+        f"\n\n{ANSWER_HEADING}\n"
+        f"_({stamp})_ Trả lời cho: {q.question.splitlines()[0][:200] if q.question else ''}\n\n"
+        f"{answer}\n\n"
+        "Làm tiếp theo câu trả lời này. Còn vướng nữa thì lại ghi "
+        f"'{CONFIRM_HEADING}' và đặt `status: blocked`.\n")
+    content = _STATUS_RE.sub("status: pending", content, count=1)
+    path.write_text(content, encoding="utf-8")
+
+    q.status = "answered"
+    q.answer = answer
+    q.answered_at = datetime.utcnow()
+
+    # Mở lại bước: node về "running" (file task đã có sẵn) và xếp lại job nếu tự chạy.
+    node_status = dict(run.node_status or {})
+    node_status[q.node_id] = "running"
+    run.node_status = node_status
+    log = list(run.log or [])
+    log.append({"node_id": q.node_id, "message": f"[đã xác nhận] {answer[:200]}",
+                "ts": datetime.utcnow().isoformat()})
+    run.log = log
+
+    job = (db.query(WorkflowStepJob)
+             .filter(WorkflowStepJob.run_id == run.id,
+                     WorkflowStepJob.node_id == q.node_id)
+             .order_by(desc(WorkflowStepJob.id))
+             .first())
+    if job is not None and wf.auto_run and run.status == "running":
+        job.status = "queued"
+        job.output = None
+        job.error = None
+        job.started_at = None
+        job.finished_at = None
+
+    db.commit()
+    db.refresh(q)
+    return q
 
 
 # ── CRUD ──────────────────────────────────────────────────────────────────
@@ -494,38 +629,67 @@ _ROLE_AREA = {
 }
 
 
+def _norm_ws_path(p: str) -> str:
+    """Chuan hoa duong dan trong settings.toml — cung quy uoc voi projects.py::_norm_path."""
+    d = (p or "").replace(chr(92), "/").strip().rstrip("/")
+    if re.match(r"^[A-Za-z]:/", d) or d.startswith("/"):
+        return d
+    return d.lstrip("./").rstrip("/")
+
+
+def _workspace_areas(wf: Workflow, ws: str) -> dict:
+    """Vung code -> thu muc that, {} khi du an de kieu gop (mono).
+
+    Doc [output] layout + <vung>_directory trong settings.toml, giong het
+    projects.py::_area_dirs — sua mot ben thi sua ca hai, khong thi file task se chi
+    agent ghi code sang cho khac voi thu muc dashboard dung san."""
+    out = _project_settings(wf).get("output") or {}
+    if str(out.get("layout") or "").strip().lower() == "mono":
+        return {}
+    tech = _project_settings(wf).get("tech_stack") or {}
+    keys = [k for k in WORKSPACE_AREAS if str(tech.get(k) or "").strip()] or ["backend", "frontend"]
+    return {k: (_norm_ws_path(str(out.get(f"{k}_directory") or "")) or f"{ws}/{WORKSPACE_AREAS[k][0]}")
+            for k in keys}
+
+
 def _workspace_section(wf: Workflow, node: dict) -> str:
     """Khối "Nơi làm việc" chèn vào đầu mỗi file task.
 
-    Chia rõ: **code** nằm trong thư mục dự án (các vùng khai trong WORKSPACE_AREAS),
-    còn **spec** (prd.md, file task) ở lại clients/<slug>/. Không nói thì agent để
-    lẫn code vào clients/ vì file task nằm ở đó.
+    Chia rõ: **code** nằm trong thư mục dự án, còn **spec** (prd.md, file task) ở lại
+    clients/<slug>/. Không nói thì agent để lẫn code vào clients/ vì file task nằm ở đó.
 
-    Chỉ liệt kê vùng nào project thật sự khai tech stack — dự án chỉ có backend thì
-    không việc gì phải bịa ra frontend/ cho agent hiểu nhầm."""
+    Dự án tách BE/FE thì chỉ liệt kê vùng nào project thật sự khai tech stack — dự án
+    chỉ có backend thì không việc gì phải bịa ra frontend/ cho agent hiểu nhầm. Dự án
+    gộp (Laravel Blade, WordPress…) thì code nằm thẳng trong thư mục dự án."""
     ws = _project_workspace(wf)
     if not ws:
         return ""
-    tech = (_project_settings(wf).get("tech_stack") or {})
-    areas = [(key, folder, label, str(tech.get(key) or "").strip())
-             for key, (folder, label) in WORKSPACE_AREAS.items()
-             if str(tech.get(key) or "").strip()]
-    if not areas:      # chưa khai gì → vẫn nêu 2 vùng cơ bản để có chỗ mà đặt code
-        areas = [(k, WORKSPACE_AREAS[k][0], WORKSPACE_AREAS[k][1], "")
-                 for k in ("backend", "frontend")]
+    tech  = (_project_settings(wf).get("tech_stack") or {})
+    areas = _workspace_areas(wf, ws)
 
-    lines = ["## Nơi làm việc", f"Code của dự án nằm trong `{ws}` — chưa có thì tạo:"]
-    for _key, folder, label, stack in areas:
-        lines.append(f"- `{ws}/{folder}` — {label}{f' ({stack})' if stack else ''}")
-
-    agent = _node_agent(node)
-    area_key = _ROLE_AREA.get(agent["key"]) if agent else None
-    folder = WORKSPACE_AREAS.get(area_key, ("", ""))[0] if area_key else ""
-    if folder:
-        lines.append(f"- Bước này do **{agent['name']}** chạy → làm trong `{ws}/{folder}`.")
+    if not areas:      # kieu gop — mot thu muc duy nhat, dung de agent tu de ra backend/
+        stacks = ", ".join(str(tech.get(k) or "").strip()
+                           for k in WORKSPACE_AREAS if str(tech.get(k) or "").strip())
+        lines = ["## Nơi làm việc",
+                 f"Toàn bộ code của dự án nằm thẳng trong `{ws}` — chưa có thì tạo."
+                 + (f" Stack: {stacks}." if stacks else ""),
+                 "- Dự án này **không tách backend/frontend**, đừng tự dựng thêm 2 thư mục đó; "
+                 "theo đúng cấu trúc sẵn có của source."]
     else:
-        lines.append("- Đặt code đúng vùng của nó; thứ dùng chung (docker-compose, README, "
-                     "script) để ở gốc thư mục dự án.")
+        lines = ["## Nơi làm việc", f"Code của dự án nằm trong `{ws}` — chưa có thì tạo:"]
+        for key, path in areas.items():
+            label = WORKSPACE_AREAS[key][1]
+            stack = str(tech.get(key) or "").strip()
+            lines.append(f"- `{path}` — {label}{f' ({stack})' if stack else ''}")
+
+        agent    = _node_agent(node)
+        area_key = _ROLE_AREA.get(agent["key"]) if agent else None
+        path     = areas.get(area_key) if area_key else None
+        if path:
+            lines.append(f"- Bước này do **{agent['name']}** chạy → làm trong `{path}`.")
+        else:
+            lines.append("- Đặt code đúng vùng của nó; thứ dùng chung (docker-compose, README, "
+                         "script) để ở gốc thư mục dự án.")
 
     lines += [
         "",
@@ -684,6 +848,12 @@ def _write_task_file(path: Path, workflow_id: int, run_id: int, node: dict,
         "Dashboard sẽ hiển thị phần này. -->\n\n"
         "---\n"
         "**Khi hoàn thành**: đổi `status: pending` ở đầu file này thành `status: done` rồi lưu lại.\n"
+        "**Khi vướng, cần người quyết** (chưa chốt phạm vi, thiếu quyền thư mục, phải chọn giữa "
+        "2 hướng làm, thiếu bảng/dữ liệu...): ĐỪNG đoán bừa và đừng làm tiếp. Thêm mục "
+        f"`{CONFIRM_HEADING}` vào file này, ghi rõ câu hỏi + phương án bạn đề xuất, rồi đổi "
+        "`status: pending` thành `status: blocked` và dừng. Câu hỏi sẽ hiện lên dashboard cho "
+        f"dev trả lời; câu trả lời được ghi lại vào chính file này ở mục `{ANSWER_HEADING}` và "
+        "bước này tự chạy lại.\n"
         + ("**Node điều kiện**: nhớ điền `decision: true` hoặc `decision: false` ở đầu file, "
            "nếu không workflow sẽ đứng chờ.\n" if is_condition else "")
     )
@@ -691,6 +861,9 @@ def _write_task_file(path: Path, workflow_id: int, run_id: int, node: dict,
 
 
 _STATUS_RE = re.compile(r"^status:\s*(\w+)", re.MULTILINE)
+CONFIRM_HEADING = "## Cần xác nhận"
+ANSWER_HEADING  = "## Trả lời của dev"
+_CONFIRM_RE = re.compile(r"^## Cần xác nhận\s*$(.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL)
 _RESULT_RE = re.compile(r"^## Kết quả\s*$(.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL)
 _COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 
@@ -700,6 +873,16 @@ def _read_task_status(path: Path) -> Optional[str]:
         return None
     m = _STATUS_RE.search(path.read_text(encoding="utf-8", errors="replace")[:500])
     return m.group(1) if m else None
+
+
+def _read_task_question(path: Path) -> str:
+    """Nội dung mục '## Cần xác nhận' — thứ agent muốn dev chốt trước khi làm tiếp."""
+    if not path.exists():
+        return ""
+    m = _CONFIRM_RE.search(path.read_text(encoding="utf-8", errors="replace"))
+    if not m:
+        return ""
+    return _COMMENT_RE.sub("", m.group(1)).strip()
 
 
 def _read_task_result(path: Path) -> str:
@@ -876,6 +1059,21 @@ def advance_run(db: Session, run: WorkflowRun, trigger_message: Optional[str] = 
         is_trigger = str(node.get("type", "")).startswith(TRIGGER_PREFIX)
         is_condition = node.get("type") == CONDITION_TYPE
 
+        if cur == "blocked":
+            # Đang chờ dev xác nhận. Vẫn đọc lại file mỗi vòng: agent hay đặt
+            # `status: blocked` trước rồi mới viết xong mục "Cần xác nhận", nên câu
+            # hỏi chốt ở vòng đầu có thể còn rỗng. Dev cũng có thể tự sửa file.
+            path = _task_file_path(tasks_dir(), wf.id, run.id, nid)
+            if _read_task_status(path) == "blocked":
+                question = _read_task_question(path)
+                if question:
+                    _upsert_question(db, wf, run, node, path, question)
+                continue
+            # File đã hết blocked (dev sửa tay) → quay lại luồng thường
+            node_status[nid] = "running"
+            changed = True
+            continue
+
         if cur == "pending":
             if is_trigger:
                 node_status[nid] = "ok"
@@ -906,7 +1104,7 @@ def advance_run(db: Session, run: WorkflowRun, trigger_message: Optional[str] = 
             node_status[nid] = "running"
             log.append({
                 "node_id": nid,
-                "message": f"[task] Đã tạo file {_host_relpath(path)} — tự chạy: {_task_command(path, is_condition, _node_agent(node))}",
+                "message": f"[task] Đã tạo file {_host_relpath(path)} — tự chạy: {_task_command(path, is_condition, _node_agent(node), _job_add_dirs(wf))}",
                 "ts": datetime.utcnow().isoformat(),
             })
             if wf.auto_run:
@@ -923,6 +1121,21 @@ def advance_run(db: Session, run: WorkflowRun, trigger_message: Optional[str] = 
         elif cur == "running":
             path = _task_file_path(tasks_dir(), wf.id, run.id, nid)
             status = _read_task_status(path)
+            if status == "blocked":
+                # Agent gặp việc cần người quyết → dừng bước, đẩy câu hỏi lên web.
+                # KHÔNG xếp lại job: đợi dev trả lời (POST .../questions/{id}/answer).
+                question = _read_task_question(path) or (
+                    "Agent đánh dấu `status: blocked` nhưng không ghi mục "
+                    f"'{CONFIRM_HEADING}' — mở file task để xem chi tiết.")
+                _upsert_question(db, wf, run, node, path, question)
+                node_status[nid] = "blocked"
+                log.append({
+                    "node_id": nid,
+                    "message": f"[chờ xác nhận] {question.splitlines()[0][:200] if question else ''}",
+                    "ts": datetime.utcnow().isoformat(),
+                })
+                changed = True
+                continue
             if status != "done":
                 # Bật auto_run khi bước đã đang chờ sẵn: file task tạo từ trước nên
                 # nhánh "pending → running" ở trên không chạy lại nữa. Không xếp hàng
@@ -994,7 +1207,7 @@ def list_active_tasks(db: Session = Depends(get_db)) -> List[dict]:
                 "node_label": (node.get("data", {}) or {}).get("label", node_id),
                 "node_type": node.get("type", ""),
                 "file_path": _host_relpath(path),
-                "command": _task_command(path, node.get("type") == CONDITION_TYPE, _node_agent(node)),
+                "command": _task_command(path, node.get("type") == CONDITION_TYPE, _node_agent(node), _job_add_dirs(wf)),
                 "file_exists": path.exists(),
                 "created_at": run.created_at.isoformat() if run.created_at else None,
             })
@@ -1067,7 +1280,7 @@ def get_run_steps(run_id: int, db: Session = Depends(get_db)) -> dict:
             "status": node_status.get(nid, "pending"),
             "skills": _effective_skills(node),
             "file_path": _host_relpath(path) if path else None,
-            "command": _task_command(path, node.get("type") == CONDITION_TYPE, _node_agent(node)) if path else None,
+            "command": _task_command(path, node.get("type") == CONDITION_TYPE, _node_agent(node), _job_add_dirs(wf)) if path else None,
             "agent": (lambda a: {"key": a["key"], "name": a["name"], "tool": a["tool"], "model": a["model"]}
                       if a else None)(_node_agent(node)),
             "result": _read_task_result(path) if path else "",

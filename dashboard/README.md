@@ -5,9 +5,9 @@ Giao diện web theo dõi tiến độ các AI coding agents theo thời gian th
 ## Kiến trúc
 
 ```
-PostgreSQL 16  ←──  FastAPI (port 8000)  ←──  task_manager.py (orchestrator)
+PostgreSQL 16  ←──  FastAPI (port 8100)  ←──  task_manager.py (orchestrator)
                            ↑
-                    React + Vite (port 3000)
+                    React + Vite (port 3100)
 ```
 
 ## Yêu cầu
@@ -30,8 +30,8 @@ Lần đầu build mất ~3-5 phút. Các lần sau nhanh hơn.
 
 | Service    | URL                          |
 |------------|------------------------------|
-| Dashboard  | http://localhost:3000        |
-| API docs   | http://localhost:8000/docs   |
+| Dashboard  | http://localhost:3100        |
+| API docs   | http://localhost:8100/docs   |
 | PostgreSQL | localhost:5432               |
 
 ### 2. Stop
@@ -74,13 +74,13 @@ Dashboard mở tại http://localhost:5173 với hot reload.
 | Biến                 | Default                                              | Mô tả                            |
 |----------------------|------------------------------------------------------|----------------------------------|
 | `DATABASE_URL`       | `postgresql://dashboard:dashboard123@db:5432/ai_team_dashboard` | Connection string PostgreSQL |
-| `DASHBOARD_API_URL`  | `http://localhost:8000`                              | URL API gọi từ orchestrator      |
+| `DASHBOARD_API_URL`  | `http://localhost:8100`                              | URL API gọi từ orchestrator      |
 | `CLIENT_NAME`        | Tên thư mục hiện tại                                 | Tên client hiển thị trong history |
 
 Tạo file `.env` tại root project để override:
 
 ```env
-DASHBOARD_API_URL=http://localhost:8000
+DASHBOARD_API_URL=http://localhost:8100
 CLIENT_NAME=my-project
 ```
 
@@ -151,4 +151,4 @@ dashboard/
 | POST   | `/api/issues`              | Tạo issue                    |
 | GET    | `/api/issues/{run_id}`     | Issues của 1 run             |
 
-Xem đầy đủ tại **http://localhost:8000/docs** (Swagger UI).
+Xem đầy đủ tại **http://localhost:8100/docs** (Swagger UI).

@@ -42,6 +42,8 @@ _COLUMN_MIGRATIONS = [
     # Node chọn agent pipeline → job chạy bằng opencode + model của agent đó.
     ("workflow_step_jobs", "tool",              "VARCHAR DEFAULT 'claude'"),
     ("workflow_step_jobs", "model",             "VARCHAR"),
+    # Thư mục code truyền cho CLI qua --add-dir (xem models.AgentQuestion).
+    ("workflow_step_jobs", "add_dirs",          "JSON"),
 ]
 
 for _table, _column, _ddl in _COLUMN_MIGRATIONS:

@@ -177,59 +177,111 @@ def _write_local_template(folder: Path, slug: str):
         "\n"
         "# [agents]\n"
         '# pm_model = "opencode/qwen3.6-plus"\n'
+        "\n"
+        "# Token GitHub RIENG cho project nay — worker.py doc roi truyen vao tien trinh\n"
+        "# agent qua env, khong ghi vao .git/config. Moi project mot token nen day len\n"
+        "# to chuc / tai khoan nao cung duoc, khong phai chot cung 1 tai khoan o\n"
+        "# git config --global.\n"
+        "# [git]\n"
+        '# token = "ghp_..."\n'
+        '# username = "ten-tai-khoan"   # tuy chon, mac dinh x-access-token\n'
     )
     target.write_text(template, encoding="utf-8")
 
 
-# Thu muc code cua project: <output>/backend + <output>/frontend, tao ngay luc tao
-# project chu khong doi den luc chay feature. Cung quy uoc voi pipeline
-# (ai_team/orchestrator.py::_work_dir_for_role) va voi khoi "Noi lam viec" trong file task.
-def _workspace_subdirs(raw: dict) -> list[str]:
-    """Thư mục con cần dựng: đúng những vùng project khai tech stack.
-
-    Không khai gì thì dựng backend/ + frontend/ cho có chỗ bắt đầu."""
-    tech = raw.get("tech_stack") or {}
-    dirs = [folder for key, (folder, _label) in WORKSPACE_AREAS.items()
-            if str(tech.get(key) or "").strip()]
-    return dirs or ["backend", "frontend"]
-
-
+# Thu muc code cua project. Hai kieu bo tri, khai bang [output] layout:
+#   - "split" (mac dinh): code chia theo vung — <root>/backend, <root>/frontend, ...
+#     Tung vung con co the tro sang thu muc rieng qua [output] <key>_directory.
+#   - "mono": du an khong tach BE/FE (Laravel Blade, WordPress...) — code nam thang
+#     trong <root>, khong dung thu muc con nao.
+# Dashboard khong tu tao thu muc — chi soat xem co chua roi bao lai (_check_workspace).
+# Cung quy uoc voi pipeline (ai_team/orchestrator.py::_work_dir_for_role) va voi khoi "Noi lam
+# viec" trong file task (dashboard/api/routers/workflows.py::_workspace_section).
 def _is_abs_path(p: str) -> bool:
     return bool(re.match(r"^[A-Za-z]:[\/]", p)) or p.startswith("/")
 
 
-def _ensure_workspace(folder: Path, directory: str, subdirs: Optional[list] = None) -> dict:
-    """Tao thu muc code + backend/ + frontend/ cho project.
+def _norm_path(p: str) -> str:
+    """Chuan hoa duong dan nguoi dung go: dau gach nguoc -> /, bo ./ dau va / cuoi."""
+    d = (p or "").replace(chr(92), "/").strip().rstrip("/")
+    return d if _is_abs_path(d) else d.lstrip("./").rstrip("/")
 
-    API chay trong container nen chi voi toi duoc cac mount: clients/ (ghi duoc),
+
+def _code_layout(raw: dict) -> str:
+    """"mono" = du an gop 1 thu muc; con lai coi nhu "split" (mac dinh, tuong thich cu)."""
+    val = str((raw.get("output") or {}).get("layout") or "").strip().lower()
+    return "mono" if val == "mono" else "split"
+
+
+def _code_root(raw: dict, slug: str) -> str:
+    return _norm_path(str((raw.get("output") or {}).get("directory") or "")) or f"clients/{slug}/output"
+
+
+def _area_dirs(raw: dict, slug: str) -> dict:
+    """Vung code -> thu muc that. Tra ve {} khi du an de kieu gop (mono).
+
+    Chi liet ke vung project that su khai tech stack; chua khai gi thi lay
+    backend + frontend cho co cho bat dau."""
+    if _code_layout(raw) == "mono":
+        return {}
+    out  = raw.get("output") or {}
+    root = _code_root(raw, slug)
+    tech = raw.get("tech_stack") or {}
+    keys = [k for k in WORKSPACE_AREAS if str(tech.get(k) or "").strip()] or ["backend", "frontend"]
+    return {k: (_norm_path(str(out.get(f"{k}_directory") or "")) or f"{root}/{WORKSPACE_AREAS[k][0]}")
+            for k in keys}
+
+
+def _apply_output_settings(raw: dict, slug: str, *, directory=None, layout=None,
+                           backend_dir=None, frontend_dir=None) -> None:
+    """Ghi [output] theo input cua form. None = khong dong toi truong do."""
+    out = raw.setdefault("output", {})
+    if directory is not None:
+        out["directory"] = directory.strip() or f"./clients/{slug}/output"
+    if layout is not None:
+        out["layout"] = _code_layout({"output": {"layout": layout}})
+    mono = _code_layout(raw) == "mono"
+    for key, val in (("backend", backend_dir), ("frontend", frontend_dir)):
+        if val is None and not mono:
+            continue
+        path = _norm_path(val or "")
+        if path and not mono:
+            out[f"{key}_directory"] = path
+        else:
+            # Bo trong = quay ve <root>/<vung>; kieu gop thi khong co vung nao ca.
+            out.pop(f"{key}_directory", None)
+
+
+def _check_workspace(folder: Path, raw: dict) -> dict:
+    """Kiem tra thu muc code cua project da co chua — KHONG tu tao ho.
+
+    Dashboard khong sinh thu muc thay dev: thieu cai nao thi bao lai kem lenh mkdir
+    de dev tu tao dung cho minh muon, thay vi im lang de ra thu muc rac trong repo.
+
+    API lai chay trong container nen chi nhin thay cac mount: clients/ (ghi duoc),
     output/ (chi doc). Duong dan tuyet doi kieu C:/www/x nam ngoai container -> khong
-    tao duoc; luc do tra ve san lenh mkdir de nguoi dung dan vao terminal, thay vi im
-    lang roi de agent tu doan cho ghi code.
+    kiem tra duoc, xep vao "unknown" va van nhac dev tu kiem.
     """
-    subdirs = subdirs or ["backend", "frontend"]
-    raw_dir = (directory or "").replace(chr(92), "/").strip() or f"./clients/{folder.name}/output"
-    host_path = raw_dir.rstrip("/") if _is_abs_path(raw_dir) else raw_dir.lstrip("./").rstrip("/")
-    mk = " ".join(f'"{host_path}/{d}"' for d in subdirs)
+    root    = _code_root(raw, folder.name)
+    targets = list(_area_dirs(raw, folder.name).values()) or [root]
 
-    if _is_abs_path(raw_dir):
-        return {"created": False, "path": host_path,
-                "reason": "Thu muc nam ngoai container nen dashboard khong tao duoc",
-                "mkdir_cmd": f"mkdir {mk}"}
+    exists, missing, unknown = [], [], []
+    for t in targets:
+        if _is_abs_path(t) or not t.startswith("clients/"):
+            unknown.append(t)
+            continue
+        (exists if (CLIENTS_DIR / Path(t).relative_to("clients")).is_dir() else missing).append(t)
 
-    # Tuong doi -> quy ve trong repo. Chi tao duoc phan nam trong clients/ (mount ghi duoc).
-    target = (CLIENTS_DIR / Path(host_path).relative_to("clients")) if host_path.startswith("clients/")         else None
-    if target is None:
-        return {"created": False, "path": host_path,
-                "reason": "Chi tu tao duoc thu muc nam trong clients/",
-                "mkdir_cmd": f"mkdir {mk}"}
-    try:
-        for d in subdirs:
-            (target / d).mkdir(parents=True, exist_ok=True)
-    except OSError as e:
-        return {"created": False, "path": host_path, "reason": str(e),
-                "mkdir_cmd": f"mkdir {mk}"}
-    return {"created": True, "path": host_path,
-            "subdirs": [f"{host_path}/{d}" for d in subdirs]}
+    todo = missing + unknown
+    return {
+        "ok":        not todo,
+        "path":      root,
+        "targets":   targets,
+        "exists":    exists,
+        "missing":   missing,
+        "unknown":   unknown,
+        "mkdir_cmd": ("mkdir " + " ".join(f'"{t}"' for t in todo)) if todo else "",
+    }
 
 
 def _resolve_dir(folder: Path, key: str, fallback: Path) -> Path:
@@ -266,7 +318,10 @@ def _folder_to_project(folder: Path) -> dict:
         "tech_stack":  tech,
         "agents":      agents,
         "agent_count": len(agents),
-        "output_dir":  raw.get("output", {}).get("directory", f"./output/{folder.name}"),
+        "output_dir":   raw.get("output", {}).get("directory", f"./output/{folder.name}"),
+        "code_layout":  _code_layout(raw),
+        "backend_dir":  raw.get("output", {}).get("backend_directory", ""),
+        "frontend_dir": raw.get("output", {}).get("frontend_directory", ""),
         "config_error": _toml_error(folder),
     }
 
@@ -321,6 +376,11 @@ class ProjectCreate(BaseModel):
     server_side: str = ""
     # Thư mục code của dự án. Bỏ trống → ./clients/<slug>/output
     output_dir: str = ""
+    # "split" = tách backend/frontend (mặc định), "mono" = gộp 1 thư mục (Laravel Blade…)
+    layout: str = "split"
+    # Chỉ dùng khi layout="split". Bỏ trống → <output_dir>/backend, <output_dir>/frontend
+    backend_dir: str = ""
+    frontend_dir: str = ""
 
 
 @router.post("/")
@@ -351,7 +411,7 @@ def create_project(payload: ProjectCreate) -> dict:
     raw: dict = {
         "project": {"name": slug.replace("_", " ").replace("-", " ").title(), "profile": payload.profile},
         "agents":  agents,
-        "output":  {"directory": (payload.output_dir or "").strip() or f"./clients/{slug}/output"},
+        "output":  {},
         "timeouts": {"claude_code": 600, "opencode": 600},
         "tech_stack": {
             "backend":  payload.backend  or "Python FastAPI + SQLModel + SQLite",
@@ -361,10 +421,14 @@ def create_project(payload: ProjectCreate) -> dict:
             **({"server_side": payload.server_side} if payload.server_side.strip() else {}),
         },
     }
+    _apply_output_settings(raw, slug,
+                           directory=payload.output_dir, layout=payload.layout,
+                           backend_dir=payload.backend_dir, frontend_dir=payload.frontend_dir)
     _write_toml(folder, raw)
     _write_local_template(folder, slug)
-    # Dựng sẵn khung code ngay lúc tạo project, không đợi tới lúc chạy feature
-    workspace = _ensure_workspace(folder, raw["output"]["directory"], _workspace_subdirs(raw))
+    # Soát thư mục code ngay lúc tạo project để dev biết còn thiếu gì — dashboard
+    # không tự tạo, chỉ báo lại kèm lệnh mkdir.
+    workspace = _check_workspace(folder, raw)
     return {**_folder_to_project(folder), "workspace": workspace}
 
 
@@ -375,6 +439,9 @@ class ProjectPatch(BaseModel):
     frontend: Optional[str] = None
     server_side: Optional[str] = None
     output_dir: Optional[str] = None
+    layout: Optional[str] = None
+    backend_dir: Optional[str] = None
+    frontend_dir: Optional[str] = None
 
 
 @router.patch("/{folder_name}")
@@ -409,10 +476,12 @@ def patch_project(folder_name: str, payload: ProjectPatch) -> dict:
             tech.pop("server_side", None)     # xoá trắng = dự án không có vùng này
 
     workspace = None
-    if payload.output_dir is not None:
-        raw["output"] = {**raw.get("output", {}),
-                         "directory": payload.output_dir.strip() or f"./clients/{folder_name}/output"}
-        workspace = _ensure_workspace(folder, raw["output"]["directory"], _workspace_subdirs(raw))
+    if any(v is not None for v in (payload.output_dir, payload.layout,
+                                   payload.backend_dir, payload.frontend_dir)):
+        _apply_output_settings(raw, folder_name,
+                               directory=payload.output_dir, layout=payload.layout,
+                               backend_dir=payload.backend_dir, frontend_dir=payload.frontend_dir)
+        workspace = _check_workspace(folder, raw)
 
     _write_toml(folder, raw)
     out = _folder_to_project(folder)
@@ -575,6 +644,78 @@ def remove_settings_agent(
         "agents": get_system_agents(folder / "settings.toml"),
         "deleted_workspace": deleted_workspace,
     }
+
+
+# ── Token GitHub riêng từng project ───────────────────────────────────────────
+# Nhiều tài khoản / nhiều tổ chức → chốt cứng 1 tài khoản trong `git config --global`
+# là sai ngay project thứ hai. Mỗi project khai token riêng ở settings.local.toml
+# (file đã nằm trong .gitignore); worker.py đọc rồi truyền vào env của tiến trình
+# agent, không ghi vào .git/config và KHÔNG đi qua DB.
+
+_GIT_BLOCK_RE = re.compile(r"^\[git\][^\[]*", re.MULTILINE)
+
+
+def _read_local_git(folder: Path) -> dict:
+    f = folder / "settings.local.toml"
+    if not f.exists():
+        return {}
+    try:
+        return tomllib.loads(f.read_text(encoding="utf-8")).get("git") or {}
+    except Exception:
+        return {}                      # file hỏng → coi như chưa khai
+
+
+def _mask(token: str) -> str:
+    """Chỉ lộ 4 ký tự cuối — đủ để nhận ra token nào, không đủ để dùng lại."""
+    t = (token or "").strip()
+    return f"…{t[-4:]}" if len(t) > 4 else ("…" if t else "")
+
+
+@router.get("/{folder_name}/git")
+def get_project_git(folder_name: str) -> dict:
+    """Trạng thái token, KHÔNG bao giờ trả token ra ngoài."""
+    folder = CLIENTS_DIR / folder_name
+    if not folder.is_dir():
+        raise HTTPException(status_code=404, detail="Project not found")
+    git = _read_local_git(folder)
+    token = str(git.get("token") or "").strip()
+    return {
+        "configured": bool(token),
+        "hint":       _mask(token),
+        "username":   str(git.get("username") or ""),
+    }
+
+
+class ProjectGitPayload(BaseModel):
+    token: str = ""
+    username: str = ""
+
+
+@router.put("/{folder_name}/git")
+def set_project_git(folder_name: str, payload: ProjectGitPayload) -> dict:
+    """Ghi [git] vào settings.local.toml. Token rỗng = xoá, quay về hỏi tay như cũ.
+
+    Sửa đúng khối [git] chứ không ghi đè cả file — phần comment mẫu và các override
+    khác (output/slack/agents) của người dùng phải còn nguyên."""
+    folder = CLIENTS_DIR / folder_name
+    if not folder.is_dir():
+        raise HTTPException(status_code=404, detail="Project not found")
+    f = folder / "settings.local.toml"
+    body = f.read_text(encoding="utf-8") if f.exists() else ""
+
+    token = payload.token.strip()
+    user  = payload.username.strip()
+    if token:
+        block = "[git]" + chr(10) + f"token = {_toml_str(token)}" + chr(10)
+        if user:
+            block += f"username = {_toml_str(user)}" + chr(10)
+        body = (_GIT_BLOCK_RE.sub(block, body, count=1) if _GIT_BLOCK_RE.search(body)
+                else body.rstrip() + chr(10) * 2 + block)
+    else:
+        body = _GIT_BLOCK_RE.sub("", body).rstrip() + chr(10)
+
+    f.write_text(body, encoding="utf-8")
+    return get_project_git(folder_name)
 
 
 # ── PRD ───────────────────────────────────────────────────────────────────────

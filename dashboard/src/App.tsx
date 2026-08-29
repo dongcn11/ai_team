@@ -1,6 +1,7 @@
 import React, { useState } from "react";
 import { useCurrentRun, useRunHistory } from "./hooks/useTasks";
 import { useProjects } from "./hooks/useProjects";
+import AgentQuestions from "./components/AgentQuestions";
 import { TaskCard }    from "./components/TaskCard";
 import { ProgressBar } from "./components/ProgressBar";
 import { IssuesList }  from "./components/IssuesList";
@@ -145,6 +146,10 @@ export default function App() {
       </header>
 
       <main className="main">
+        {/* Việc agent chờ dev chốt. Màn hình chạy có thẻ hỏi/đáp riêng ngay cạnh
+            bước đang bị chặn nên không lặp lại banner ở đó. */}
+        {tab !== "runs" && <AgentQuestions />}
+
         {tab === "projects"  && <ProjectsPage />}
         {tab === "agents"    && <AgentsPage />}
         {tab === "workflows" && <WorkflowsPage />}

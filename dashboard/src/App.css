@@ -291,6 +291,174 @@ body {
   padding: 24px;
 }
 
+/* ── Form "Tạo Project mới" ────────────────────────────────────────────────
+   .setting-input mặc định rộng cố định 180px (dùng cho hàng label–input của
+   trang Settings). Trong form này input phải giãn hết cột, không thì đường dẫn
+   dài bị cắt mất đuôi. */
+.np-form {
+  display: grid;
+  gap: 20px;
+  max-width: 900px;
+}
+
+.np-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 16px;
+}
+
+.np-field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.np-field .setting-input,
+.np-field .setting-select {
+  width: 100%;
+  box-sizing: border-box;
+}
+
+.np-hint {
+  font-size: 11px;
+  line-height: 1.55;
+  color: #64748b;
+}
+.np-hint code {
+  background: #1e293b;
+  border-radius: 4px;
+  padding: 0 4px;
+  font-size: 10.5px;
+}
+
+.np-section {
+  display: grid;
+  gap: 14px;
+  background: #0b1220;
+  border: 1px solid #1e293b;
+  border-radius: 10px;
+  padding: 16px;
+}
+.np-section-title {
+  font-size: 11px;
+  font-weight: 600;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #94a3b8;
+}
+
+/* Segmented control chọn kiểu bố trí code — rõ hơn 2 cái radio bé xíu */
+.np-seg {
+  display: inline-flex;
+  gap: 2px;
+  padding: 2px;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 8px;
+}
+.np-seg button {
+  background: none;
+  border: none;
+  border-radius: 6px;
+  color: #94a3b8;
+  cursor: pointer;
+  font: inherit;
+  font-size: 12px;
+  padding: 6px 14px;
+  transition: background 0.15s, color 0.15s;
+}
+.np-seg button:hover { color: #e2e8f0; }
+.np-seg button[aria-pressed="true"] {
+  background: #2563eb;
+  color: #fff;
+}
+
+/* ── Agent chờ dev xác nhận ────────────────────────────────────────────────
+   Agent ghi "## Cần xác nhận" + status: blocked vào file task → hiện ở đây. */
+.aq-panel {
+  background: #1c1408;
+  border: 1px solid #78350f;
+  border-radius: 12px;
+  padding: 16px 20px;
+  margin-bottom: 20px;
+}
+
+.aq-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  color: #fde68a;
+  font-size: 14px;
+  font-weight: 600;
+  margin-bottom: 12px;
+}
+.aq-badge {
+  background: #b45309;
+  border-radius: 999px;
+  color: #fff;
+  font-size: 11px;
+  min-width: 20px;
+  padding: 2px 7px;
+  text-align: center;
+}
+
+.aq-error {
+  color: #fca5a5;
+  font-size: 12px;
+  margin-bottom: 8px;
+}
+
+.aq-item + .aq-item {
+  border-top: 1px solid #422006;
+  margin-top: 14px;
+  padding-top: 14px;
+}
+
+.aq-meta {
+  color: #a16207;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  font-size: 11px;
+  margin-bottom: 6px;
+}
+.aq-meta code {
+  background: #0b1220;
+  border-radius: 4px;
+  color: #bfdbfe;
+  padding: 0 4px;
+}
+.aq-meta strong { color: #fde68a; }
+
+.aq-question {
+  color: #fef3c7;
+  font-size: 13px;
+  line-height: 1.6;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.aq-answer {
+  align-items: flex-end;
+  display: flex;
+  gap: 8px;
+  margin-top: 10px;
+}
+
+.aq-input {
+  background: #0b1220;
+  border: 1px solid #422006;
+  border-radius: 8px;
+  color: #f3f4f6;
+  flex: 1;
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+  padding: 8px 10px;
+  resize: vertical;
+}
+.aq-input:focus { border-color: #b45309; }
+
 .project-detail-header {
   display: flex;
   align-items: flex-start;

@@ -10,6 +10,7 @@ export const STATUS_META: Record<NodeRunStatus, { color: string; bg: string; lab
   ok:      { color: "#4ade80", bg: "#052e16", label: "xong",         dot: "●" },
   error:   { color: "#f87171", bg: "#450a0a", label: "lỗi",          dot: "✕" },
   skipped: { color: "#64748b", bg: "#0f172a", label: "bỏ qua",       dot: "⊘" },
+  blocked: { color: "#fde68a", bg: "#1c1408", label: "chờ bạn xác nhận", dot: "?" },
 };
 
 export const TYPE_ICON: Record<string, string> = {

@@ -24,7 +24,7 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     ports:
-      - "8000:8000"
+      - "8100:8000"
     environment:
       DATABASE_URL: postgresql://dashboard:dashboard123@db:5432/ai_team_dashboard
       CLIENTS_DIR: /clients
@@ -37,6 +37,9 @@ services:
       # được ngoài terminal. Sửa lại nếu bạn move/clone repo sang chỗ khác.
       HOST_PROJECT_ROOT: ${HOST_PROJECT_ROOT:-c:/www/ai_team_clean}
     volumes:
+      # Source mount: uvicorn chạy --reload nên sửa code API là container tự nạp lại,
+      # không phải build lại image.
+      - ./api:/app
       - ../clients:/clients
       - ../config:/config:ro
       - ../profiles.yaml:/profiles.yaml:ro
@@ -53,7 +56,7 @@ services:
       dockerfile: Dockerfile
     restart: unless-stopped
     ports:
-      - "3000:80"
+      - "3100:80"
     depends_on:
       - api
 

@@ -47,6 +47,7 @@ const STATUS_COLOR: Record<NodeRunStatus, string> = {
   ok:      "#4ade80",
   error:   "#f87171",
   skipped: "#475569",
+  blocked: "#f59e0b",
 };
 
 const STATUS_BADGE: Partial<Record<NodeRunStatus, string>> = {
@@ -54,6 +55,7 @@ const STATUS_BADGE: Partial<Record<NodeRunStatus, string>> = {
   ok:      "xong",
   error:   "lỗi",
   skipped: "bỏ qua",
+  blocked: "chờ bạn xác nhận",
 };
 
 /** Nhãn trạng thái gắn trên node lúc chạy. Trước đây trạng thái chỉ thể hiện
