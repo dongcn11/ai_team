@@ -91,7 +91,8 @@ function nodeSummary(type: WorkflowNodeType, data: any): string {
   // Node chọn agent -> hiện agent; còn lại hiện bậc model Claude (nếu có chọn),
   // để nhìn sơ đồ là biết ngay bước nào đang ăn Opus.
   const withEngine = (base: string) =>
-    data.agent_key ? `${base} · 🤖 ${data.agent_key}`
+    data.agent_key === "__task__" ? `${base} · 🎯 agent của feature`
+    : data.agent_key ? `${base} · 🤖 ${data.agent_key}`
     : data.claude_model ? `${base} · 🤖 ${data.claude_model}`
     : base;
   if (type === "action.generate_code")  return withEngine((data.skill_dirs || []).join("+") || "no skill");
@@ -354,13 +355,17 @@ function ConfigPanel({ node, skills, agents, onUpdate, onChangeType, onDelete, o
             value={data.agent_key || ""} onChange={e => changeAgent(e.target.value)}
             title="Chọn agent pipeline → bước chạy bằng opencode với model của agent đó. Để trống → Claude headless (nếu bật tự chạy) hoặc bạn chạy tay.">
             <option value="">🤖 Claude headless / bạn chạy tay</option>
+            <option value="__task__">🎯 Agent của feature (ông dev được giao trên task)</option>
             {agents.map(a => (
               <option key={a.key} value={a.key}>{a.name} — {a.tool} · {a.model}</option>
             ))}
           </select>
           <p style={{ fontSize: 11, color: "#4b5563", marginTop: 0, marginBottom: 12 }}>
-            Chọn agent = dùng đúng tool/model khai trong <code>config/settings.toml</code>, cùng đội với pipeline
-            {selectedAgent && <> — và nhận luôn skill <b>{["shared", ...(selectedAgent.skill_dirs || [])].join(" + ")}</b> của vai trò đó</>}.
+            {data.agent_key === "__task__"
+              ? <>Lúc chạy, bước này dùng agent đã chọn ở ô <b>Agent làm</b> của feature — cùng một workflow,
+                  feature BE giao ông BE, feature FE giao ông FE. Feature chưa chọn agent thì chạy như Claude headless.</>
+              : <>Chọn agent = dùng đúng tool/model khai trong <code>config/settings.toml</code>, cùng đội với pipeline
+                  {selectedAgent && <> — và nhận luôn skill <b>{["shared", ...(selectedAgent.skill_dirs || [])].join(" + ")}</b> của vai trò đó</>}.</>}
           </p>
 
           <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>

@@ -123,6 +123,10 @@ class ProjectTask(Base):
     # Workflow mà task này chạy theo. Mỗi project có danh sách workflow riêng,
     # mỗi task chọn 1 workflow trong danh sách đó (NULL = chưa chọn).
     workflow_id      = Column(Integer, ForeignKey("workflows.id"), nullable=True)
+    # Agent dev (be1/fe1/fs1... trong settings.toml) làm feature này. Node workflow
+    # chọn "agent của feature" (agent_key = "__task__") sẽ chạy bằng agent này —
+    # cùng workflow nhưng feature BE giao ông BE, feature FE giao ông FE.
+    agent_key        = Column(String, nullable=True)
     name             = Column(String, nullable=False)
     description      = Column(Text, nullable=True)
     status           = Column(String, default="todo")     # todo / in_progress / review / done

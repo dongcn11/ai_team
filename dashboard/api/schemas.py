@@ -300,6 +300,7 @@ class ProjectTaskCreate(BaseModel):
     description: Optional[str] = None
     priority: str = "medium"
     assigned_agent_id: Optional[int] = None
+    agent_key: Optional[str] = None
     due_at: Optional[datetime] = None
 
 
@@ -310,6 +311,7 @@ class ProjectTaskUpdate(BaseModel):
     priority: Optional[str] = None
     progress: Optional[int] = None
     assigned_agent_id: Optional[int] = None
+    agent_key: Optional[str] = None
     due_at: Optional[datetime] = None
 
 
@@ -317,6 +319,7 @@ class ProjectTaskOut(BaseModel):
     id: int
     project_id: int
     assigned_agent_id: Optional[int]
+    agent_key: Optional[str] = None
     name: str
     description: Optional[str]
     status: str

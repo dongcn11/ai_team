@@ -460,25 +460,36 @@ body {
 .aq-input:focus { border-color: #b45309; }
 
 /* Dùng ở màn hình chi tiết task (TaskManager) — màn project đã chuyển sang .pd-* */
-/* ── Thư mục & tài khoản git riêng từng agent dev ─────────────────────────── */
-.aw-list { display: grid; gap: 10px; }
-.aw-row {
-  display: grid;
-  grid-template-columns: 150px minmax(0, 1fr) minmax(0, 1fr);
-  gap: 12px;
-  align-items: end;
-  padding: 10px 12px;
+/* ── Bộ thư mục & tài khoản git riêng từng agent dev ──────────────────────── */
+.aw-list { display: grid; gap: 12px; }
+.aw-card {
+  padding: 12px 14px;
   background: #0b1220;
   border: 1px solid #1e293b;
   border-radius: 8px;
 }
-.aw-name { display: flex; flex-direction: column; gap: 2px; padding-bottom: 6px; }
-.aw-name strong { font-size: 13px; color: #e2e8f0; }
-.aw-name code { font-size: 10px; color: #64748b; }
-.aw-cell { min-width: 0; }
-@media (max-width: 900px) {
-  .aw-row { grid-template-columns: 1fr; }
+.aw-card-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 10px;
+  font-size: 13px;
+  color: #e2e8f0;
 }
+.aw-card-head > code { font-size: 10px; color: #64748b; }
+.aw-card-work { font-size: 11px; color: #94a3b8; }
+.aw-card-work code { color: #bfdbfe; background: #0f172a; border-radius: 4px; padding: 0 4px; }
+.aw-card-tag {
+  margin-left: auto;
+  font-size: 10px;
+  color: #64748b;
+  border: 1px solid #1e293b;
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+.aw-seg-reset { opacity: 0.6; }
+.aw-seg-reset:hover { opacity: 1; }
 
 .project-detail-header {
   display: flex;

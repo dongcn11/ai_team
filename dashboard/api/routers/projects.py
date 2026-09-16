@@ -774,17 +774,56 @@ CODING_AGENTS = ["be1", "be2", "fe1", "fe2", "fs1", "fs2"]
 _AGENT_AREA = {"be1": "backend", "be2": "backend", "fe1": "frontend", "fe2": "frontend"}
 
 
-def _agent_dir(raw: dict, slug: str, key: str) -> tuple:
-    """(thư mục agent làm việc, "own" | "area" | "root") — cùng quy ước với
-    workflows.py::_agent_workdir; sửa một bên thì sửa cả hai."""
-    own = _norm_path(str((raw.get("agents") or {}).get(f"{key}_directory") or ""))
-    if own:
-        return (own if _is_abs_path(own) else f"clients/{slug}/{own}"), "own"
-    areas = _area_dirs(raw, slug)
-    area = _AGENT_AREA.get(key)
-    if area and area in areas:
-        return areas[area], "area"
-    return _code_root(raw, slug), "root"
+def _agent_workspace(raw: dict, slug: str, key: str) -> dict:
+    """Bộ thư mục code của 1 agent dev — y hệt bộ của project nhưng riêng từng agent.
+
+    Mỗi agent khai được đủ: thư mục gốc, bố trí (mono/split), thư mục backend/
+    frontend. Khai cái nào thì cái đó thắng, còn lại thừa kế từ project:
+        [agents]
+        fs1_directory          = "C:/www/my_app"
+        fs1_layout             = "split"
+        fs1_backend_directory  = "C:/www/my_app/api"
+        fs1_frontend_directory = "C:/www/my_app/web"
+    Cùng quy ước với workflows.py::_agent_workspace — sửa một bên thì sửa cả hai.
+
+    Trả về: root, layout, areas{backend, frontend}, workdir (thư mục agent sẽ
+    ghi code), và own{...} = trường nào là khai riêng."""
+    ag = raw.get("agents") or {}
+
+    def g(field: str) -> str:
+        return str(ag.get(f"{key}_{field}") or "").strip()
+
+    def abs_or_client(p: str) -> str:
+        return p if _is_abs_path(p) else f"clients/{slug}/{p}"
+
+    own_root   = _norm_path(g("directory"))
+    own_layout = g("layout").lower()
+    root   = abs_or_client(own_root) if own_root else _code_root(raw, slug)
+    layout = own_layout if own_layout in ("mono", "split") else _code_layout(raw)
+
+    areas: dict = {}
+    if layout != "mono":
+        proj_areas = _area_dirs(raw, slug) if not own_root else {}
+        for area in ("backend", "frontend"):
+            own = _norm_path(g(f"{area}_directory"))
+            if own:
+                areas[area] = abs_or_client(own)
+            elif area in proj_areas:
+                areas[area] = proj_areas[area]
+            else:
+                areas[area] = f"{root}/{area}"
+
+    role_area = _AGENT_AREA.get(key)
+    workdir = areas.get(role_area) if role_area and role_area in areas else root
+    return {
+        "root": root, "layout": layout, "areas": areas, "workdir": workdir,
+        "own": {
+            "directory":          own_root,
+            "layout":             own_layout if own_layout in ("mono", "split") else "",
+            "backend_directory":  _norm_path(g("backend_directory")),
+            "frontend_directory": _norm_path(g("frontend_directory")),
+        },
+    }
 
 
 def _agent_git(folder: Path, key: str) -> dict:
@@ -814,21 +853,23 @@ def list_agent_workspaces(folder_name: str) -> List[dict]:
     for key in CODING_AGENTS:
         if key not in present:
             continue
-        path, source = _agent_dir(raw, folder_name, key)
+        ws = _agent_workspace(raw, folder_name, key)
         out.append({
-            "key":        key,
-            "name":       present[key].get("name") or key,
-            "directory":  str((raw.get("agents") or {}).get(f"{key}_directory") or ""),
-            "effective":  path,
-            "source":     source,
-            "git":        _agent_git(folder, key),
+            "key":  key,
+            "name": present[key].get("name") or key,
+            **ws,
+            "git":  _agent_git(folder, key),
         })
     return out
 
 
 class AgentWorkspacePayload(BaseModel):
-    directory: Optional[str] = None   # None = giữ nguyên, "" = xoá (về vùng mặc định)
-    token: Optional[str] = None       # None = giữ nguyên, "" = xoá (về token project)
+    # None = giữ nguyên, "" = xoá (về mặc định của project)
+    directory: Optional[str] = None
+    layout: Optional[str] = None            # "split" | "mono" | ""
+    backend_directory: Optional[str] = None
+    frontend_directory: Optional[str] = None
+    token: Optional[str] = None             # None = giữ nguyên, "" = xoá (về token project)
     username: Optional[str] = None
 
 
@@ -840,14 +881,25 @@ def set_agent_workspace(folder_name: str, agent_key: str, payload: AgentWorkspac
     if agent_key not in CODING_AGENTS:
         raise HTTPException(status_code=400, detail=f"Chỉ cấu hình được agent dev: {CODING_AGENTS}")
 
-    if payload.directory is not None:
+    fields = {
+        "directory":          payload.directory,
+        "layout":             payload.layout,
+        "backend_directory":  payload.backend_directory,
+        "frontend_directory": payload.frontend_directory,
+    }
+    if any(v is not None for v in fields.values()):
         raw = _read_toml_strict(folder)
         agents = raw.setdefault("agents", {})
-        d = _norm_path(payload.directory)
-        if d:
-            agents[f"{agent_key}_directory"] = d
-        else:
-            agents.pop(f"{agent_key}_directory", None)
+        for field, val in fields.items():
+            if val is None:
+                continue
+            v = val.strip().lower() if field == "layout" else _norm_path(val)
+            if field == "layout" and v not in ("mono", "split", ""):
+                raise HTTPException(status_code=400, detail="layout phải là 'split' hoặc 'mono'")
+            if v:
+                agents[f"{agent_key}_{field}"] = v
+            else:
+                agents.pop(f"{agent_key}_{field}", None)
         _write_toml(folder, raw)
 
     if payload.token is not None:
@@ -952,6 +1004,9 @@ class FeatureCreate(BaseModel):
     acceptance_criteria: Optional[str] = ""
     # Workflow (trong danh sách của chính project này) mà task sẽ chạy theo.
     workflow_id: Optional[int] = None
+    # Agent dev làm feature này (be1/fe1/fs1...). Node workflow chọn "agent của
+    # feature" sẽ chạy bằng agent này.
+    agent_key: Optional[str] = None
 
 
 class FeatureUpdate(BaseModel):
@@ -963,6 +1018,17 @@ class FeatureUpdate(BaseModel):
     # None ở đây có nghĩa "bỏ chọn workflow", nên phải phân biệt với "không
     # gửi field" — dùng model_fields_set thay vì so sánh None.
     workflow_id: Optional[int] = None
+    agent_key: Optional[str] = None
+
+
+def _validated_agent_key(agent_key: Optional[str], folder: Path) -> Optional[str]:
+    """Chỉ nhận agent có trong settings.toml của project; rỗng/lạ → None."""
+    key = (agent_key or "").strip()
+    if not key:
+        return None
+    if key not in {a["key"] for a in get_system_agents(folder / "settings.toml")}:
+        raise HTTPException(status_code=400, detail=f"Agent '{key}' không có trong project này")
+    return key
 
 
 def _validated_workflow_id(workflow_id: Optional[int], proj_id: int,
@@ -1031,6 +1097,7 @@ def _feature_out(t: ProjectTask, run: Optional[WorkflowRun] = None) -> dict:
         "acceptance_criteria": t.acceptance_criteria or "",
         "workflow_id": t.workflow_id,
         "workflow_name": t.workflow.name if t.workflow else None,
+        "agent_key": t.agent_key,
         "latest_run": _run_out(run),
         "files": [_file_out(f) for f in (t.files or [])],
         "created_at": t.created_at.isoformat() if t.created_at else None,
@@ -1062,7 +1129,8 @@ def create_feature(folder_name: str, payload: FeatureCreate,
     task   = ProjectTask(project_id=proj.id, name=payload.name,
                          description=payload.description, priority=payload.priority,
                          acceptance_criteria=payload.acceptance_criteria or None,
-                         workflow_id=_validated_workflow_id(payload.workflow_id, proj.id, db))
+                         workflow_id=_validated_workflow_id(payload.workflow_id, proj.id, db),
+                         agent_key=_validated_agent_key(payload.agent_key, folder))
     db.add(task)
     db.commit()
     db.refresh(task)
@@ -1087,6 +1155,8 @@ def update_feature(folder_name: str, task_id: int, payload: FeatureUpdate,
         task.acceptance_criteria = payload.acceptance_criteria or None
     if "workflow_id" in payload.model_fields_set:
         task.workflow_id = _validated_workflow_id(payload.workflow_id, proj.id, db)
+    if "agent_key" in payload.model_fields_set:
+        task.agent_key = _validated_agent_key(payload.agent_key, folder)
     db.commit()
     db.refresh(task)
     _sync_features_to_prd(folder, _all_features(proj.id, db))

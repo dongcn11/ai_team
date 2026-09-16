@@ -122,6 +122,28 @@ def _node_agent(node: dict) -> Optional[dict]:
     return _agent_cfg(((node.get("data") or {}).get("agent_key")) or None)
 
 
+# Node ghi agent_key = "__task__" nghĩa là "agent của feature": cùng một workflow
+# nhưng feature BE giao ông BE, feature FE giao ông FE — ai làm do task quyết,
+# không phải do sơ đồ. Lúc chạy, thay bằng agent_key thật của task gắn với run.
+TASK_AGENT = "__task__"
+
+
+def _run_nodes(wf: Workflow, run: Optional[WorkflowRun]) -> list:
+    """Nodes của workflow với agent "__task__" đã đổi thành agent thật của task.
+
+    Run không gắn task (chạy tay từ trình soạn, trigger Slack) hoặc task chưa
+    chọn agent → bỏ agent, bước chạy như node không chọn ai (Claude headless)."""
+    nodes = (wf.definition or {}).get("nodes", []) or []
+    task_agent = (run.task.agent_key if run is not None and run.task else None) or None
+    out = []
+    for n in nodes:
+        data = n.get("data") or {}
+        if data.get("agent_key") == TASK_AGENT:
+            n = {**n, "data": {**data, "agent_key": task_agent}}
+        out.append(n)
+    return out
+
+
 def _task_prompt(path: Path, is_condition: bool = False, tool: str = "claude") -> str:
     """Prompt cho 1 bước — dùng chung cho lệnh copy-paste và job chạy headless,
     để chạy tay và chạy tự động cho ra đúng một kết quả."""
@@ -174,9 +196,10 @@ def _job_add_dirs(wf: Workflow, agent_key: Optional[str] = None) -> list:
     if not ws:
         return []
     dirs = list(_workspace_areas(wf, ws).values()) or [ws]
-    own  = _agent_workdir(wf, ws, agent_key)
+    a = _agent_workspace(wf, ws, agent_key)
+    own = [a["root"], *a["areas"].values()] if a else []
     # Thư mục gốc luôn có mặt: thứ dùng chung (docker-compose, README) nằm ở đó.
-    return sorted({ws, *dirs, *([own] if own else [])})
+    return sorted({ws, *dirs, *own})
 
 
 def _enqueue_step_job(db: Session, wf: Workflow, run: WorkflowRun, node: dict,
@@ -755,18 +778,67 @@ def _workspace_areas(wf: Workflow, ws: str) -> dict:
             for k in keys}
 
 
-def _agent_workdir(wf: Workflow, ws: str, agent_key: Optional[str]) -> Optional[str]:
-    """Thư mục 1 agent dev làm việc — cùng quy ước với projects.py::_agent_dir.
+def _agent_workspace(wf: Workflow, ws: str, agent_key: Optional[str]) -> Optional[dict]:
+    """Bộ thư mục code RIÊNG của 1 agent dev — cùng quy ước với
+    projects.py::_agent_workspace; sửa một bên thì sửa cả hai.
 
-    Ưu tiên [agents] <key>_directory (mỗi "ông dev" một repo riêng), rồi vùng của
-    vai trò (be→backend, fe→frontend), fullstack không có vùng → None (gốc)."""
+    Mỗi agent khai được đủ bộ như project ([agents] <key>_directory, _layout,
+    _backend_directory, _frontend_directory); khai cái nào cái đó thắng, còn
+    lại thừa kế project. None khi node không gắn agent."""
     if not agent_key:
         return None
-    own = _norm_ws_path(str((_project_settings(wf).get("agents") or {}).get(f"{agent_key}_directory") or ""))
-    if own:
-        return own if (re.match(r"^[A-Za-z]:/", own) or own.startswith("/")) else f"clients/{wf.client_folder}/{own}"
-    area = _ROLE_AREA.get(agent_key)
-    return _workspace_areas(wf, ws).get(area) if area else None
+    st = _project_settings(wf)
+    ag = st.get("agents") or {}
+
+    def g(field: str) -> str:
+        return str(ag.get(f"{agent_key}_{field}") or "").strip()
+
+    def abs_or_client(p: str) -> str:
+        return p if (re.match(r"^[A-Za-z]:/", p) or p.startswith("/")) else f"clients/{wf.client_folder}/{p}"
+
+    own_root   = _norm_ws_path(g("directory"))
+    own_layout = g("layout").lower()
+    proj_mono  = str((st.get("output") or {}).get("layout") or "").strip().lower() == "mono"
+    root   = abs_or_client(own_root) if own_root else ws
+    layout = own_layout if own_layout in ("mono", "split") else ("mono" if proj_mono else "split")
+
+    areas: dict = {}
+    if layout != "mono":
+        proj_areas = _workspace_areas(wf, ws) if not own_root else {}
+        for area in ("backend", "frontend"):
+            own = _norm_ws_path(g(f"{area}_directory"))
+            areas[area] = abs_or_client(own) if own else proj_areas.get(area, f"{root}/{area}")
+
+    role_area = _ROLE_AREA.get(agent_key)
+    workdir = areas.get(role_area) if role_area and role_area in areas else root
+    return {"root": root, "layout": layout, "areas": areas, "workdir": workdir,
+            "custom": bool(own_root or own_layout or g("backend_directory") or g("frontend_directory"))}
+
+
+def _agent_workdir(wf: Workflow, ws: str, agent_key: Optional[str]) -> Optional[str]:
+    """Thư mục 1 agent dev sẽ ghi code — None khi không gắn agent."""
+    a = _agent_workspace(wf, ws, agent_key)
+    return a["workdir"] if a else None
+
+
+def _agent_lines(wf: Workflow, ws: str, agent: Optional[dict]) -> list:
+    """Dòng "Bước này do X chạy → ..." — agent có bộ thư mục riêng thì tả cả bộ."""
+    if not agent:
+        return []
+    a = _agent_workspace(wf, ws, agent["key"])
+    if not a:
+        return []
+    if not a["custom"]:
+        return [f"- Bước này do **{agent['name']}** chạy → làm trong `{a['workdir']}`."]
+    out = [f"- Bước này do **{agent['name']}** chạy, agent này có bộ thư mục RIÊNG (khác project ở trên):"]
+    if a["layout"] == "mono":
+        out.append(f"  - code nằm thẳng trong `{a['root']}` — không tách backend/frontend")
+    else:
+        out.append(f"  - gốc `{a['root']}`")
+        for area, path in a["areas"].items():
+            out.append(f"  - `{path}` — {area}")
+    out.append(f"  - **làm trong `{a['workdir']}`**")
+    return out
 
 
 def _workspace_section(wf: Workflow, node: dict) -> str:
@@ -793,9 +865,7 @@ def _workspace_section(wf: Workflow, node: dict) -> str:
                  "- Dự án này **không tách backend/frontend**, đừng tự dựng thêm 2 thư mục đó; "
                  "theo đúng cấu trúc sẵn có của source."]
         agent = _node_agent(node)
-        own   = _agent_workdir(wf, ws, agent["key"]) if agent else None
-        if own and own != ws:
-            lines.append(f"- Bước này do **{agent['name']}** chạy → làm trong `{own}` (repo riêng của agent này).")
+        lines += _agent_lines(wf, ws, agent)
     else:
         lines = ["## Nơi làm việc", f"Code của dự án nằm trong `{ws}` — chưa có thì tạo:"]
         for key, path in areas.items():
@@ -804,9 +874,9 @@ def _workspace_section(wf: Workflow, node: dict) -> str:
             lines.append(f"- `{path}` — {label}{f' ({stack})' if stack else ''}")
 
         agent = _node_agent(node)
-        path  = _agent_workdir(wf, ws, agent["key"]) if agent else None
-        if path:
-            lines.append(f"- Bước này do **{agent['name']}** chạy → làm trong `{path}`.")
+        extra = _agent_lines(wf, ws, agent)
+        if extra:
+            lines += extra
         else:
             lines.append("- Đặt code đúng vùng của nó; thứ dùng chung (docker-compose, README, "
                          "script) để ở gốc thư mục dự án.")
@@ -1090,7 +1160,7 @@ def advance_run(db: Session, run: WorkflowRun, trigger_message: Optional[str] = 
     if not wf:
         return
 
-    nodes = (wf.definition or {}).get("nodes", []) or []
+    nodes = _run_nodes(wf, run)
     edges = (wf.definition or {}).get("edges", []) or []
     node_by_id = {n["id"]: n for n in nodes}
 
@@ -1343,7 +1413,7 @@ def list_active_tasks(db: Session = Depends(get_db)) -> List[dict]:
         wf = db.query(Workflow).filter(Workflow.id == run.workflow_id).first()
         if not wf:
             continue
-        node_by_id = {n["id"]: n for n in (wf.definition or {}).get("nodes", []) or []}
+        node_by_id = {n["id"]: n for n in _run_nodes(wf, run)}
         try:
             tasks_dir = _client_tasks_dir(db, wf, run)
         except HTTPException:
@@ -1386,7 +1456,7 @@ def get_run_steps(run_id: int, db: Session = Depends(get_db)) -> dict:
         raise HTTPException(status_code=404, detail="Workflow not found")
 
     definition = wf.definition or {}
-    nodes = definition.get("nodes", []) or []
+    nodes = _run_nodes(wf, run)
     edges = definition.get("edges", []) or []
     node_status = run.node_status or {}
 

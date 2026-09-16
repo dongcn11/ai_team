@@ -140,6 +140,8 @@ export default function ProjectsPage() {
     /** Workflow task này chạy theo (null = chưa chọn) */
     workflow_id?: number | null;
     workflow_name?: string | null;
+    /** Agent dev làm feature (be1/fe1/fs1…); null = theo workflow */
+    agent_key?: string | null;
     /** Lần chạy workflow gần nhất của task */
     latest_run?: TaskRunSummary | null;
   };
@@ -156,6 +158,7 @@ export default function ProjectsPage() {
   const [featureSaving,   setFeatureSaving]   = useState(false);
   const [featureError,    setFeatureError]    = useState("");
   const [featureWorkflowId, setFeatureWorkflowId] = useState("");   // workflow chọn trong form tạo
+  const [featureAgentKey,   setFeatureAgentKey]   = useState("");   // agent dev làm feature (be1/fe1/fs1…)
   const [runningFeatureId,  setRunningFeatureId]  = useState<number | null>(null);
   const [featureRunError,   setFeatureRunError]   = useState<Record<number, string>>({});
 
@@ -301,7 +304,7 @@ export default function ProjectsPage() {
   const resetFeatureForm = () => {
     setFeatureName(""); setFeatureDesc("");
     setFeaturePriority("medium"); setFeatureAccept("");
-    setPendingFiles([]); setFeatureError(""); setFeatureWorkflowId("");
+    setPendingFiles([]); setFeatureError(""); setFeatureWorkflowId(""); setFeatureAgentKey("");
   };
 
   const closeAddFeatureModal = () => {
@@ -337,6 +340,7 @@ export default function ProjectsPage() {
         priority: featurePriority,
         acceptance_criteria: featureAccept.trim(),
         workflow_id: featureWorkflowId ? Number(featureWorkflowId) : null,
+        agent_key: featureAgentKey || null,
       }),
     });
     if (!res.ok) {
@@ -628,6 +632,8 @@ export default function ProjectsPage() {
   };
 
   const availableKeys = VALID_KEYS.filter(k => !settingsAgents.find(a => a.key === k));
+  /** Agent dev (có thư mục code) — PM/Scrum/Analyst/Leader không "làm" feature. */
+  const DEV_AGENT_KEYS = ["be1", "be2", "fe1", "fe2", "fs1", "fs2"];
 
   const createProject = async () => {
     if (!npFolderName.trim()) return;
@@ -1315,6 +1321,31 @@ export default function ProjectsPage() {
                           Project chưa có workflow nào — tạo ở tab <b>Workflows</b>.
                         </p>
                       )}
+                    </div>
+
+                    {/* Agent dev làm feature — node workflow chọn "agent của feature" sẽ dùng */}
+                    <div>
+                      <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>
+                        Agent làm
+                        <span style={{ fontWeight: 400, color: "#6b7280", marginLeft: 6, fontSize: 11 }}>
+                          (ông dev nào nhận feature này — BE, FE hay fullstack)
+                        </span>
+                      </label>
+                      <select className="setting-select" value={featureAgentKey}
+                        onChange={e => setFeatureAgentKey(e.target.value)}
+                        style={{ width: "100%", boxSizing: "border-box" }}>
+                        <option value="">— theo workflow —</option>
+                        {settingsAgents
+                          .filter(a => DEV_AGENT_KEYS.includes(a.key))
+                          .map(a => (
+                            <option key={a.key} value={a.key}>{a.name} ({a.key}) — {a.tool} · {a.model}</option>
+                          ))}
+                      </select>
+                      <p style={{ fontSize: 11, color: "#6b7280", margin: "4px 0 0" }}>
+                        Bước nào trong workflow chọn <b>🎯 Agent của feature</b> sẽ chạy bằng agent này —
+                        cùng một workflow, feature BE giao ông BE, feature FE giao ông FE. Agent dùng
+                        thư mục + tài khoản git riêng đã khai ở cấu hình project.
+                      </p>
                     </div>
 
                     {/* Description */}
