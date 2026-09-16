@@ -60,6 +60,14 @@ export default function ProjectsPage() {
   const [editDraft,    setEditDraft]    = useState("");
   const [editSaving,   setEditSaving]   = useState(false);
 
+  /** Panel "Cấu hình" mở/đóng — nhớ lựa chọn để lần sau vào khỏi phải bấm lại. */
+  const CFG_OPEN_KEY = "pd.configOpen";
+  const [configOpen, setConfigOpen] = useState(() => localStorage.getItem(CFG_OPEN_KEY) !== "0");
+  const toggleConfig = () => setConfigOpen(open => {
+    localStorage.setItem(CFG_OPEN_KEY, open ? "0" : "1");
+    return !open;
+  });
+
   // Remove agent confirm dialog
   const AGENTS_WITH_WORKSPACE = ["be1","be2","fe1","fe2","fs1","fs2"];
   const [removeAgentKey,      setRemoveAgentKey]      = useState<string | null>(null);
@@ -89,6 +97,9 @@ export default function ProjectsPage() {
     mkdir_cmd?: string;
   };
   const [workspaceNote, setWorkspaceNote] = useState<Workspace | null>(null);
+  /** Thư mục chứa code các dự án trên máy host (env CODE_ROOT của API). Lấy từ
+      server chứ không đoán ở frontend, để ai đổi CODE_ROOT thì gợi ý đổi theo. */
+  const [codeRootBase, setCodeRootBase] = useState("C:/www");
   const [npError,          setNpError]          = useState("");
 
   // Token GitHub riêng của project (lưu ở settings.local.toml, không qua DB)
@@ -98,6 +109,8 @@ export default function ProjectsPage() {
   const [gitToken,    setGitToken]    = useState("");
   const [gitUser,     setGitUser]     = useState("");
   const [gitSaving,   setGitSaving]   = useState(false);
+
+
 
   // Agent management
   const [settingsAgents, setSettingsAgents] = useState<AgentFS[]>([]);
@@ -519,31 +532,58 @@ export default function ProjectsPage() {
     setEditSaving(false);
   };
 
-  /** Chip sửa nhanh 1 đường dẫn ở header project. */
-  const dirChip = (field: EditableField, label: string, value: string, hint: string) =>
-    editingField === field ? (
-      <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-        <input className="setting-input" value={editDraft} autoFocus
-          onChange={e => setEditDraft(e.target.value)}
-          onKeyDown={e => {
-            if (e.key === "Enter") saveEditField();
-            if (e.key === "Escape") cancelEditField();
-          }}
-          style={{ width: 280, fontSize: 11, padding: "2px 6px", boxSizing: "border-box" }} />
-        <button onClick={saveEditField} disabled={editSaving}
-          style={{ background: "none", border: "none", color: "#86efac", cursor: "pointer", fontSize: 13 }}>✓</button>
-        <button onClick={cancelEditField} disabled={editSaving}
-          style={{ background: "none", border: "none", color: "#9ca3af", cursor: "pointer", fontSize: 13 }}>✕</button>
-      </span>
-    ) : (
-      <span className="project-link"
-        style={{ background: "#1a1a1a", borderColor: "#374151", fontSize: 10, cursor: "pointer" }}
-        onClick={() => startEditField(field, value)} title={hint}>
-        {label}: {value || "theo thư mục code"}
-        {isAbsPath(value) && <span style={{ color: "#fbbf24", marginLeft: 4 }}>⚠</span>}
-        <span style={{ color: "#6b7280", fontSize: 9 }}> ✏️</span>
-      </span>
-    );
+  /** Một ô trong panel Cấu hình: nhãn ở trên, giá trị bên dưới — nhấn vào giá
+      trị là sửa tại chỗ (Enter lưu, Esc huỷ). Dùng chung cho mọi trường nên
+      không còn 7 khối markup gần-giống-nhau như bản chip cũ. */
+  const cfgField = (
+    field: EditableField,
+    label: string,
+    value: string,
+    opts: { hint?: string; placeholder?: string; empty?: string; warn?: string | null } = {},
+  ) => (
+    <div className="pd-field" key={field}>
+      <div className="pd-field-label">{label}</div>
+      {editingField === field ? (
+        <div className="pd-field-edit">
+          <input className="pd-field-input" value={editDraft} autoFocus
+            placeholder={opts.placeholder}
+            onChange={e => setEditDraft(e.target.value)}
+            onKeyDown={e => {
+              if (e.key === "Enter") saveEditField();
+              if (e.key === "Escape") cancelEditField();
+            }} />
+          <button className="pd-icon-btn ok" onClick={saveEditField} disabled={editSaving}
+            title="Lưu (Enter)">✓</button>
+          <button className="pd-icon-btn" onClick={cancelEditField} disabled={editSaving}
+            title="Huỷ (Esc)">✕</button>
+        </div>
+      ) : (
+        <button type="button" className="pd-field-value" title={opts.hint || "Nhấn để sửa"}
+          onClick={() => startEditField(field, value)}>
+          <span className={value ? "" : "pd-field-empty"}>{value || opts.empty || "—"}</span>
+          {opts.warn && <span className="pd-field-flag">⚠</span>}
+          <span className="pd-field-pen">✏️</span>
+        </button>
+      )}
+      {opts.warn && <div className="pd-field-warn">{opts.warn}</div>}
+    </div>
+  );
+
+  /** ai_team/config.py giải đường dẫn code tương đối theo THƯ MỤC PROJECT
+      (clients/<slug>/), nên giá trị bắt đầu bằng "clients/" sẽ đẻ ra đường dẫn
+      lồng clients/<slug>/clients/<slug>/... — đúng cái đang có trên đĩa. */
+  const nestedClientsPath = (dir: string) =>
+    !isAbsPath(dir) && /^\.?\/?clients\//i.test((dir || "").split("\\").join("/"));
+
+  /** Số mục trong panel Cấu hình đang có cảnh báo — hiện thành chấm đỏ trên nút
+      "⚙ Cấu hình" để lúc panel đang thu gọn vẫn biết là có cái cần xem. */
+  const warnCount = !selected ? 0 : [
+    isAbsPath(selected.output_dir) || nestedClientsPath(selected.output_dir),
+    selected.code_layout !== "mono" && isAbsPath(selected.backend_dir || ""),
+    selected.code_layout !== "mono" && isAbsPath(selected.frontend_dir || ""),
+    gitCfg !== null && !gitCfg.configured,
+    !!selected.config_error,
+  ].filter(Boolean).length;
 
   const loadGit = useCallback(async (id: string) => {
     const res = await fetch(`/api/projects/${id}/git`);
@@ -636,10 +676,20 @@ export default function ProjectsPage() {
     setDeleteProjecting(false);
   };
 
-  /** Thư mục code mặc định khi bỏ trống — dùng làm placeholder cho 2 ô BE/FE. */
-  const codeRoot = npOutputDir.trim().replace(/[\\/]+$/, "")
-    || `./clients/${npFolderName || "<slug>"}/output`;
-  const codeRootPlaceholder = `mặc định: ./clients/${npFolderName || "<slug>"}/output`;
+  useEffect(() => {
+    fetch("/api/projects/defaults")
+      .then(r => r.ok ? r.json() : null)
+      .then(d => { if (d?.code_root) setCodeRootBase(d.code_root); })
+      .catch(() => {});
+  }, []);
+
+  /** Thư mục code mặc định khi bỏ trống — cũng là placeholder cho 2 ô BE/FE.
+      Mặc định nằm NGOÀI clients/: clients/<slug>/ chỉ giữ tài liệu, còn đường dẫn
+      tương đối thì ai_team/config.py giải theo clients/<slug>/ nên không trỏ ra
+      ngoài đó được. */
+  const codeRootDefault = `${codeRootBase}/${npFolderName || "<slug>"}`;
+  const codeRoot = npOutputDir.trim().replace(/[\\/]+$/, "") || codeRootDefault;
+  const codeRootPlaceholder = `mặc định: ${codeRootDefault}`;
 
   if (loading) return <div className="state">Loading projects...</div>;
   if (error)   return <div className="state err">{error}</div>;
@@ -699,11 +749,21 @@ export default function ProjectsPage() {
                 <input className="setting-input" placeholder={codeRootPlaceholder}
                   value={npOutputDir} onChange={e => setNpOutputDir(e.target.value)} />
                 <div className="np-hint">
-                  Dashboard <strong>không tự tạo thư mục</strong> — thiếu cái nào thì báo lại kèm lệnh{" "}
-                  <code>mkdir</code> để bạn tự tạo. Đường dẫn tuyệt đối (vd{" "}
-                  <code>C:/www/{npFolderName || "slug"}</code>) nằm ngoài container nên dashboard cũng
-                  không kiểm tra được.
+                  Để <strong>ngoài</strong> <code>clients/</code> — <code>clients/{npFolderName || "slug"}/</code>{" "}
+                  chỉ giữ tài liệu (PRD, task, <code>settings.toml</code>). Bỏ trống thì lấy{" "}
+                  <code>{codeRootDefault}</code>. Dashboard <strong>không tự tạo thư mục</strong> và cũng
+                  không nhìn được đường dẫn ngoài container — thiếu cái nào thì báo lại kèm lệnh{" "}
+                  <code>mkdir</code> để bạn tự tạo.
                 </div>
+                {nestedClientsPath(npOutputDir) && (
+                  <div className="np-warn">
+                    Đường dẫn tương đối được tính từ chính <code>clients/{npFolderName || "slug"}/</code>,
+                    nên giá trị này ra thật là{" "}
+                    <code>clients/{npFolderName || "slug"}/{npOutputDir.replace(/^\.\//, "").replace(/^\//, "")}</code>{" "}
+                    — lồng thêm một tầng <code>clients/</code>. Dùng đường dẫn tuyệt đối như{" "}
+                    <code>{codeRootDefault}</code> thay vì gõ <code>clients/…</code>.
+                  </div>
+                )}
               </div>
 
               {npLayout === "split" && (
@@ -758,256 +818,253 @@ export default function ProjectsPage() {
 
       {selected && (
         <div className="card" style={{ marginBottom: 20 }}>
-          {/* Header */}
-          <div className="project-detail-header">
-            <div style={{ minWidth: 0, flex: 1 }}>
-              {editingField === "name" ? (
-                <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-                  <input className="setting-input" value={editDraft} autoFocus
-                    onChange={e => setEditDraft(e.target.value)}
-                    onKeyDown={e => {
-                      if (e.key === "Enter") saveEditField();
-                      if (e.key === "Escape") cancelEditField();
-                    }}
-                    style={{ width: 320, fontSize: 18, fontWeight: 600, boxSizing: "border-box" }} />
-                  <button onClick={saveEditField} disabled={editSaving}
-                    style={{ background: "#14532d", border: "none", color: "#86efac", cursor: "pointer", fontSize: 14, padding: "4px 10px", borderRadius: 4 }}
-                    title="Lưu (Enter)">✓</button>
-                  <button onClick={cancelEditField} disabled={editSaving}
-                    style={{ background: "#1e293b", border: "1px solid #374151", color: "#9ca3af", cursor: "pointer", fontSize: 14, padding: "4px 10px", borderRadius: 4 }}
-                    title="Huỷ (Esc)">✕</button>
+          {/* ── Header: tên project + hành động ───────────────────────────
+              Mọi thiết lập gom vào panel "Cấu hình" bên dưới, không rải thành
+              hàng chip nữa — chip không wrap nên màn hẹp là bị bóp dựng đứng. */}
+          <div className="pd-header">
+            <div className="pd-title-row">
+              <div className="pd-title-main">
+                {editingField === "name" ? (
+                  <div className="pd-name-edit">
+                    <input className="pd-name-input" value={editDraft} autoFocus
+                      onChange={e => setEditDraft(e.target.value)}
+                      onKeyDown={e => {
+                        if (e.key === "Enter") saveEditField();
+                        if (e.key === "Escape") cancelEditField();
+                      }} />
+                    <button className="pd-icon-btn ok" onClick={saveEditField} disabled={editSaving}
+                      title="Lưu (Enter)">✓</button>
+                    <button className="pd-icon-btn" onClick={cancelEditField} disabled={editSaving}
+                      title="Huỷ (Esc)">✕</button>
+                  </div>
+                ) : (
+                  <h3 className="pd-title" onClick={() => startEditField("name", selected.name)}
+                    title="Nhấn để đổi tên hiển thị">
+                    {selected.name}
+                    <span className="pd-field-pen">✏️</span>
+                  </h3>
+                )}
+                <div className="pd-subtitle">
+                  <span className="pd-sub-item" title="Workspace: PRD, tài liệu, task file và settings.toml của project">
+                    <span className="pd-sub-key">workspace</span>
+                    <code className="pd-slug">clients/{selected.id}</code>
+                  </span>
+                  <span className="pd-dot">·</span>
+                  <span className="pd-sub-item" title={"Thư mục code — nơi agent ghi code ra: " + selected.output_dir}>
+                    <span className="pd-sub-key">code</span>
+                    <span className="pd-subtitle-path">{selected.output_dir}</span>
+                  </span>
+                  <span className="pd-dot">·</span>
+                  <span>{selected.agent_count} agent</span>
                 </div>
-              ) : (
-                <h3 style={{ display: "inline-flex", alignItems: "center", gap: 8 }}>
-                  {selected.name}
-                  <button onClick={() => startEditField("name", selected.name)}
-                    style={{ background: "none", border: "none", color: "#6b7280", cursor: "pointer", fontSize: 13, padding: 0 }}
-                    title="Đổi tên hiển thị">✏️</button>
-                </h3>
-              )}
-              <div className="project-meta-links">
-                <span className="project-link" style={{ background: "#172554", borderColor: "#3b82f655" }}
-                  title="Folder slug — không sửa được">
-                  <span className="project-link-icon">&#x1f4c1;</span> clients/{selected.id}
-                </span>
+              </div>
 
-                {/* Backend */}
-                {editingField === "backend" ? (
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                    <input className="setting-input" value={editDraft} autoFocus
-                      onChange={e => setEditDraft(e.target.value)}
-                      onKeyDown={e => {
-                        if (e.key === "Enter") saveEditField();
-                        if (e.key === "Escape") cancelEditField();
-                      }}
-                      style={{ width: 280, fontSize: 11, padding: "2px 6px", boxSizing: "border-box" }} />
-                    <button onClick={saveEditField} disabled={editSaving}
-                      style={{ background: "none", border: "none", color: "#86efac", cursor: "pointer", fontSize: 13 }}>✓</button>
-                    <button onClick={cancelEditField} disabled={editSaving}
-                      style={{ background: "none", border: "none", color: "#9ca3af", cursor: "pointer", fontSize: 13 }}>✕</button>
-                  </span>
-                ) : (
-                  <span className="project-link"
-                    style={{ background: "#1a2e1a", borderColor: "#22c55e55", cursor: "pointer" }}
-                    onClick={() => startEditField("backend", selected.tech_stack?.backend || "")}
-                    title="Click để sửa BE stack">
-                    BE: {selected.tech_stack?.backend || "—"} <span style={{ color: "#6b7280", fontSize: 9 }}>✏️</span>
-                  </span>
-                )}
-
-                {/* Frontend */}
-                {editingField === "frontend" ? (
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                    <input className="setting-input" value={editDraft} autoFocus
-                      onChange={e => setEditDraft(e.target.value)}
-                      onKeyDown={e => {
-                        if (e.key === "Enter") saveEditField();
-                        if (e.key === "Escape") cancelEditField();
-                      }}
-                      style={{ width: 280, fontSize: 11, padding: "2px 6px", boxSizing: "border-box" }} />
-                    <button onClick={saveEditField} disabled={editSaving}
-                      style={{ background: "none", border: "none", color: "#86efac", cursor: "pointer", fontSize: 13 }}>✓</button>
-                    <button onClick={cancelEditField} disabled={editSaving}
-                      style={{ background: "none", border: "none", color: "#9ca3af", cursor: "pointer", fontSize: 13 }}>✕</button>
-                  </span>
-                ) : (
-                  <span className="project-link"
-                    style={{ background: "#1e1a2e", borderColor: "#a855f755", cursor: "pointer" }}
-                    onClick={() => startEditField("frontend", selected.tech_stack?.frontend || "")}
-                    title="Click để sửa FE stack">
-                    FE: {selected.tech_stack?.frontend || "—"} <span style={{ color: "#6b7280", fontSize: 9 }}>✏️</span>
-                  </span>
-                )}
-
-                {/* Server-side (chỉ hiện khi dự án có khai) */}
-                {editingField === "server_side" ? (
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                    <input className="setting-input" value={editDraft} autoFocus
-                      onChange={e => setEditDraft(e.target.value)}
-                      onKeyDown={e => {
-                        if (e.key === "Enter") saveEditField();
-                        if (e.key === "Escape") cancelEditField();
-                      }}
-                      placeholder="để trống = bỏ vùng server-side"
-                      style={{ width: 280, fontSize: 11, padding: "2px 6px", boxSizing: "border-box" }} />
-                    <button onClick={saveEditField} disabled={editSaving}
-                      style={{ background: "none", border: "none", color: "#86efac", cursor: "pointer", fontSize: 13 }}>✓</button>
-                    <button onClick={cancelEditField} disabled={editSaving}
-                      style={{ background: "none", border: "none", color: "#9ca3af", cursor: "pointer", fontSize: 13 }}>✕</button>
-                  </span>
-                ) : (
-                  <span className="project-link"
-                    style={{ background: "#2e1a1a", borderColor: "#f9731655", cursor: "pointer" }}
-                    onClick={() => startEditField("server_side", selected.tech_stack?.server_side || "")}
-                    title="Click để sửa server-side stack (để trống = dự án không có vùng này)">
-                    SS: {selected.tech_stack?.server_side || "—"} <span style={{ color: "#6b7280", fontSize: 9 }}>✏️</span>
-                  </span>
-                )}
-
-                {/* Output dir */}
-                {editingField === "output_dir" ? (
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                    <input className="setting-input" value={editDraft} autoFocus
-                      onChange={e => setEditDraft(e.target.value)}
-                      onKeyDown={e => {
-                        if (e.key === "Enter") saveEditField();
-                        if (e.key === "Escape") cancelEditField();
-                      }}
-                      style={{ width: 320, fontSize: 11, padding: "2px 6px", boxSizing: "border-box" }} />
-                    <button onClick={saveEditField} disabled={editSaving}
-                      style={{ background: "none", border: "none", color: "#86efac", cursor: "pointer", fontSize: 13 }}>✓</button>
-                    <button onClick={cancelEditField} disabled={editSaving}
-                      style={{ background: "none", border: "none", color: "#9ca3af", cursor: "pointer", fontSize: 13 }}>✕</button>
-                  </span>
-                ) : (
-                  <span className="project-link"
-                    style={{ background: "#1a1a1a", borderColor: "#374151", fontSize: 10, cursor: "pointer" }}
-                    onClick={() => startEditField("output_dir", selected.output_dir)}
-                    title={isAbsPath(selected.output_dir)
-                      ? "Agent trên máy bạn sẽ ghi code vào đây. Nhưng dashboard chạy trong Docker nên "
-                        + "KHÔNG đọc được thư mục tuyệt đối ngoài repo — tab Docs sẽ rơi về ./output/<project>. "
-                        + "Muốn dashboard xem được thì dùng đường dẫn tương đối trong repo."
-                      : "Click để sửa output directory"}>
-                    📂 {selected.output_dir}
-                    {isAbsPath(selected.output_dir) && (
-                      <span style={{ color: "#fbbf24", marginLeft: 4 }} >⚠</span>
-                    )}
-                    <span style={{ color: "#6b7280", fontSize: 9 }}> ✏️</span>
-                  </span>
-                )}
-
-                {/* Kiểu bố trí code: tách BE/FE hay gộp 1 thư mục (Laravel Blade…) */}
-                <span className="project-link"
-                  style={{ background: "#1a1a1a", borderColor: "#374151", fontSize: 10,
-                           cursor: editSaving ? "wait" : "pointer" }}
-                  onClick={() => saveLayout(selected.code_layout === "mono" ? "split" : "mono")}
-                  title={selected.code_layout === "mono"
-                    ? "Dự án gộp 1 thư mục — code nằm thẳng trong thư mục code. Click để chuyển sang tách backend/frontend."
-                    : "Code tách backend/ + frontend/. Click để chuyển sang gộp 1 thư mục (Laravel Blade, WordPress…)."}>
-                  {selected.code_layout === "mono" ? "🧱 gộp 1 thư mục" : "🧩 tách BE/FE"}
-                  <span style={{ color: "#6b7280", fontSize: 9 }}> ⇄</span>
-                </span>
-
-                {/* Token GitHub riêng của project — agent dùng token này để push,
-                    khỏi phải chốt cứng 1 tài khoản trong git config --global */}
-                {gitEditing ? (
-                  <span style={{ display: "inline-flex", alignItems: "center", gap: 4 }}>
-                    <input className="setting-input" type="password" autoFocus
-                      placeholder="ghp_… (dán token, không hiện lại)"
-                      value={gitToken} onChange={e => setGitToken(e.target.value)}
-                      onKeyDown={e => {
-                        if (e.key === "Enter" && gitToken.trim()) saveGit(gitToken.trim());
-                        if (e.key === "Escape") { setGitEditing(false); setGitToken(""); }
-                      }}
-                      style={{ width: 240, fontSize: 11, padding: "2px 6px", boxSizing: "border-box" }} />
-                    <input className="setting-input" placeholder="tài khoản (tuỳ chọn)"
-                      value={gitUser} onChange={e => setGitUser(e.target.value)}
-                      style={{ width: 130, fontSize: 11, padding: "2px 6px", boxSizing: "border-box" }} />
-                    <button onClick={() => saveGit(gitToken.trim())} disabled={gitSaving || !gitToken.trim()}
-                      style={{ background: "none", border: "none", color: "#86efac", cursor: "pointer", fontSize: 13 }}
-                      title="Lưu vào clients/<slug>/settings.local.toml">✓</button>
-                    {gitCfg?.configured && (
-                      <button onClick={() => saveGit("")} disabled={gitSaving}
-                        style={{ background: "none", border: "none", color: "#fca5a5", cursor: "pointer", fontSize: 11 }}
-                        title="Xoá token — quay lại để Git Credential Manager tự hỏi">xoá</button>
-                    )}
-                    <button onClick={() => { setGitEditing(false); setGitToken(""); }} disabled={gitSaving}
-                      style={{ background: "none", border: "none", color: "#9ca3af", cursor: "pointer", fontSize: 13 }}>✕</button>
-                  </span>
-                ) : (
-                  <span className="project-link"
-                    style={{ background: "#1a1a1a", borderColor: "#374151", fontSize: 10, cursor: "pointer" }}
-                    onClick={() => { setGitUser(gitCfg?.username || ""); setGitEditing(true); }}
-                    title={gitCfg?.configured
-                      ? "Token GitHub riêng của project (settings.local.toml). Click để thay hoặc xoá."
-                      : "Chưa có token riêng — agent push sẽ để Git Credential Manager hỏi tài khoản, "
-                        + "và tiến trình chạy nền sẽ treo ở hộp thoại đó. Click để dán token."}>
-                    {gitCfg?.configured
-                      ? `🔑 token ${gitCfg.hint}${gitCfg.username ? ` · ${gitCfg.username}` : ""}`
-                      : "🔑 chưa có token"}
-                    <span style={{ color: "#6b7280", fontSize: 9 }}> ✏️</span>
-                  </span>
-                )}
-
-                {/* Đường dẫn riêng cho từng vùng — chỉ có nghĩa khi dự án tách BE/FE */}
-                {selected.code_layout !== "mono" && (
-                  <>
-                    {dirChip("backend_dir", "BE dir", selected.backend_dir || "",
-                             "Thư mục code backend. Bỏ trống = <thư mục code>/backend")}
-                    {dirChip("frontend_dir", "FE dir", selected.frontend_dir || "",
-                             "Thư mục code frontend. Bỏ trống = <thư mục code>/frontend")}
-                  </>
-                )}
+              <div className="pd-actions">
+                {(() => {
+                  const active  = queue.filter(j => j.status === "queued" || j.status === "running");
+                  const running = active.some(j => j.status === "running");
+                  if (active.length === 0) return null;
+                  return (
+                    <span className={"pd-run-state" + (running ? " is-running" : "")}>
+                      {running ? "🔄 đang chạy" : `⏳ chờ (${active.length})`}
+                    </span>
+                  );
+                })()}
+                <button className="btn-primary" disabled={triggering} onClick={triggerRun}
+                  title="Xếp project vào hàng đợi; worker.py chạy pipeline tuần tự">
+                  {triggering ? "Đang xếp..." : "▶ Run"}
+                </button>
+                <button className={"pd-cfg-toggle" + (configOpen ? " on" : "")}
+                  onClick={toggleConfig}
+                  title={configOpen ? "Ẩn cấu hình dự án" : "Hiện cấu hình dự án"}>
+                  <span>⚙ Cấu hình</span>
+                  {warnCount > 0 && <span className="pd-warn-dot" title="Có mục cần chú ý">{warnCount}</span>}
+                  <span className="pd-chevron">{configOpen ? "▴" : "▾"}</span>
+                </button>
+                <button className="pd-ghost-btn danger"
+                  onClick={() => { setShowDeleteProject(true); setDeleteStep("confirm"); }}
+                  title="Xoá project khỏi dashboard">🗑 Xoá</button>
+                <button className="pd-ghost-btn"
+                  onClick={() => { setSelected(null); setShowAddAgent(false); setPrdEditing(false); }}
+                  title="Đóng, quay lại danh sách">✕ Đóng</button>
               </div>
             </div>
-            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
-              {(() => {
-                const active = queue.filter(j => j.status === "queued" || j.status === "running");
-                const running = active.some(j => j.status === "running");
-                return (
-                  <>
-                    {active.length > 0 && (
-                      <span style={{ fontSize: 11, color: running ? "#22c55e" : "#eab308" }}>
-                        {running ? "🔄 đang chạy" : `⏳ chờ (${active.length})`}
-                      </span>
+
+            {selected.config_error && (
+              <div className="pd-alert">
+                <b>⚠ settings.toml sai cú pháp</b> — dashboard không đọc được cấu hình của project này.
+                <code>{selected.config_error}</code>
+              </div>
+            )}
+
+            {/* ── Panel cấu hình: lưới ô nhấn-để-sửa, tự xuống dòng ──────── */}
+            {configOpen && (
+              <div className="pd-config">
+                <div className="pd-config-group">
+                  <div className="pd-config-legend">Tech stack</div>
+                  <div className="pd-config-grid">
+                    {cfgField("backend", "Backend", selected.tech_stack?.backend || "",
+                      { hint: "Ngôn ngữ / framework phía backend", empty: "chưa khai" })}
+                    {cfgField("frontend", "Frontend", selected.tech_stack?.frontend || "",
+                      { hint: "Ngôn ngữ / framework phía frontend", empty: "chưa khai" })}
+                    {cfgField("server_side", "Server-side", selected.tech_stack?.server_side || "",
+                      { hint: "Để trống = dự án không có vùng server-side",
+                        placeholder: "để trống = bỏ vùng server-side", empty: "không dùng" })}
+                  </div>
+                </div>
+
+                <div className="pd-config-group">
+                  <div className="pd-config-legend">Workspace — tài liệu của project</div>
+                  <div className="pd-config-grid">
+                    <div className="pd-field pd-field-wide">
+                      <div className="pd-field-label">Thư mục workspace (cố định theo slug)</div>
+                      <div className="pd-field-static"><code>clients/{selected.id}/</code></div>
+                      <div className="pd-field-note">
+                        PRD, tài liệu, task file và <code>settings.toml</code> luôn nằm ở đây.
+                        Đây <strong>không phải</strong> nơi agent ghi code — thư mục code khai riêng bên dưới.
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="pd-config-group">
+                  <div className="pd-config-legend">Thư mục code — nơi agent ghi code ra</div>
+                  <div className="pd-config-grid">
+                    {cfgField("output_dir", "Thư mục code", selected.output_dir, {
+                      hint: "Nơi agent ghi code ra — tách khỏi workspace tài liệu ở trên",
+                      warn: isAbsPath(selected.output_dir)
+                        ? "Đường dẫn tuyệt đối: agent trên máy bạn ghi được, nhưng dashboard chạy trong "
+                          + "Docker nên không đọc được — tab Docs sẽ rơi về ./output/<project>."
+                        : nestedClientsPath(selected.output_dir)
+                        ? `Đường dẫn tương đối được tính từ chính thư mục project, nên giá trị này ra thật là `
+                          + `clients/${selected.id}/${selected.output_dir.replace(/^\.\//, "").replace(/^\//, "")} — lồng thêm `
+                          + `một tầng clients/. Workspace đã ở clients/${selected.id}/ rồi; thư mục code nên ghi `
+                          + `./output (tức clients/${selected.id}/output) hoặc một đường dẫn tuyệt đối riêng.`
+                        : null,
+                    })}
+                    <div className="pd-field">
+                      <div className="pd-field-label">Bố trí code</div>
+                      <div className="pd-seg">
+                        <button type="button" disabled={editSaving}
+                          className={selected.code_layout !== "mono" ? "on" : ""}
+                          onClick={() => saveLayout("split")}
+                          title="Code tách thành backend/ và frontend/">🧩 Tách BE/FE</button>
+                        <button type="button" disabled={editSaving}
+                          className={selected.code_layout === "mono" ? "on" : ""}
+                          onClick={() => saveLayout("mono")}
+                          title="Code nằm thẳng trong thư mục code (Laravel Blade, WordPress…)">🧱 Gộp 1 thư mục</button>
+                      </div>
+                    </div>
+                    {selected.code_layout !== "mono" && (
+                      <>
+                        {cfgField("backend_dir", "Thư mục backend", selected.backend_dir || "", {
+                          hint: "Bỏ trống = <thư mục code>/backend",
+                          empty: "theo thư mục code",
+                          warn: isAbsPath(selected.backend_dir || "")
+                            ? "Đường dẫn tuyệt đối — dashboard trong Docker không đọc được." : null,
+                        })}
+                        {cfgField("frontend_dir", "Thư mục frontend", selected.frontend_dir || "", {
+                          hint: "Bỏ trống = <thư mục code>/frontend",
+                          empty: "theo thư mục code",
+                          warn: isAbsPath(selected.frontend_dir || "")
+                            ? "Đường dẫn tuyệt đối — dashboard trong Docker không đọc được." : null,
+                        })}
+                      </>
                     )}
-                    <button className="btn-primary" style={{ fontSize: 13, padding: "6px 16px" }}
-                      disabled={triggering} onClick={triggerRun}
-                      title="Xếp project vào hàng đợi; worker.py chạy pipeline tuần tự">
-                      {triggering ? "Đang xếp..." : "▶ Run"}
-                    </button>
-                  </>
-                );
-              })()}
-              <button className="btn-danger" style={{ fontSize: 12, padding: "4px 10px" }}
-                onClick={() => { setShowDeleteProject(true); setDeleteStep("confirm"); }}>
-                🗑 Delete Project
-              </button>
-              <button className="btn-muted" onClick={() => { setSelected(null); setShowAddAgent(false); setPrdEditing(false); }}>Close</button>
-            </div>
+                  </div>
+                </div>
+
+                <div className="pd-config-group">
+                  <div className="pd-config-legend">GitHub</div>
+                  <div className="pd-config-grid">
+                    <div className="pd-field pd-field-wide">
+                      <div className="pd-field-label">Token push code (riêng project này)</div>
+                      {gitEditing ? (
+                        <div className="pd-field-edit">
+                          <input className="pd-field-input" type="password" autoFocus
+                            placeholder="ghp_… (dán token, không hiện lại)"
+                            value={gitToken} onChange={e => setGitToken(e.target.value)}
+                            onKeyDown={e => {
+                              if (e.key === "Enter" && gitToken.trim()) saveGit(gitToken.trim());
+                              if (e.key === "Escape") { setGitEditing(false); setGitToken(""); }
+                            }} />
+                          <input className="pd-field-input pd-field-input-sm" placeholder="tài khoản (tuỳ chọn)"
+                            value={gitUser} onChange={e => setGitUser(e.target.value)} />
+                          <button className="pd-icon-btn ok" onClick={() => saveGit(gitToken.trim())}
+                            disabled={gitSaving || !gitToken.trim()}
+                            title="Lưu vào clients/<slug>/settings.local.toml">✓</button>
+                          {gitCfg?.configured && (
+                            <button className="pd-icon-btn danger" onClick={() => saveGit("")} disabled={gitSaving}
+                              title="Xoá token — quay lại để Git Credential Manager tự hỏi">Xoá</button>
+                          )}
+                          <button className="pd-icon-btn" disabled={gitSaving}
+                            onClick={() => { setGitEditing(false); setGitToken(""); }}
+                            title="Huỷ (Esc)">✕</button>
+                        </div>
+                      ) : (
+                        <button type="button" className="pd-field-value"
+                          onClick={() => { setGitUser(gitCfg?.username || ""); setGitEditing(true); }}
+                          title={gitCfg?.configured
+                            ? "Token lưu ở clients/<slug>/settings.local.toml. Nhấn để thay hoặc xoá."
+                            : "Nhấn để dán token GitHub cho project này"}>
+                          <span className={gitCfg?.configured ? "" : "pd-field-empty"}>
+                            {gitCfg?.configured
+                              ? `🔑 ${gitCfg.hint}${gitCfg.username ? ` · ${gitCfg.username}` : ""}`
+                              : "chưa có token riêng"}
+                          </span>
+                          <span className="pd-field-pen">✏️</span>
+                        </button>
+                      )}
+                      {gitCfg !== null && !gitCfg.configured && !gitEditing && (
+                        <div className="pd-field-warn">
+                          Chưa có token — agent push code sẽ bị Git Credential Manager hỏi tài khoản,
+                          và tiến trình chạy nền treo luôn ở hộp thoại đó.
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="pd-config-group">
+                  <div className="pd-config-legend">Bot chat</div>
+                  <div className="pd-config-grid">
+                    <div className="pd-field pd-field-wide">
+                      <div className="pd-field-note" style={{ marginTop: 0 }}>
+                        Bot Telegram/Slack của dự án này khai ở tab <strong>Bots</strong> trên thanh
+                        điều hướng. Để riêng vì một dự án có nhiều quy trình (fixbug, làm CR…) nên
+                        có nhiều bot — mỗi bot buộc vào một hoặc vài workflow, không phải một ô ở đây.
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Tabs */}
-          <div style={{ display: "flex", gap: 4, marginTop: 16, borderBottom: "1px solid #1e293b" }}>
-            {(["features","workflows","agents","prd","runs","docs"] as const).map(tab => (
-              <button key={tab}
-                onClick={() => {
-                  setActiveTab(tab as typeof activeTab);
-                  if (tab === "prd" && prdContent === null) loadPrd(selected.id);
-                  if (tab === "docs" && docFiles.length === 0) loadDocs(selected.id);
-                  if (tab === "features" && !featuresLoaded) loadFeatures(selected.id);
-                }}
-                style={{ padding: "6px 16px", background: activeTab === tab ? "#1e293b" : "none", border: "none",
-                  borderRadius: "6px 6px 0 0", color: activeTab === tab ? "#f1f5f9" : "#6b7280",
-                  cursor: "pointer", fontSize: 13, fontWeight: activeTab === tab ? 600 : 400 }}>
-                {tab === "features" ? `Features (${features.length})`
-                  : tab === "workflows" ? `Workflows (${projectWorkflows.length})`
-                  : tab === "agents" ? `Agents (${settingsAgents.length})`
-                  : tab === "prd" ? "PRD"
-                  : tab === "runs" ? `Runs (${projRuns.length})`
-                  : `Docs${docFiles.length > 0 ? ` (${docFiles.length})` : ""}`}
-              </button>
-            ))}
+          <div className="pd-tabs">
+            {(["features","workflows","agents","prd","runs","docs"] as const).map(tab => {
+              const meta = {
+                features:  { label: "Features",  count: features.length as number | null },
+                workflows: { label: "Workflows", count: projectWorkflows.length as number | null },
+                agents:    { label: "Agents",    count: settingsAgents.length as number | null },
+                prd:       { label: "PRD",       count: null as number | null },
+                runs:      { label: "Runs",      count: projRuns.length as number | null },
+                docs:      { label: "Docs",      count: (docFiles.length || null) as number | null },
+              }[tab];
+              return (
+                <button key={tab} className={"pd-tab" + (activeTab === tab ? " on" : "")}
+                  onClick={() => {
+                    setActiveTab(tab);
+                    if (tab === "prd" && prdContent === null) loadPrd(selected.id);
+                    if (tab === "docs" && docFiles.length === 0) loadDocs(selected.id);
+                    if (tab === "features" && !featuresLoaded) loadFeatures(selected.id);
+                  }}>
+                  {meta.label}
+                  {meta.count !== null && <span className="pd-tab-count">{meta.count}</span>}
+                </button>
+              );
+            })}
           </div>
 
           {/* Workflows tab — danh sách workflow của riêng project này */}

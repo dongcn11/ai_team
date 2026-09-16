@@ -65,6 +65,11 @@ from models import Project, ProjectTask, FeatureFile, Workflow, WorkflowRun
 
 CLIENTS_DIR = Path(os.getenv("CLIENTS_DIR", "/clients"))
 OUTPUT_DIR  = Path(os.getenv("OUTPUT_DIR",  "/output"))
+# Thu muc chua code cac du an TREN MAY HOST. clients/<slug>/ chi giu tai lieu
+# (prd, task, settings); code de rieng ra ngoai nen mac dinh la duong dan tuyet
+# doi — duong dan tuong doi bi ai_team/config.py giai theo clients/<slug>/ nen
+# khong the tro ra ngoai do duoc.
+CODE_ROOT   = os.getenv("CODE_ROOT", "C:/www").replace(chr(92), "/").rstrip("/")
 
 VALID_AGENT_KEYS = ["pm", "scrum", "analyst", "be1", "be2", "fe1", "fe2", "fs1", "fs2", "leader"]
 
@@ -214,7 +219,17 @@ def _code_layout(raw: dict) -> str:
 
 
 def _code_root(raw: dict, slug: str) -> str:
-    return _norm_path(str((raw.get("output") or {}).get("directory") or "")) or f"clients/{slug}/output"
+    """Thu muc code, quy ve duong dan tinh tu GOC REPO de con di soat.
+
+    ai_team/config.py giai duong dan tuong doi theo THU MUC PROJECT
+    (clients/<slug>/), nen o day phai cong lai tien to do. Truoc kia doc thang
+    chuoi trong settings.toml nen bao sai cho: gia tri "./clients/x/output"
+    thuc te ra clients/x/clients/x/output.
+    """
+    raw_dir = _norm_path(str((raw.get("output") or {}).get("directory") or ""))
+    if not raw_dir:
+        return f"clients/{slug}/output"
+    return raw_dir if _is_abs_path(raw_dir) else f"clients/{slug}/{raw_dir}"
 
 
 def _area_dirs(raw: dict, slug: str) -> dict:
@@ -237,7 +252,7 @@ def _apply_output_settings(raw: dict, slug: str, *, directory=None, layout=None,
     """Ghi [output] theo input cua form. None = khong dong toi truong do."""
     out = raw.setdefault("output", {})
     if directory is not None:
-        out["directory"] = directory.strip() or f"./clients/{slug}/output"
+        out["directory"] = directory.strip() or f"{CODE_ROOT}/{slug}"
     if layout is not None:
         out["layout"] = _code_layout({"output": {"layout": layout}})
     mono = _code_layout(raw) == "mono"
@@ -327,6 +342,12 @@ def _folder_to_project(folder: Path) -> dict:
 
 
 # ── Project endpoints ─────────────────────────────────────────────────────────
+
+@router.get("/defaults")
+def project_defaults() -> dict:
+    """Gia tri mac dinh cho form tao project — de UI khoi doan lai o frontend."""
+    return {"code_root": CODE_ROOT}
+
 
 @router.get("/profiles")
 def list_profiles() -> List[dict]:
@@ -652,17 +673,42 @@ def remove_settings_agent(
 # (file đã nằm trong .gitignore); worker.py đọc rồi truyền vào env của tiến trình
 # agent, không ghi vào .git/config và KHÔNG đi qua DB.
 
-_GIT_BLOCK_RE = re.compile(r"^\[git\][^\[]*", re.MULTILINE)
-
-
-def _read_local_git(folder: Path) -> dict:
+def _local_block(folder: Path, name: str) -> dict:
+    """Đọc 1 khối trong settings.local.toml ([git], [telegram]...). File hỏng hoặc
+    chưa có khối đó → {} (coi như chưa khai), không ném lỗi lên UI."""
     f = folder / "settings.local.toml"
     if not f.exists():
         return {}
     try:
-        return tomllib.loads(f.read_text(encoding="utf-8")).get("git") or {}
+        return tomllib.loads(f.read_text(encoding="utf-8")).get(name) or {}
     except Exception:
-        return {}                      # file hỏng → coi như chưa khai
+        return {}
+
+
+def _write_local_block(folder: Path, name: str, values: dict) -> None:
+    """Ghi/xoá 1 khối trong settings.local.toml.
+
+    Chỉ thay đúng khối đó chứ không ghi đè cả file: phần comment mẫu và các
+    override khác (output/git/telegram/agents) của người dùng phải còn nguyên.
+    values rỗng = xoá hẳn khối."""
+    f = folder / "settings.local.toml"
+    body = f.read_text(encoding="utf-8") if f.exists() else ""
+    pattern = re.compile(rf"^\[{re.escape(name)}\][^\[]*", re.MULTILINE)
+    if values:
+        block = f"[{name}]" + chr(10)
+        for k, v in values.items():
+            block += f"{k} = {_toml_str(str(v))}" + chr(10)
+        # lambda chứ không truyền thẳng chuỗi: re.sub diễn giải \g, ... trong
+        # phần thay thế, mà token người dùng dán vào là chuỗi tuỳ ý.
+        body = (pattern.sub(lambda _m: block, body, count=1) if pattern.search(body)
+                else body.rstrip() + chr(10) * 2 + block)
+    else:
+        body = pattern.sub("", body).rstrip() + chr(10)
+    f.write_text(body, encoding="utf-8")
+
+
+def _read_local_git(folder: Path) -> dict:
+    return _local_block(folder, "git")
 
 
 def _mask(token: str) -> str:
@@ -700,23 +746,20 @@ def set_project_git(folder_name: str, payload: ProjectGitPayload) -> dict:
     folder = CLIENTS_DIR / folder_name
     if not folder.is_dir():
         raise HTTPException(status_code=404, detail="Project not found")
-    f = folder / "settings.local.toml"
-    body = f.read_text(encoding="utf-8") if f.exists() else ""
-
     token = payload.token.strip()
     user  = payload.username.strip()
+    values = {}
     if token:
-        block = "[git]" + chr(10) + f"token = {_toml_str(token)}" + chr(10)
+        values["token"] = token
         if user:
-            block += f"username = {_toml_str(user)}" + chr(10)
-        body = (_GIT_BLOCK_RE.sub(block, body, count=1) if _GIT_BLOCK_RE.search(body)
-                else body.rstrip() + chr(10) * 2 + block)
-    else:
-        body = _GIT_BLOCK_RE.sub("", body).rstrip() + chr(10)
-
-    f.write_text(body, encoding="utf-8")
+            values["username"] = user
+    _write_local_block(folder, "git", values)
     return get_project_git(folder_name)
 
+
+# Bot Telegram/Slack của dự án KHÔNG nằm ở đây nữa: một dự án có nhiều quy trình
+# nên có nhiều bot, mỗi bot buộc vào một hoặc vài workflow — quan hệ đó thuộc về
+# DB chứ không phải một khối TOML cạnh thư mục. Xem models.ChatBot + tab Bots.
 
 # ── PRD ───────────────────────────────────────────────────────────────────────
 

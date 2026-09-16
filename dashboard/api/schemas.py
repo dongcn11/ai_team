@@ -163,6 +163,21 @@ class WorkflowStepJobComplete(BaseModel):
     error: Optional[str] = None
 
 
+class WorkflowStepJobProgress(BaseModel):
+    """1 đợt log worker đẩy lên trong lúc bước đang chạy — nối vào đuôi job.progress."""
+    lines: str
+
+
+class WorkflowStepJobProgressOut(BaseModel):
+    """Log sống của 1 job. Tách khỏi WorkflowStepJobOut để list job (poll 4s) không
+    phải kéo theo 16KB log của mỗi job."""
+    id: int
+    status: str
+    progress: Optional[str] = None
+    started_at: Optional[datetime] = None
+    finished_at: Optional[datetime] = None
+
+
 class SettingOut(BaseModel):
     key: str
     value: str
@@ -402,5 +417,64 @@ class SubTaskOut(BaseModel):
     assigned_agent_id: Optional[int]
     created_at: datetime
     agent: Optional["AgentOut"] = None
+
+    model_config = {"from_attributes": True}
+
+
+# ── Bot chat (Telegram/Slack) ────────────────────────────────────────────────
+
+class ChatBotBase(BaseModel):
+    platform: str                      # telegram | slack
+    name: str
+    chats: str = ""                    # chat id / #kênh, cách nhau dấu phẩy
+    client_folder: Optional[str] = None   # None = mọi dự án
+    workflow_ids: List[int] = []          # [] = mọi workflow của dự án đó
+    enabled: bool = True
+
+
+class ChatBotCreate(ChatBotBase):
+    token: str = ""
+    signing_secret: Optional[str] = None
+    app_token: Optional[str] = None
+
+
+class ChatBotUpdate(BaseModel):
+    """Trường nào None = không đụng tới. Token/secret gửi chuỗi rỗng cũng coi như
+    không đổi — để sửa tên bot mà không phải dán lại token."""
+    name: Optional[str] = None
+    chats: Optional[str] = None
+    client_folder: Optional[str] = None
+    workflow_ids: Optional[List[int]] = None
+    enabled: Optional[bool] = None
+    token: Optional[str] = None
+    signing_secret: Optional[str] = None
+    app_token: Optional[str] = None
+    clear_client_folder: bool = False   # đặt lại về "mọi dự án"
+
+
+class ChatBotOut(BaseModel):
+    id: int
+    platform: str
+    name: str
+    chats: str
+    client_folder: Optional[str]
+    workflow_ids: List[int] = []
+    enabled: bool
+    created_at: Optional[datetime] = None
+    # Token KHÔNG bao giờ trả ra ngoài — chỉ đủ để nhận ra là cái nào
+    token_hint: str = ""
+    has_token: bool = False
+    has_secret: bool = False
+    has_app_token: bool = False
+    # "socket" = WebSocket đi ra (không cần URL công khai) · "webhook" = Slack gọi vào
+    mode: Optional[str] = None
+    # Suy ra ở server để UI khỏi phải tự ghép
+    scope_label: str = ""
+    request_path: Optional[str] = None   # chỉ Slack
+    running: bool = False
+    me: Optional[str] = None
+    last_error: Optional[str] = None
+    # workflow_ids trỏ tới workflow đã bị xoá — hiện cảnh báo thay vì dọn ngầm
+    stale_workflow_ids: List[int] = []
 
     model_config = {"from_attributes": True}

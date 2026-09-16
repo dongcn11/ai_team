@@ -78,6 +78,29 @@ def _host_relpath(path: Path) -> str:
 # thì coi như không hợp lệ ở đây — node để trống agent là đã chạy bằng Claude rồi.
 BLOCKED_AGENT_TOOLS = {"claude"}
 
+# Model cho node chạy bằng Claude headless. Dùng alias ("claude --model" nhận
+# 'haiku'/'sonnet'/'opus' hoặc tên đầy đủ) để luôn trỏ bản mới nhất của bậc đó.
+#
+# Vì sao đáng chọn: mỗi lần gọi `claude -p` là một phiên MỚI, phải ghi lại ~45K
+# token system prompt + tool schema vào cache với giá gấp đôi input. Sàn đó nhân
+# thẳng theo giá model, nên bước máy móc (đổi status, tạo MR) chạy Haiku rẻ hơn
+# Opus khoảng 5 lần mà vẫn xong việc.
+CLAUDE_MODELS = [
+    {"value": "haiku",  "label": "Haiku 4.5 — rẻ nhất, việc máy móc ($1 / $5 mỗi 1M token)"},
+    {"value": "sonnet", "label": "Sonnet 5 — cân bằng ($2 / $10)"},
+    {"value": "opus",   "label": "Opus 5 — mạnh nhất, đắt nhất ($5 / $25)"},
+]
+_CLAUDE_MODEL_VALUES = {m["value"] for m in CLAUDE_MODELS}
+
+
+def _node_claude_model(node: dict) -> Optional[str]:
+    """Model Claude cho 1 node. None = theo mặc định của worker/CLI.
+
+    Chỉ nhận giá trị trong CLAUDE_MODELS — chuỗi lạ từ definition cũ hay từ client
+    nào khác sẽ bị bỏ qua, không đẩy thẳng vào dòng lệnh CLI."""
+    val = str(((node.get("data") or {}).get("claude_model") or "")).strip()
+    return val if val in _CLAUDE_MODEL_VALUES else None
+
 
 def _agent_cfg(agent_key: Optional[str]) -> Optional[dict]:
     """Cau hinh agent pipeline (tool + model) theo key, doc tu config/settings.toml.
@@ -121,7 +144,7 @@ def _task_prompt(path: Path, is_condition: bool = False, tool: str = "claude") -
 
 
 def _task_command(path: Path, is_condition: bool = False, agent: Optional[dict] = None,
-                  wf_add_dirs: Optional[list] = None) -> str:
+                  wf_add_dirs: Optional[list] = None, claude_model: Optional[str] = None) -> str:
     """Lệnh copy-paste chạy được trên máy thật — đúng engine mà bước này dùng.
 
     Claude Code KHÔNG có flag `-f` (đó là opencode). Prompt truyền dạng positional
@@ -135,7 +158,10 @@ def _task_command(path: Path, is_condition: bool = False, agent: Optional[dict] 
         return (f'{cd}opencode run "{prompt}" --model {agent["model"]} '
                 f'-f {_host_relpath(path)}')
     add = "".join(f' --add-dir "{d}"' for d in (wf_add_dirs or []))
-    return f'{cd}claude "{_task_prompt(path, is_condition)}"{add}'
+    # Lệnh copy-paste phải khớp đúng thứ worker chạy, kể cả model — không thì chạy
+    # tay ra một giá, chạy tự động ra giá khác.
+    mdl = f' --model {claude_model}' if claude_model else ""
+    return f'{cd}claude "{_task_prompt(path, is_condition)}"{mdl}{add}'
 
 
 def _job_add_dirs(wf: Workflow) -> list:
@@ -171,6 +197,9 @@ def _enqueue_step_job(db: Session, wf: Workflow, run: WorkflowRun, node: dict,
         return
     agent = _node_agent(node)
     tool = "opencode" if agent else "claude"
+    # Node chọn agent pipeline -> model của agent đó; còn lại -> model chọn trên node
+    # (None = để worker dùng mặc định của CLI).
+    model = agent["model"] if agent else _node_claude_model(node)
     db.add(WorkflowStepJob(
         add_dirs=_job_add_dirs(wf),
         run_id=run.id,
@@ -180,7 +209,7 @@ def _enqueue_step_job(db: Session, wf: Workflow, run: WorkflowRun, node: dict,
         file_path=_host_relpath(path),
         prompt=_task_prompt(path, is_condition, tool=tool),
         tool=tool,
-        model=agent["model"] if agent else None,
+        model=model,
         status="queued",
     ))
 
@@ -216,7 +245,21 @@ def _upsert_question(db: Session, wf: Workflow, run: WorkflowRun, node: dict,
     db.add(q)
     db.commit()
     db.refresh(q)
+    # Đẩy câu hỏi ra các kênh chat đã khai. Import tại chỗ để tránh vòng import:
+    # telegram_bot/slack_bot cần find_workflows_for_chat + apply_question_answer ở
+    # file này. Gửi lỗi thì kệ — vòng poll workflow không được chết vì một cái chat.
+    for mod in ("telegram_bot", "slack_bot"):
+        try:
+            __import__(mod).notify_question(q)
+        except Exception as e:
+            print(f"[{mod}] không đẩy được câu hỏi #{q.id}: {e}")
     return q
+
+
+@router.get("/claude-models")
+def list_claude_models() -> List[dict]:
+    """Các bậc model cho node chạy bằng Claude headless — UI dựng dropdown từ đây."""
+    return CLAUDE_MODELS
 
 
 @router.get("/questions", response_model=List[AgentQuestionOut])
@@ -244,9 +287,20 @@ def answer_question(question_id: int, payload: AgentQuestionAnswer,
     q = db.query(AgentQuestion).filter(AgentQuestion.id == question_id).first()
     if not q:
         raise HTTPException(status_code=404, detail="Không có câu hỏi này")
+    apply_question_answer(db, q, payload.answer or "")
+    db.refresh(q)
+    return q
+
+
+def apply_question_answer(db: Session, q: AgentQuestion, answer: str) -> AgentQuestion:
+    """Lõi của việc trả lời 1 câu hỏi — web và Telegram cùng gọi đúng hàm này.
+
+    Tách ra khỏi endpoint để hai đường vào không trôi lệch nhau: cùng ghi vào file
+    task, cùng mở lại bước, cùng xếp lại job. Vẫn ném HTTPException vì đây là lỗi
+    người dùng gây ra và cả hai phía đều cần lý do đọc được."""
     if q.status != "open":
         raise HTTPException(status_code=400, detail="Câu hỏi này đã được trả lời")
-    answer = (payload.answer or "").strip()
+    answer = (answer or "").strip()
     if not answer:
         raise HTTPException(status_code=400, detail="Chưa nhập câu trả lời")
 
@@ -1104,7 +1158,7 @@ def advance_run(db: Session, run: WorkflowRun, trigger_message: Optional[str] = 
             node_status[nid] = "running"
             log.append({
                 "node_id": nid,
-                "message": f"[task] Đã tạo file {_host_relpath(path)} — tự chạy: {_task_command(path, is_condition, _node_agent(node), _job_add_dirs(wf))}",
+                "message": f"[task] Đã tạo file {_host_relpath(path)} — tự chạy: {_task_command(path, is_condition, _node_agent(node), _job_add_dirs(wf), _node_claude_model(node))}",
                 "ts": datetime.utcnow().isoformat(),
             })
             if wf.auto_run:
@@ -1169,6 +1223,45 @@ def advance_run(db: Session, run: WorkflowRun, trigger_message: Optional[str] = 
         run.status = "done"
         run.finished_at = datetime.utcnow()
         db.commit()
+        notify_run_finished(run)
+
+
+def notify_run_finished(run: WorkflowRun) -> None:
+    """Báo 'chạy xong' về chat đã ra lệnh, kèm tóm tắt từng bước.
+
+    Chỉ gửi khi run có địa chỉ trả lời (chat_bot_id) — chạy tay từ dashboard thì
+    im lặng, không ai muốn cả nhóm nhận thông báo về thứ mình bấm trên web."""
+    if not run.chat_bot_id:
+        return
+    wf_name = run.workflow.name if run.workflow else f"#{run.workflow_id}"
+    nodes   = ((run.workflow.definition or {}).get("nodes") or []) if run.workflow else []
+    status  = run.node_status or {}
+    labels  = {n["id"]: (n.get("data") or {}).get("label") or n["id"] for n in nodes}
+    icon    = {"ok": "✅", "skipped": "⤼", "error": "❌"}
+
+    def build(f):
+        lines = [f"✅ {f.b('Xong: ' + wf_name)}"]
+        for n in nodes:
+            st = status.get(n["id"], "pending")
+            if st == "pending":
+                continue
+            lines.append(f"{icon.get(st, '•')} {f.esc(labels.get(n['id'], n['id']))}")
+        lines.append(f"\nChi tiết: lần chạy {f.b('#' + str(run.id))} trên dashboard")
+        return "\n".join(lines)
+
+    import chat_router
+    chat_router.notify_run(run.id, build)
+
+
+def notify_step_failed(run_id: int, node_label: str, error: str) -> None:
+    """Báo 1 bước chạy lỗi. Đây là lúc người ta cần biết nhất — bước hỏng thì cả
+    lần chạy đứng im, không báo thì phải tự đi mở dashboard mới phát hiện."""
+    def build(f):
+        return (f"❌ {f.b('Bước lỗi: ' + node_label)}\n"
+                f"{f.esc((error or '')[:500])}\n\n"
+                f"Chạy lại ở lần chạy {f.b('#' + str(run_id))} trên dashboard.")
+    import chat_router
+    chat_router.notify_run(run_id, build)
 
 
 # ── Task management (xem/đánh dấu các step đang chờ chạy tay) ─────────────
@@ -1207,7 +1300,8 @@ def list_active_tasks(db: Session = Depends(get_db)) -> List[dict]:
                 "node_label": (node.get("data", {}) or {}).get("label", node_id),
                 "node_type": node.get("type", ""),
                 "file_path": _host_relpath(path),
-                "command": _task_command(path, node.get("type") == CONDITION_TYPE, _node_agent(node), _job_add_dirs(wf)),
+                "command": _task_command(path, node.get("type") == CONDITION_TYPE, _node_agent(node), _job_add_dirs(wf),
+                                       _node_claude_model(node)),
                 "file_exists": path.exists(),
                 "created_at": run.created_at.isoformat() if run.created_at else None,
             })
@@ -1280,7 +1374,8 @@ def get_run_steps(run_id: int, db: Session = Depends(get_db)) -> dict:
             "status": node_status.get(nid, "pending"),
             "skills": _effective_skills(node),
             "file_path": _host_relpath(path) if path else None,
-            "command": _task_command(path, node.get("type") == CONDITION_TYPE, _node_agent(node), _job_add_dirs(wf)) if path else None,
+            "command": _task_command(path, node.get("type") == CONDITION_TYPE, _node_agent(node), _job_add_dirs(wf),
+                                       _node_claude_model(node)) if path else None,
             "agent": (lambda a: {"key": a["key"], "name": a["name"], "tool": a["tool"], "model": a["model"]}
                       if a else None)(_node_agent(node)),
             "result": _read_task_result(path) if path else "",
@@ -1458,9 +1553,14 @@ def cancel_run(run_id: int, db: Session = Depends(get_db)):
     return run
 
 
-def run_workflow_from_trigger(workflow_id: int, trigger_message: str) -> None:
-    """Kích hoạt workflow từ 1 trigger THẬT (vd Slack app_mention). Chỉ tạo run
-    + ghi file task đầu tiên — người dùng vẫn tự chạy Claude thủ công."""
+def run_workflow_from_trigger(workflow_id: int, trigger_message: str,
+                              origin: Optional[dict] = None) -> None:
+    """Kích hoạt workflow từ 1 trigger THẬT (tin nhắn Slack/Telegram).
+
+    `origin` = {"bot_id", "chat_id", "thread"} — địa chỉ để trả kết quả ngược lại
+    chính chat đã ra lệnh. Lưu lên run ngay lúc tạo chứ không suy lại từ workflow
+    về sau: một workflow có thể bị kích hoạt từ nhiều kênh, trả nhầm chỗ còn tệ
+    hơn không trả."""
     db = SessionLocal()
     try:
         wf = db.query(Workflow).filter(Workflow.id == workflow_id, Workflow.is_active == True).first()  # noqa: E712
@@ -1470,6 +1570,11 @@ def run_workflow_from_trigger(workflow_id: int, trigger_message: str) -> None:
         if errors:
             return
         run = _create_run_row(db, workflow_id, wf.definition or {})
+        if origin:
+            run.chat_bot_id = origin.get("bot_id")
+            run.chat_id     = origin.get("chat_id")
+            run.chat_thread = origin.get("thread")
+            db.commit()
         advance_run(db, run, trigger_message=trigger_message)
     finally:
         db.close()
@@ -1490,14 +1595,28 @@ def poll_running_workflow_runs() -> None:
         db.close()
 
 
-def find_matching_workflows(db: Session, channel_id: str, channel_name: Optional[str], text: str) -> List[Workflow]:
-    """Tìm các workflow active có trigger.slack_mention khớp channel (so theo ID
-    hoặc tên, không phân biệt hoa/thường, có/không dấu #) và keyword (nếu có).
+CHAT_TRIGGER_TYPES = ("trigger.chat_message", "trigger.slack_mention")
+
+
+def find_workflows_for_chat(db: Session, platform: str, chat_id: str,
+                            chat_name: Optional[str], text: str) -> List[Workflow]:
+    """Workflow active có node trigger chat khớp (nền tảng + kênh + keyword).
+
+    Nhận cả `trigger.chat_message` (mới, có trường `platform`) lẫn
+    `trigger.slack_mention` (cũ, coi như platform="slack") để sơ đồ vẽ từ trước
+    vẫn chạy y nguyên.
+
+    Khác biệt cố ý giữa hai loại node: node MỚI bỏ trống ô kênh = nhận mọi kênh
+    của nền tảng đó (chat id Telegram là dãy số, bắt gõ tay rất phiền, và hàng rào
+    thật nằm ở danh sách chat được phép trong Settings). Node CŨ giữ nguyên luật
+    cũ — bỏ trống thì không khớp gì — để không đổi hành vi Slack đang chạy.
 
     Mẫu (project_id NULL) bị loại ngay từ query — mẫu không chạy được nên báo
     "đã khớp" chỉ làm người dùng tưởng có run được tạo."""
-    channel_name_norm = (channel_name or "").lstrip("#").lower()
-    text_lower = text.lower()
+    platform       = (platform or "").lower()
+    chat_id_norm   = str(chat_id or "").strip().lower()
+    chat_name_norm = (chat_name or "").lstrip("#").lower()
+    text_lower     = text.lower()
     matched: List[Workflow] = []
 
     for wf in (db.query(Workflow)
@@ -1505,18 +1624,30 @@ def find_matching_workflows(db: Session, channel_id: str, channel_name: Optional
                          Workflow.project_id.isnot(None)).all()):
         nodes = (wf.definition or {}).get("nodes", []) or []
         for node in nodes:
-            if node.get("type") != "trigger.slack_mention":
+            ntype = node.get("type")
+            if ntype not in CHAT_TRIGGER_TYPES:
                 continue
             data = node.get("data", {}) or {}
-            configured = str(data.get("channel", "")).lstrip("#").lower()
-            if configured not in (channel_id.lower(), channel_name_norm):
+            legacy = ntype == "trigger.slack_mention"
+            node_platform = ("slack" if legacy else str(data.get("platform") or "").lower())
+            if node_platform and node_platform != platform:
                 continue
+            configured = str(data.get("chat") or data.get("channel") or "").lstrip("#").lower()
+            if legacy or configured:
+                if configured not in (chat_id_norm, chat_name_norm):
+                    continue
             keyword = (data.get("keyword") or "").strip().lower()
             if keyword and keyword not in text_lower:
                 continue
             matched.append(wf)
             break
     return matched
+
+
+def find_matching_workflows(db: Session, channel_id: str, channel_name: Optional[str],
+                            text: str) -> List[Workflow]:
+    """Chữ ký cũ cho slack_events.py — xem find_workflows_for_chat."""
+    return find_workflows_for_chat(db, "slack", channel_id, channel_name, text)
 
 
 @router.get("/{workflow_id}/runs", response_model=List[WorkflowRunOut])

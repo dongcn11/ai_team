@@ -1,5 +1,5 @@
 import { useState, useEffect, useCallback, useRef } from "react";
-import { Workflow, WorkflowRun, ActiveTask, WorkflowStepJob, ConfigAgent } from "../types";
+import { Workflow, WorkflowRun, ActiveTask, WorkflowStepJob, ConfigAgent, ClaudeModelOption } from "../types";
 
 export function useWorkflows() {
   const [workflows, setWorkflows] = useState<Workflow[]>([]);
@@ -185,6 +185,21 @@ export function useConfigAgents() {
   }, []);
 
   return agents;
+}
+
+/** Các bậc model cho node chạy bằng Claude headless. Lấy từ server để giá hiện
+    trên UI luôn khớp danh sách API nhận. */
+export function useClaudeModels() {
+  const [models, setModels] = useState<ClaudeModelOption[]>([]);
+
+  useEffect(() => {
+    fetch("/api/workflows/claude-models")
+      .then(res => res.ok ? res.json() : [])
+      .then(setModels)
+      .catch(() => setModels([]));
+  }, []);
+
+  return models;
 }
 
 export function useSkills() {

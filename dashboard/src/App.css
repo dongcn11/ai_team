@@ -459,6 +459,7 @@ body {
 }
 .aq-input:focus { border-color: #b45309; }
 
+/* Dùng ở màn hình chi tiết task (TaskManager) — màn project đã chuyển sang .pd-* */
 .project-detail-header {
   display: flex;
   align-items: flex-start;
@@ -466,6 +467,380 @@ body {
   margin-bottom: 8px;
 }
 .project-detail-header h3 { font-size: 16px; font-weight: 700; }
+
+/* ── Màn hình chi tiết project (pd- = project detail) ──────────────────────
+   Bản cũ nhồi mọi thiết lập vào 1 hàng chip flex không wrap: màn hẹp là chip bị
+   bóp lại thành cột chữ dựng đứng, mỗi chip một màu nền → rối và không đọc nổi.
+   Bản này tách 3 tầng rõ ràng: tiêu đề + hành động / panel cấu hình dạng lưới
+   (thu gọn được) / thanh tab. */
+
+.pd-header { margin-bottom: 4px; }
+
+.pd-title-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px 16px;
+  flex-wrap: wrap;
+}
+.pd-title-main { min-width: 0; flex: 1 1 280px; }
+
+.pd-title {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 20px;
+  font-weight: 700;
+  color: #f1f5f9;
+  cursor: pointer;
+  border-radius: 6px;
+  padding: 1px 6px;
+  margin-left: -6px;
+  transition: background 0.15s;
+}
+.pd-title:hover { background: #1e293b; }
+
+.pd-name-edit { display: flex; align-items: center; gap: 6px; }
+.pd-name-input {
+  background: #0b1220;
+  border: 1px solid #2563eb;
+  border-radius: 6px;
+  color: #f1f5f9;
+  font-family: inherit;
+  font-size: 18px;
+  font-weight: 600;
+  padding: 5px 10px;
+  width: min(340px, 100%);
+  outline: none;
+  box-sizing: border-box;
+}
+
+.pd-subtitle {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 5px;
+  font-size: 12px;
+  color: #64748b;
+  min-width: 0;
+}
+.pd-dot { color: #334155; }
+.pd-slug {
+  font-family: ui-monospace, "SFMono-Regular", Menlo, monospace;
+  font-size: 11px;
+  color: #93c5fd;
+  background: #172554;
+  border: 1px solid #1e3a8a;
+  border-radius: 5px;
+  padding: 1px 6px;
+}
+.pd-subtitle-path {
+  max-width: 340px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pd-actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  flex-shrink: 0;
+}
+.pd-run-state { font-size: 12px; color: #eab308; white-space: nowrap; }
+.pd-run-state.is-running { color: #22c55e; }
+
+/* Nút thu gọn / mở panel cấu hình */
+.pd-cfg-toggle {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  color: #cbd5e1;
+  font-family: inherit;
+  font-size: 13px;
+  padding: 7px 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, background 0.15s;
+}
+.pd-cfg-toggle:hover { border-color: #64748b; }
+.pd-cfg-toggle.on { background: #1d283a; border-color: #2563eb; color: #e2e8f0; }
+.pd-chevron { font-size: 10px; color: #64748b; }
+.pd-warn-dot {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-width: 16px;
+  height: 16px;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: #78350f;
+  border: 1px solid #b45309;
+  color: #fde68a;
+  font-size: 10px;
+  font-weight: 700;
+}
+
+/* Hành động phụ (Xoá / Đóng): nhẹ hơn nút Run để không tranh sự chú ý */
+.pd-ghost-btn {
+  background: none;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  color: #94a3b8;
+  font-family: inherit;
+  font-size: 13px;
+  padding: 7px 12px;
+  cursor: pointer;
+  transition: border-color 0.15s, color 0.15s, background 0.15s;
+}
+.pd-ghost-btn:hover { border-color: #64748b; color: #e2e8f0; }
+.pd-ghost-btn.danger { color: #fca5a5; border-color: #4c1d1d; }
+.pd-ghost-btn.danger:hover { background: #450a0a; border-color: #7f1d1d; }
+
+.pd-alert {
+  margin-top: 12px;
+  padding: 10px 12px;
+  border-radius: 8px;
+  background: #1c1408;
+  border: 1px solid #78350f;
+  color: #fde68a;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.pd-alert code {
+  display: block;
+  margin-top: 6px;
+  font-size: 11px;
+  color: #fca5a5;
+  word-break: break-all;
+}
+
+/* ── Panel cấu hình ─────────────────────────────────────────────────────── */
+.pd-config {
+  margin-top: 14px;
+  background: #0b1220;
+  border: 1px solid #1e293b;
+  border-radius: 10px;
+  overflow: hidden;
+}
+.pd-config-group { padding: 12px 14px; }
+.pd-config-group + .pd-config-group { border-top: 1px solid #16202f; }
+.pd-config-legend {
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: #64748b;
+  margin-bottom: 9px;
+}
+.pd-config-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  gap: 12px 14px;
+  align-items: start;
+}
+
+.pd-field { min-width: 0; }
+.pd-field-wide { grid-column: 1 / -1; }
+.pd-field-label {
+  font-size: 11px;
+  color: #64748b;
+  margin-bottom: 4px;
+}
+
+/* Giá trị = 1 nút trông như ô input → nhìn là biết bấm vào sửa được */
+.pd-field-value {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  width: 100%;
+  background: #111c2e;
+  border: 1px solid #1e293b;
+  border-radius: 6px;
+  color: #e2e8f0;
+  font-family: inherit;
+  font-size: 12px;
+  text-align: left;
+  padding: 7px 9px;
+  cursor: pointer;
+  box-sizing: border-box;
+  transition: border-color 0.15s, background 0.15s;
+}
+.pd-field-value > span:first-child {
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pd-field-value:hover { border-color: #2563eb; background: #14243c; }
+.pd-field-empty { color: #64748b; font-style: italic; }
+.pd-field-pen { flex-shrink: 0; font-size: 10px; opacity: 0.3; transition: opacity 0.15s; }
+.pd-field-value:hover .pd-field-pen, .pd-title:hover .pd-field-pen { opacity: 0.9; }
+.pd-title .pd-field-pen { font-size: 13px; }
+.pd-field-flag { flex-shrink: 0; color: #fbbf24; font-size: 11px; }
+
+/* Giá trị chỉ-đọc (vd thư mục workspace) — cố tình khác hẳn ô sửa được ở trên
+   để không ai tưởng bấm vào đổi được slug */
+/* Cảnh báo ngay trong form tạo project — bắt lỗi trỏ thư mục code vào clients/ */
+.np-warn {
+  margin-top: 6px;
+  padding: 8px 10px;
+  border-radius: 6px;
+  background: #1c1408;
+  border: 1px solid #78350f;
+  color: #fde68a;
+  font-size: 11px;
+  line-height: 1.55;
+}
+.np-warn::before { content: "A0 "; }
+.np-warn code {
+  color: #fca5a5;
+  background: #2a1a0a;
+  border-radius: 4px;
+  padding: 0 4px;
+  word-break: break-all;
+}
+
+.pd-field-static {
+  padding: 7px 9px;
+  background: #0f1729;
+  border: 1px dashed #24334a;
+  border-radius: 6px;
+  color: #94a3b8;
+  font-size: 12px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.pd-field-static code { color: #93c5fd; font-size: 12px; }
+.pd-field-note {
+  margin-top: 5px;
+  font-size: 11px;
+  line-height: 1.5;
+  color: #64748b;
+}
+.pd-field-note code {
+  color: #94a3b8;
+  background: #111c2e;
+  border-radius: 4px;
+  padding: 0 4px;
+}
+.pd-field-note strong { color: #cbd5e1; }
+
+.pd-sub-item { display: inline-flex; align-items: center; gap: 5px; min-width: 0; }
+.pd-sub-key {
+  font-size: 10px;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: #475569;
+}
+
+.pd-field-edit { display: flex; align-items: center; gap: 5px; }
+.pd-field-input {
+  flex: 1;
+  min-width: 0;
+  background: #0b1220;
+  border: 1px solid #2563eb;
+  border-radius: 6px;
+  color: #f1f5f9;
+  font-family: inherit;
+  font-size: 12px;
+  padding: 7px 9px;
+  outline: none;
+  box-sizing: border-box;
+}
+.pd-field-input-sm { flex: 0 1 150px; }
+
+.pd-icon-btn {
+  flex-shrink: 0;
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 6px;
+  color: #cbd5e1;
+  font-family: inherit;
+  font-size: 12px;
+  line-height: 1;
+  padding: 8px 9px;
+  cursor: pointer;
+  transition: border-color 0.15s;
+}
+.pd-icon-btn:hover { border-color: #64748b; }
+.pd-icon-btn:disabled { opacity: 0.45; cursor: not-allowed; }
+.pd-icon-btn.ok { background: #14532d; border-color: #166534; color: #86efac; }
+.pd-icon-btn.danger { background: #450a0a; border-color: #7f1d1d; color: #fca5a5; }
+
+.pd-field-warn {
+  margin-top: 5px;
+  font-size: 11px;
+  line-height: 1.45;
+  color: #d97706;
+}
+.pd-field-warn::before { content: "⚠ "; }
+
+/* Chọn kiểu bố trí code: segmented control thay cho chip bấm-để-lật */
+.pd-seg {
+  display: inline-flex;
+  background: #111c2e;
+  border: 1px solid #1e293b;
+  border-radius: 6px;
+  padding: 2px;
+  max-width: 100%;
+}
+.pd-seg button {
+  background: none;
+  border: none;
+  border-radius: 5px;
+  color: #94a3b8;
+  font-family: inherit;
+  font-size: 11px;
+  padding: 5px 10px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background 0.15s, color 0.15s;
+}
+.pd-seg button:hover:not(.on) { color: #e2e8f0; }
+.pd-seg button.on { background: #2563eb; color: #fff; font-weight: 600; }
+.pd-seg button:disabled { cursor: wait; }
+
+/* ── Thanh tab ──────────────────────────────────────────────────────────── */
+.pd-tabs {
+  display: flex;
+  gap: 2px;
+  margin-top: 18px;
+  border-bottom: 1px solid #1e293b;
+  overflow-x: auto;
+}
+.pd-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  background: none;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: #64748b;
+  font-family: inherit;
+  font-size: 13px;
+  padding: 9px 14px;
+  margin-bottom: -1px;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: color 0.15s, border-color 0.15s;
+}
+.pd-tab:hover { color: #cbd5e1; }
+.pd-tab.on { color: #f1f5f9; font-weight: 600; border-bottom-color: #2563eb; }
+.pd-tab-count {
+  font-size: 11px;
+  color: #475569;
+  background: #111c2e;
+  border-radius: 8px;
+  padding: 1px 6px;
+}
+.pd-tab.on .pd-tab-count { color: #93c5fd; background: #172554; }
 
 .project-grid {
   display: grid;
@@ -504,12 +879,6 @@ body {
 }
 .project-card-meta-sep { margin: 0 4px; color: #374151; }
 .project-card-meta-link { color: #3b82f6; font-weight: 500; }
-
-.project-meta-links {
-  display: flex;
-  gap: 12px;
-  margin-top: 4px;
-}
 
 .project-link {
   display: inline-flex;

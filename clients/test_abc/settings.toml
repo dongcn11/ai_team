@@ -1,0 +1,32 @@
+[agents]
+pm_tool = "opencode"
+pm_model = "opencode/qwen3.5-plus"
+scrum_tool = "opencode"
+scrum_model = "opencode/qwen3.5-plus"
+analyst_tool = "opencode"
+analyst_model = "opencode/qwen3.5-plus"
+be1_tool = "opencode"
+be1_model = "opencode/qwen3.5-plus"
+be2_tool = "opencode"
+be2_model = "opencode/qwen3.5-plus"
+fe1_tool = "opencode"
+fe1_model = "opencode/qwen3.5-plus"
+fe2_tool = "opencode"
+fe2_model = "opencode/qwen3.5-plus"
+leader_tool = "opencode"
+leader_model = "opencode/qwen3.5-plus"
+
+[output]
+directory = "./clients/test_abc/output"
+
+[timeouts]
+claude_code = 600
+opencode = 600
+
+[tech_stack]
+backend = "Frontend tech stack"
+frontend = "Frontend tech stack"
+
+[project]
+name = "Test Abc"
+profile = "fullstack"

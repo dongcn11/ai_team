@@ -36,6 +36,9 @@ services:
       # Đường dẫn repo trên MÁY THẬT (host) — dùng để sinh lệnh copy-paste chạy
       # được ngoài terminal. Sửa lại nếu bạn move/clone repo sang chỗ khác.
       HOST_PROJECT_ROOT: ${HOST_PROJECT_ROOT:-c:/www/ai_team_clean}
+      # Thư mục chứa CODE các dự án trên máy thật. clients/<slug>/ chỉ giữ tài
+      # liệu; project mới mặc định lấy thư mục code là <CODE_ROOT>/<slug>.
+      CODE_ROOT: ${CODE_ROOT:-C:/www}
     volumes:
       # Source mount: uvicorn chạy --reload nên sửa code API là container tự nạp lại,
       # không phải build lại image.

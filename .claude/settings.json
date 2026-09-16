@@ -12,6 +12,10 @@
       "Bash(grep -n \"local\\\\|settings\" .gitignore)",
       "Bash(ls -la .gitignore)",
       "Bash(tail -15 .gitignore)",
+      "Bash(git:*)",
+      "Bash(gh:*)",
+      "Skill(bmad-brainstorming)",
+      "Skill(bmad-brainstorming:*)",
       "Bash(docker compose *)"
     ]
   }

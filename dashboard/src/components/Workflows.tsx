@@ -19,7 +19,7 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { useWorkflows, useWorkflowRun, useSkills, useLatestRun, useConfigAgents } from "../hooks/useWorkflows";
+import { useWorkflows, useWorkflowRun, useSkills, useLatestRun, useConfigAgents, useClaudeModels } from "../hooks/useWorkflows";
 import { useProjects } from "../hooks/useProjects";
 import RunSteps from "./RunSteps";
 import RunConsole from "./RunConsole";
@@ -29,8 +29,12 @@ import {
 
 // ── Node palette ──────────────────────────────────────────────────────────
 
+// `trigger.slack_mention` CỐ Ý không còn ở đây: nó và "Trigger chat" trông như
+// nhau nên ai dựng Slack cũng chọn nhầm cái cũ, rồi tin nhắn không khớp mà không
+// hiểu vì sao. Kiểu node đó vẫn chạy cho sơ đồ vẽ từ trước (xem
+// CHAT_TRIGGER_TYPES ở workflows.py), chỉ là không thêm mới được nữa.
 const NODE_DEFS: { type: WorkflowNodeType; icon: string; label: string; defaultData: WorkflowNodeData }[] = [
-  { type: "trigger.slack_mention", icon: "💬", label: "Slack Mention", defaultData: { label: "Slack Mention", channel: "#general", keyword: "" } },
+  { type: "trigger.chat_message",  icon: "📲", label: "Trigger chat",  defaultData: { label: "Trigger chat", platform: "telegram", chat: "", keyword: "" } },
   { type: "action.generate_code",  icon: "⚙️", label: "Generate Code",  defaultData: { label: "Generate Code", skill_dirs: [], prompt: "" } },
   { type: "action.create_mr",      icon: "🔀", label: "Create MR",      defaultData: { label: "Create MR", provider: "gitlab", repo: "", base_branch: "main", title_template: "", description_template: "" } },
   { type: "action.code_review",    icon: "👀", label: "Code Review",    defaultData: { label: "Code Review", skill_dirs: ["leader"], prompt: "" } },
@@ -82,12 +86,18 @@ const OPERATOR_LABEL: Record<string, string> = {
 
 function nodeSummary(type: WorkflowNodeType, data: any): string {
   if (type === "trigger.slack_mention") return `#${(data.channel || "").replace(/^#/, "")}${data.keyword ? ` · "${data.keyword}"` : ""}`;
-  const withAgent = (base: string) =>
-    data.agent_key ? `${base} · 🤖 ${data.agent_key}` : base;
-  if (type === "action.generate_code")  return withAgent((data.skill_dirs || []).join("+") || "no skill");
-  if (type === "action.create_mr")      return `${(data.provider || "").toUpperCase()} · ${data.repo || "no repo"}`;
-  if (type === "action.code_review")    return withAgent((data.skill_dirs || []).join("+") || "no skill");
-  if (type === "action.custom")         return withAgent((data.skill_dirs || []).join("+") || "no skill");
+  if (type === "trigger.chat_message")
+    return `${data.platform || "telegram"} · ${data.chat || "mọi chat"}${data.keyword ? ` · "${data.keyword}"` : ""}`;
+  // Node chọn agent -> hiện agent; còn lại hiện bậc model Claude (nếu có chọn),
+  // để nhìn sơ đồ là biết ngay bước nào đang ăn Opus.
+  const withEngine = (base: string) =>
+    data.agent_key ? `${base} · 🤖 ${data.agent_key}`
+    : data.claude_model ? `${base} · 🤖 ${data.claude_model}`
+    : base;
+  if (type === "action.generate_code")  return withEngine((data.skill_dirs || []).join("+") || "no skill");
+  if (type === "action.create_mr")      return withEngine(`${(data.provider || "").toUpperCase()} · ${data.repo || "no repo"}`);
+  if (type === "action.code_review")    return withEngine((data.skill_dirs || []).join("+") || "no skill");
+  if (type === "action.custom")         return withEngine((data.skill_dirs || []).join("+") || "no skill");
   if (type === "logic.condition") {
     if (data.mode === "auto") {
       const op = OPERATOR_LABEL[data.operator] || data.operator;
@@ -188,6 +198,7 @@ function ConditionNodeView({ data, selected }: NodeProps) {
 
 const nodeTypes = {
   "trigger.slack_mention": WorkflowNodeView,
+  "trigger.chat_message":  WorkflowNodeView,
   "action.generate_code":  WorkflowNodeView,
   "action.create_mr":      WorkflowNodeView,
   "action.code_review":    WorkflowNodeView,
@@ -229,16 +240,18 @@ function SkillPicker({ value, onChange, skills, locked = [] }: {
   );
 }
 
-function ConfigPanel({ node, skills, agents, onUpdate, onDelete, onClose }: {
+function ConfigPanel({ node, skills, agents, onUpdate, onChangeType, onDelete, onClose }: {
   node: Node;
   skills: string[];
   agents: ConfigAgent[];
   onUpdate: (data: any) => void;
+  onChangeType: (type: WorkflowNodeType, data: any) => void;
   onDelete: () => void;
   onClose: () => void;
 }) {
   const data = node.data as any;
   const set = (patch: any) => onUpdate({ ...data, ...patch });
+  const claudeModels = useClaudeModels();
 
   // Chọn agent = nhận luôn skill của vai trò đó, y như pipeline. Không cho bỏ tick
   // để khỏi rơi vào cảnh "PM Agent nhưng đọc quy ước của leader".
@@ -276,6 +289,61 @@ function ConfigPanel({ node, skills, agents, onUpdate, onDelete, onClose }: {
           <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Từ khoá (tuỳ chọn)</label>
           <input className="setting-input" style={{ width: "100%", marginBottom: 12 }}
             placeholder="vd: @bot deploy" value={data.keyword || ""} onChange={e => set({ keyword: e.target.value })} />
+        </>
+      )}
+
+      {node.type === "trigger.slack_mention" && (
+        <div style={{
+          background: "#1c1408", border: "1px solid #78350f", borderRadius: 8,
+          padding: "10px 12px", marginBottom: 12, fontSize: 12, color: "#fde68a", lineHeight: 1.7,
+        }}>
+          <b>Node kiểu cũ.</b> Nó chỉ khớp khi kênh khai ở đây trùng <i>đúng</i> id hoặc tên kênh
+          Slack gửi tới — mà tên kênh chỉ đọc được khi bot token có scope
+          {" "}<code>channels:read</code>. Nên thay bằng node <b>📲 Trigger chat</b>: chọn nền tảng,
+          để trống ô chat là nhận mọi kênh mà bot được phép.
+          <div style={{ marginTop: 6 }}>
+            <button className="btn-muted" style={{ fontSize: 11, padding: "3px 10px" }}
+              onClick={() => onChangeType("trigger.chat_message", {
+                label: data.label || "Trigger chat", platform: "slack",
+                chat: "", keyword: data.keyword || "",
+              })}>
+              ⇄ Chuyển thành Trigger chat
+            </button>
+          </div>
+        </div>
+      )}
+
+      {node.type === "trigger.chat_message" && (
+        <>
+          <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Nền tảng</label>
+          <select className="setting-select" style={{ width: "100%", marginBottom: 4 }}
+            value={data.platform || "telegram"} onChange={e => set({ platform: e.target.value })}>
+            <option value="telegram">✈️ Telegram</option>
+            <option value="slack">💬 Slack</option>
+          </select>
+          <p style={{ fontSize: 11, color: "#4b5563", marginTop: 0, marginBottom: 12 }}>
+            Phải khớp với nền tảng của bot ở tab <b>Bots</b>. Node để Telegram mà bot là Slack
+            thì tin nhắn không bao giờ khớp — đây là chỗ dễ sai nhất.
+          </p>
+
+          <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Chat (tuỳ chọn)</label>
+          <input className="setting-input" style={{ width: "100%", marginBottom: 4 }}
+            placeholder="để trống = mọi chat được phép" value={data.chat || ""}
+            onChange={e => set({ chat: e.target.value })} />
+          <p style={{ fontSize: 11, color: "#4b5563", marginTop: 0, marginBottom: 12 }}>
+            Bỏ trống là đủ dùng cho hầu hết trường hợp — hàng rào thật nằm ở danh sách
+            <b> Chat được phép</b> bên Settings. Chỉ điền khi bạn có nhiều chat và muốn
+            workflow này chỉ nghe đúng một chat.
+          </p>
+
+          <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Từ khoá (tuỳ chọn)</label>
+          <input className="setting-input" style={{ width: "100%", marginBottom: 4 }}
+            placeholder="vd: deploy" value={data.keyword || ""}
+            onChange={e => set({ keyword: e.target.value })} />
+          <p style={{ fontSize: 11, color: "#4b5563", marginTop: 0, marginBottom: 12 }}>
+            Có từ khoá thì chỉ tin nhắn chứa nó mới chạy workflow. Bỏ trống = <b>mọi</b> tin
+            nhắn thường đều chạy — dễ chạy nhầm khi bạn chỉ định nhắn chơi.
+          </p>
         </>
       )}
 
@@ -390,6 +458,27 @@ function ConfigPanel({ node, skills, agents, onUpdate, onDelete, onClose }: {
             Nối tiếp từ chấm <span style={{ color: "#4ade80" }}>xanh (trái)</span> cho nhánh Đúng và
             {" "}<span style={{ color: "#f87171" }}>đỏ (phải)</span> cho nhánh Sai. Nhánh không được chọn sẽ bị
             đánh dấu “bỏ qua”, không sinh file task.
+          </p>
+        </>
+      )}
+
+      {/* Bậc model — chỉ có nghĩa khi bước chạy bằng Claude. Node chọn agent
+          pipeline thì đã dùng tool/model của agent đó rồi. */}
+      {node.type !== "trigger.slack_mention" && !data.agent_key && (
+        <>
+          <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Model Claude chạy bước này</label>
+          <select className="setting-select" style={{ width: "100%", marginBottom: 4 }}
+            value={data.claude_model || ""} onChange={e => set({ claude_model: e.target.value || null })}
+            title="Mỗi bước là một phiên claude mới, phải nạp lại ~45K token tiền tố với giá gấp đôi input. Bậc model nhân thẳng vào sàn chi phí đó.">
+            <option value="">Mặc định của máy chạy worker</option>
+            {claudeModels.map(m => (
+              <option key={m.value} value={m.value}>{m.label}</option>
+            ))}
+          </select>
+          <p style={{ fontSize: 11, color: "#4b5563", marginTop: 0, marginBottom: 12 }}>
+            Mỗi bước là một phiên <code>claude</code> mới: riêng việc nạp lại system prompt + tool schema
+            (~45K token, tính giá gấp đôi) đã tốn <b>$0,15–0,46</b> với Opus <i>trước khi</i> làm gì.
+            Bước máy móc (đổi status, tạo MR, đọc-ghi file) để <b>Haiku</b> là rẻ khoảng 5 lần.
           </p>
         </>
       )}
@@ -534,6 +623,12 @@ export function WorkflowEditor({ workflow, onBack, onSaved, lockProject }: {
   const [clientFolder, setClientFolder] = useState(workflow.client_folder || "");
   const [autoRun, setAutoRun] = useState(Boolean(workflow.auto_run));
   const [savingAuto, setSavingAuto] = useState(false);
+
+  // Đổi tên workflow ngay trên thanh công cụ. API vẫn nhận `name` từ trước, chỉ
+  // thiếu ô nhập — tên trước đây in ra bằng <strong> nên không sửa được ở đâu cả.
+  const [name, setName]         = useState(workflow.name);
+  const [editName, setEditName] = useState(false);
+  const [nameDraft, setNameDraft] = useState(workflow.name);
   const { projects } = useProjects();
 
   const run = useWorkflowRun(runId);
@@ -693,6 +788,13 @@ export function WorkflowEditor({ workflow, onBack, onSaved, lockProject }: {
     setNodes(nds => nds.map(n => n.id === selectedNodeId ? { ...n, data } : n));
   };
 
+  /** Đổi KIỂU của node đang chọn (chỉ dùng để nâng node trigger cũ lên kiểu mới).
+   *  Giữ nguyên id nên mọi đường nối vào/ra không bị đứt. */
+  const changeSelectedType = (type: WorkflowNodeType, data: any) => {
+    if (!selectedNodeId) return;
+    setNodes(nds => nds.map(n => n.id === selectedNodeId ? { ...n, type, data } : n));
+  };
+
   const deleteSelected = () => {
     if (!selectedNodeId) return;
     setNodes(nds => nds.filter(n => n.id !== selectedNodeId));
@@ -778,6 +880,20 @@ export function WorkflowEditor({ workflow, onBack, onSaved, lockProject }: {
     }
   };
 
+  const saveName = async () => {
+    const next = nameDraft.trim();
+    setEditName(false);
+    if (!next || next === name) { setNameDraft(name); return; }
+    const res = await fetch(`/api/workflows/${workflow.id}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: next }),
+    });
+    if (res.ok) { setName(next); setSaveMsg("Đã đổi tên"); onSaved(); }
+    else { setNameDraft(name); setSaveMsg("Lỗi khi đổi tên"); }
+    setTimeout(() => setSaveMsg(null), 3000);
+  };
+
   const handleProjectChange = async (folder: string) => {
     setClientFolder(folder);
     const res = await fetch(`/api/workflows/${workflow.id}`, {
@@ -805,7 +921,28 @@ export function WorkflowEditor({ workflow, onBack, onSaved, lockProject }: {
       }}>
         <button className="btn-muted" style={{ fontSize: 12, padding: "4px 10px" }}
           onClick={onBack}>← Danh sách</button>
-        <strong style={{ fontSize: 14 }}>{workflow.name}</strong>
+        {editName ? (
+          <input autoFocus className="setting-input"
+            style={{ width: 220, fontSize: 14, fontWeight: 600, padding: "3px 8px" }}
+            value={nameDraft} onChange={e => setNameDraft(e.target.value)}
+            onBlur={saveName}
+            onKeyDown={e => {
+              if (e.key === "Enter") saveName();
+              if (e.key === "Escape") { setNameDraft(name); setEditName(false); }
+            }} />
+        ) : (
+          <strong onClick={() => { setNameDraft(name); setEditName(true); }}
+            title="Nhấn để đổi tên workflow"
+            style={{
+              fontSize: 14, cursor: "pointer", padding: "3px 8px", marginLeft: -8,
+              borderRadius: 6, display: "inline-flex", alignItems: "center", gap: 6,
+            }}
+            onMouseEnter={e => (e.currentTarget.style.background = "#1e293b")}
+            onMouseLeave={e => (e.currentTarget.style.background = "transparent")}>
+            {name}
+            <span style={{ fontSize: 10, opacity: 0.4 }}>✏️</span>
+          </strong>
+        )}
         {lockProject ? (
           <span style={{ fontSize: 12, color: "#6b7280" }}>
             {clientFolder ? `📁 ${clientFolder}` : "📋 Mẫu"}
@@ -981,6 +1118,7 @@ export function WorkflowEditor({ workflow, onBack, onSaved, lockProject }: {
             skills={skills}
             agents={configAgents}
             onUpdate={updateSelectedData}
+            onChangeType={changeSelectedType}
             onDelete={deleteSelected}
             onClose={() => setSelectedNodeId(null)}
           />

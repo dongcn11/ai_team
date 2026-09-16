@@ -11,10 +11,11 @@ import ProjectsPage    from "./components/Projects";
 import AgentsPage      from "./components/Agents";
 import LogsPage        from "./components/LogsPage";
 import WorkflowsPage   from "./components/Workflows";
+import BotsPage        from "./components/Bots";
 import RunConsole      from "./components/RunConsole";
 import "./App.css";
 
-type Tab = "dashboard" | "projects" | "agents" | "workflows" | "runs" | "logs" | "settings";
+type Tab = "dashboard" | "projects" | "agents" | "workflows" | "runs" | "bots" | "logs" | "settings";
 
 import { RunSummary } from "./types";
 
@@ -122,6 +123,10 @@ export default function App() {
               title="Màn hình chạy — lệnh cần chạy, file task và tiến độ từng bước">
               Lần chạy
             </button>
+            <button className={`nav-tab ${tab === "bots" ? "active" : ""}`} onClick={() => setTab("bots")}
+              title="Bot Telegram/Slack — nhận câu hỏi của agent và chạy workflow từ điện thoại">
+              Bots
+            </button>
             <button className={`nav-tab ${tab === "logs" ? "active" : ""}`} onClick={() => setTab("logs")}>
               Logs
             </button>
@@ -154,6 +159,7 @@ export default function App() {
         {tab === "agents"    && <AgentsPage />}
         {tab === "workflows" && <WorkflowsPage />}
         {tab === "runs"      && <RunConsole />}
+        {tab === "bots"      && <BotsPage />}
         {tab === "logs"      && <LogsPage />}
         {tab === "settings"  && <Settings />}
 

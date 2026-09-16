@@ -1,7 +1,7 @@
-import React, { useCallback, useEffect, useMemo, useState } from "react";
+import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useWorkflows, useStepJobs, useWorkerStatus } from "../hooks/useWorkflows";
 import { STATUS_META, TYPE_ICON, StepRow, fmtTime, useCopy, useMarkDone } from "./RunSteps";
-import { RunDetail, RunStep, WorkflowRun, WorkflowStepJob } from "../types";
+import { RunDetail, RunStep, WorkflowRun, WorkflowStepJob, WorkflowStepJobProgress } from "../types";
 import ActiveTasks from "./ActiveTasks";
 import { useOpenQuestions, QuestionCard } from "./AgentQuestions";
 
@@ -60,13 +60,57 @@ const JOB_META: Record<string, { label: string; color: string; bg: string }> = {
   canceled: { label: "đã huỷ",                color: "#94a3b8", bg: "#1e293b" },
 };
 
-/** Trạng thái job tự chạy của 1 bước + nút chạy lại khi lỗi. */
+/** Đồng hồ "đang chạy được bao lâu" — tự nhảy mỗi giây khi job còn chạy. */
+function useElapsed(startedAt: string | null, running: boolean): string {
+  const [, tick] = useState(0);
+  useEffect(() => {
+    if (!running) return;
+    const id = setInterval(() => tick(n => n + 1), 1000);
+    return () => clearInterval(id);
+  }, [running]);
+  if (!startedAt) return "";
+  // API trả UTC không kèm "Z" → tự gắn vào, không thì Date coi là giờ máy
+  const start = new Date(startedAt.endsWith("Z") ? startedAt : startedAt + "Z").getTime();
+  const s = Math.max(0, Math.floor((Date.now() - start) / 1000));
+  return s < 60 ? `${s}s` : `${Math.floor(s / 60)}m ${String(s % 60).padStart(2, "0")}s`;
+}
+
+/** Log sống của 1 job: poll /progress mỗi 2s khi đang chạy, lấy 1 lần khi đã xong. */
+function useJobProgress(job: WorkflowStepJob): string | null {
+  const [progress, setProgress] = useState<string | null>(null);
+  const running = job.status === "running";
+  useEffect(() => {
+    let alive = true;
+    const load = async () => {
+      try {
+        const res = await fetch(`/api/workflow-jobs/${job.id}/progress`);
+        if (res.ok && alive) setProgress(((await res.json()) as WorkflowStepJobProgress).progress);
+      } catch { /* silent */ }
+    };
+    load();
+    if (!running) return () => { alive = false; };
+    const id = setInterval(load, 2000);
+    return () => { alive = false; clearInterval(id); };
+  }, [job.id, job.status, running]);
+  return progress;
+}
+
+/** Trạng thái job tự chạy của 1 bước + log sống + nút chạy lại khi lỗi. */
 function StepJobStatus({ job, onChanged }: { job: WorkflowStepJob; onChanged: () => void }) {
   const engine = job.tool === "opencode"
     ? `opencode${job.model ? ` · ${job.model}` : ""}`
-    : "Claude headless";
+    : `Claude headless${job.model ? ` · ${job.model}` : ""}`;
   const [busy, setBusy] = useState(false);
   const meta = JOB_META[job.status] || JOB_META.queued;
+  const running = job.status === "running";
+  const elapsed = useElapsed(job.started_at, running);
+  const progress = useJobProgress(job);
+  // Đang chạy / lỗi thì mở sẵn — đó là lúc người ta cần nhìn; xong rồi thì gập lại.
+  const [logOpen, setLogOpen] = useState(running || job.status === "failed");
+  const logRef = useRef<HTMLPreElement>(null);
+  useEffect(() => {
+    if (running && logRef.current) logRef.current.scrollTop = logRef.current.scrollHeight;
+  }, [progress, running]);
 
   const retry = async () => {
     setBusy(true);
@@ -76,14 +120,21 @@ function StepJobStatus({ job, onChanged }: { job: WorkflowStepJob; onChanged: ()
     } finally { setBusy(false); }
   };
 
+  const lastLine = progress ? progress.trimEnd().split("\n").pop() : null;
+
   return (
     <div style={{
       marginTop: 10, padding: "8px 10px", borderRadius: 8,
       background: meta.bg, border: `1px solid ${meta.color}44`,
     }}>
-      <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: meta.color }}>
+      <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12, color: meta.color, flexWrap: "wrap" }}>
         <span>🤖 {engine}: <b>{meta.label}</b></span>
+        {running && elapsed && <span style={{ color: "#a16207" }}>· {elapsed}</span>}
         <div style={{ flex: 1 }} />
+        {progress && (
+          <button className="btn-muted" style={{ fontSize: 11, padding: "2px 10px" }}
+            onClick={() => setLogOpen(o => !o)}>{logOpen ? "▴ ẩn log" : "▾ xem log"}</button>
+        )}
         {(job.status === "failed" || job.status === "canceled") && (
           <button className="btn-muted" style={{ fontSize: 11, padding: "2px 10px" }}
             disabled={busy} onClick={retry}>{busy ? "..." : "↻ Chạy lại bước này"}</button>
@@ -94,6 +145,24 @@ function StepJobStatus({ job, onChanged }: { job: WorkflowStepJob; onChanged: ()
           Job đã xếp hàng. Nó chỉ chạy khi trên máy bạn có 1 terminal đang mở:{" "}
           <code style={{ color: "#93c5fd" }}>cd c:/www/ai_team_clean && python worker.py</code>
         </div>
+      )}
+      {running && !progress && (
+        <div style={{ fontSize: 11, color: "#a16207", marginTop: 4 }}>
+          Chưa có log — worker cũ (trước khi có log sống) hoặc Claude chưa in gì. Nếu quá 1 phút
+          vẫn trống, worker đang chạy là bản cũ: tắt đi chạy lại <code>python worker.py</code>.
+        </div>
+      )}
+      {progress && !logOpen && lastLine && (
+        <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 4, overflow: "hidden",
+                      textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+             title={lastLine}>{lastLine}</div>
+      )}
+      {progress && logOpen && (
+        <pre ref={logRef} style={{
+          margin: "6px 0 0", padding: "6px 8px", fontSize: 11, lineHeight: 1.5,
+          color: "#cbd5e1", background: "#0b1220", borderRadius: 6,
+          whiteSpace: "pre-wrap", wordBreak: "break-word", maxHeight: 260, overflow: "auto",
+        }}>{progress}</pre>
       )}
       {job.error && (
         <pre style={{

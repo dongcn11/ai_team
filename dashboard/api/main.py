@@ -6,7 +6,7 @@ from sqlalchemy import text
 
 from database import engine, Base
 from routers import (runs, tasks, issues, settings, projects, agents, project_tasks, system,
-                     run_jobs, workflows, workflow_jobs, slack_events)
+                     run_jobs, workflows, workflow_jobs, slack_events, chat_bots)
 from routers.workflows import poll_running_workflow_runs
 
 Base.metadata.create_all(bind=engine)
@@ -44,6 +44,14 @@ _COLUMN_MIGRATIONS = [
     ("workflow_step_jobs", "model",             "VARCHAR"),
     # Thư mục code truyền cho CLI qua --add-dir (xem models.AgentQuestion).
     ("workflow_step_jobs", "add_dirs",          "JSON"),
+    # Log sống worker đẩy lên trong lúc bước đang chạy (xem models.WorkflowStepJob).
+    ("workflow_step_jobs", "progress",          "TEXT"),
+    # Slack Socket Mode (xem models.ChatBot) — bảng chat_bots tạo trước khi có cột này.
+    ("chat_bots",          "app_token",         "VARCHAR"),
+    # Địa chỉ trả kết quả về chat cho lần chạy khởi nguồn từ tin nhắn.
+    ("workflow_runs",      "chat_bot_id",       "INTEGER"),
+    ("workflow_runs",      "chat_id",           "VARCHAR"),
+    ("workflow_runs",      "chat_thread",       "VARCHAR"),
 ]
 
 for _table, _column, _ddl in _COLUMN_MIGRATIONS:
@@ -146,6 +154,7 @@ app.include_router(run_jobs.router,        prefix="/api/run-jobs",     tags=["ru
 app.include_router(workflows.router,       prefix="/api/workflows",    tags=["workflows"])
 app.include_router(workflow_jobs.router,   prefix="/api/workflow-jobs", tags=["workflow-jobs"])
 app.include_router(slack_events.router,    prefix="/api/slack",        tags=["slack"])
+app.include_router(chat_bots.router,       prefix="/api/chat-bots",    tags=["chat-bots"])
 
 
 _POLL_INTERVAL_S = 5
@@ -165,6 +174,21 @@ async def _workflow_run_poll_loop():
 @app.on_event("startup")
 async def _start_background_poller():
     asyncio.create_task(_workflow_run_poll_loop())
+    # Bot Telegram: thread riêng chứ không phải task asyncio — long polling giữ
+    # kết nối HTTP 25s bằng urllib (chặn), để trong event loop là treo cả API.
+    # Chưa cắm token thì thread nằm im, cắm trên web là chạy, không cần restart.
+    import telegram_bot, slack_bot
+    telegram_bot.start()
+    # Slack Socket Mode: cũng là thread riêng, cũng vì lý do đó — recv() trên
+    # WebSocket là lệnh chặn, để trong event loop là treo cả API.
+    slack_bot.start()
+
+
+@app.on_event("shutdown")
+async def _stop_background_poller():
+    import telegram_bot, slack_bot
+    telegram_bot.stop()
+    slack_bot.stop()
 
 
 @app.get("/health")

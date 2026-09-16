@@ -27,7 +27,8 @@ from sqlalchemy.orm import Session
 
 from database import get_db
 from models import WorkflowStepJob, WorkflowRun
-from schemas import WorkflowStepJobOut, WorkflowStepJobComplete
+from schemas import (WorkflowStepJobOut, WorkflowStepJobComplete,
+                     WorkflowStepJobProgress, WorkflowStepJobProgressOut)
 import worker_heartbeat
 
 router = APIRouter()
@@ -35,6 +36,9 @@ router = APIRouter()
 # Worker chết giữa chừng → job kẹt 'running' mãi sẽ khoá cả hàng đợi (claim giữ
 # tuần tự). Quá ngưỡng này thì coi như hỏng và giải phóng hàng đợi.
 _STUCK_AFTER = timedelta(hours=1)
+# Log sống chỉ giữ đuôi chừng này ký tự — mục đích là biết bước đang kẹt ở đâu,
+# không phải lưu transcript đầy đủ.
+_PROGRESS_KEEP = 16000
 
 
 @router.get("", response_model=List[WorkflowStepJobOut])
@@ -93,8 +97,33 @@ def claim_job(db: Session = Depends(get_db)):
 
     job.status = "running"
     job.started_at = datetime.utcnow()
+    job.progress = None
     db.commit()
     db.refresh(job)
+    return job
+
+
+@router.post("/{job_id}/progress", response_model=WorkflowStepJobProgressOut)
+def append_progress(job_id: int, payload: WorkflowStepJobProgress, db: Session = Depends(get_db)):
+    """worker gọi theo đợt (~2s) trong lúc bước đang chạy. Job không còn `running`
+    (đã complete, hoặc bị đánh dấu kẹt) thì bỏ qua — đợt log đến muộn không được
+    ghi đè trạng thái cuối."""
+    job = db.query(WorkflowStepJob).filter(WorkflowStepJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status == "running" and payload.lines:
+        job.progress = ((job.progress or "") + payload.lines)[-_PROGRESS_KEEP:]
+        db.commit()
+        db.refresh(job)
+    return job
+
+
+@router.get("/{job_id}/progress", response_model=WorkflowStepJobProgressOut)
+def get_progress(job_id: int, db: Session = Depends(get_db)):
+    """UI poll cái này (2s) cho riêng job đang chạy, thay vì kéo log qua list job."""
+    job = db.query(WorkflowStepJob).filter(WorkflowStepJob.id == job_id).first()
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
     return job
 
 
@@ -111,6 +140,14 @@ def complete_job(job_id: int, payload: WorkflowStepJobComplete, db: Session = De
     job.finished_at = datetime.utcnow()
     db.commit()
     db.refresh(job)
+    if payload.status == "failed":
+        # Bước hỏng thì cả lần chạy đứng im. Không báo về chat thì người ra lệnh
+        # cứ tưởng đang chạy, tới lúc mở dashboard mới biết — mất hàng giờ.
+        try:
+            from routers.workflows import notify_step_failed
+            notify_step_failed(job.run_id, job.node_label or job.node_id, job.error or "")
+        except Exception as e:
+            print(f"[chat] không báo được bước lỗi #{job.id}: {e}")
     return job
 
 
@@ -128,6 +165,7 @@ def retry_job(job_id: int, db: Session = Depends(get_db)):
     job.status = "queued"
     job.output = None
     job.error = None
+    job.progress = None
     job.started_at = None
     job.finished_at = None
     db.commit()

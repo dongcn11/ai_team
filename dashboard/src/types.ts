@@ -187,11 +187,21 @@ export interface SubTask {
 
 export type WorkflowNodeType =
   | "trigger.slack_mention"
+  | "trigger.chat_message"
   | "action.generate_code"
   | "action.create_mr"
   | "action.code_review"
   | "action.custom"
   | "logic.condition";
+
+/** Trigger từ app chat (hiện có Telegram; Slack dùng SlackMentionData cũ). */
+export interface ChatMessageData {
+  label: string;
+  platform: "telegram";
+  /** Chat id / tên. Bỏ trống = nhận mọi chat được phép của nền tảng đó. */
+  chat: string;
+  keyword?: string;
+}
 
 export interface SlackMentionData {
   label: string;
@@ -206,6 +216,9 @@ export interface GenerateCodeData {
   /** Key agent pipeline (pm/be1/leader...) chạy bước này bằng opencode.
    *  Bỏ trống = Claude headless hoặc bạn chạy tay. */
   agent_key?: string | null;
+  /** Bậc model khi bước chạy bằng Claude: "haiku" | "sonnet" | "opus".
+   *  Bỏ trống = theo mặc định của CLI trên máy chạy worker. */
+  claude_model?: string | null;
 }
 
 export interface CreateMrData {
@@ -215,6 +228,8 @@ export interface CreateMrData {
   base_branch: string;
   title_template: string;
   description_template: string;
+  /** Bậc model khi bước chạy bằng Claude: "haiku" | "sonnet" | "opus". */
+  claude_model?: string | null;
 }
 
 export interface CodeReviewData {
@@ -224,6 +239,9 @@ export interface CodeReviewData {
   /** Key agent pipeline (pm/be1/leader...) chạy bước này bằng opencode.
    *  Bỏ trống = Claude headless hoặc bạn chạy tay. */
   agent_key?: string | null;
+  /** Bậc model khi bước chạy bằng Claude: "haiku" | "sonnet" | "opus".
+   *  Bỏ trống = theo mặc định của CLI trên máy chạy worker. */
+  claude_model?: string | null;
 }
 
 export interface CustomActionData {
@@ -233,6 +251,9 @@ export interface CustomActionData {
   /** Key agent pipeline (pm/be1/leader...) chạy bước này bằng opencode.
    *  Bỏ trống = Claude headless hoặc bạn chạy tay. */
   agent_key?: string | null;
+  /** Bậc model khi bước chạy bằng Claude: "haiku" | "sonnet" | "opus".
+   *  Bỏ trống = theo mặc định của CLI trên máy chạy worker. */
+  claude_model?: string | null;
 }
 
 /** Cách quyết định nhánh của node điều kiện */
@@ -249,10 +270,46 @@ export interface ConditionData {
   value: string;
   true_label: string;
   false_label: string;
+  /** Bậc model khi bước chạy bằng Claude: "haiku" | "sonnet" | "opus". */
+  claude_model?: string | null;
 }
 
 export type WorkflowNodeData =
-  | SlackMentionData | GenerateCodeData | CreateMrData | CodeReviewData | CustomActionData | ConditionData;
+  | SlackMentionData | ChatMessageData | GenerateCodeData | CreateMrData | CodeReviewData | CustomActionData | ConditionData;
+
+/** 1 bot chat (Telegram/Slack) và phạm vi nó phụ trách. Xem models.ChatBot. */
+export interface ChatBot {
+  id: number;
+  platform: string;              // telegram | slack
+  name: string;
+  chats: string;
+  /** null = mọi dự án */
+  client_folder: string | null;
+  /** [] = mọi workflow của dự án đó */
+  workflow_ids: number[];
+  enabled: boolean;
+  created_at?: string | null;
+  token_hint: string;
+  has_token: boolean;
+  has_secret: boolean;
+  has_app_token: boolean;
+  /** Slack: "socket" = WebSocket đi ra (không cần URL công khai) · "webhook" = Slack gọi vào */
+  mode: string | null;
+  scope_label: string;
+  /** chỉ Slack — Request URL riêng của bot này */
+  request_path: string | null;
+  running: boolean;
+  me: string | null;
+  last_error: string | null;
+  /** workflow_ids trỏ tới workflow đã bị xoá */
+  stale_workflow_ids: number[];
+}
+
+/** 1 bậc model cho node chạy bằng Claude (GET /api/workflows/claude-models) */
+export interface ClaudeModelOption {
+  value: string;
+  label: string;
+}
 
 export interface WorkflowNode {
   id: string;
@@ -371,6 +428,16 @@ export interface WorkflowStepJob {
   output: string | null;
   error: string | null;
   created_at: string;
+  started_at: string | null;
+  finished_at: string | null;
+}
+
+/** Log sống của 1 job (GET /api/workflow-jobs/:id/progress) — tách khỏi WorkflowStepJob
+    để list job poll 4s không phải kéo theo cả log. */
+export interface WorkflowStepJobProgress {
+  id: number;
+  status: WorkflowStepJob["status"];
+  progress: string | null;
   started_at: string | null;
   finished_at: string | null;
 }

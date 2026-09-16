@@ -29,8 +29,10 @@ Tuỳ biến lệnh headless bằng biến môi trường:
 
     CLAUDE_BIN        (mặc định "claude")
     CLAUDE_ARGS       cờ thêm, cách nhau bởi dấu cách
-                      (mặc định "--permission-mode acceptEdits --output-format text")
+                      (mặc định "--permission-mode acceptEdits"; --output-format
+                      do worker tự đặt là stream-json để đọc được log sống)
     STEP_TIMEOUT_S    tối đa 1 bước được chạy (mặc định 1800s)
+    PROGRESS_FLUSH_S  đẩy log sống lên dashboard mỗi bao nhiêu giây (mặc định 2)
 
 Chỉ dùng thư viện chuẩn (urllib) → không cần cài thêm gì.
 """
@@ -39,6 +41,7 @@ import json
 import os
 import subprocess
 import sys
+import threading
 import time
 import urllib.error
 import urllib.request
@@ -66,7 +69,10 @@ OPENCODE_BIN   = os.getenv("OPENCODE_BIN", "opencode")
 OPENCODE_ARGS  = shlex.split(os.getenv("OPENCODE_ARGS", "--dangerously-skip-permissions"))
 # acceptEdits: tự duyệt sửa file (bước nào cũng phải sửa file task) nhưng KHÔNG
 # dùng --dangerously-skip-permissions — cờ đó đã bị gỡ khỏi repo theo chính sách.
-CLAUDE_ARGS    = shlex.split(os.getenv("CLAUDE_ARGS", "--permission-mode acceptEdits --output-format text"))
+# --output-format KHÔNG nằm ở đây: worker ép stream-json để đọc từng sự kiện
+# (xem _run_streaming). Người dùng lỡ đặt --output-format trong CLAUDE_ARGS thì
+# bị bỏ (xem _strip_output_flags) — không thì log sống câm.
+CLAUDE_ARGS    = shlex.split(os.getenv("CLAUDE_ARGS", "--permission-mode acceptEdits"))
 STEP_TIMEOUT_S = int(os.getenv("STEP_TIMEOUT_S", "1800"))
 
 
@@ -148,6 +154,221 @@ def _resolve_bin(name: str) -> str | None:
     if os.path.sep in name or (os.path.altsep and os.path.altsep in name):
         return name if Path(name).exists() else None
     return shutil.which(name)
+
+
+# ── Log sống của 1 bước ──────────────────────────────────────────────────────
+# Trước đây worker gom stdout bằng subprocess.run(capture_output=True) rồi mới
+# đọc — trong lúc Claude chạy 5–10 phút, dashboard chỉ hiện "worker đang chạy..."
+# và không ai biết nó đang làm gì hay kẹt ở đâu. Giờ chạy claude với
+# --output-format stream-json, đọc từng sự kiện, tóm thành 1 dòng dễ đọc, in ra
+# terminal này VÀ đẩy lên POST /api/workflow-jobs/<id>/progress theo đợt.
+
+PROGRESS_FLUSH_S = float(os.getenv("PROGRESS_FLUSH_S", "2"))
+
+_TOOL_ICON = {
+    "Bash": "🔧", "PowerShell": "🔧", "Read": "📖", "Edit": "✏️", "MultiEdit": "✏️",
+    "Write": "📝", "NotebookEdit": "📝", "Grep": "🔍", "Glob": "🔍",
+    "WebFetch": "🌐", "WebSearch": "🌐", "Task": "🤖", "Agent": "🤖",
+    "TodoWrite": "📋", "Skill": "🧩",
+}
+
+
+def _short(text: str, n: int) -> str:
+    text = " ".join(str(text or "").split())
+    return text if len(text) <= n else text[: n - 1] + "…"
+
+
+def _result_text(content) -> str:
+    """tool_result.content là chuỗi hoặc list block {type:text,text}."""
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return " ".join(str(b.get("text", "")) for b in content if isinstance(b, dict))
+    return str(content or "")
+
+
+def _describe_tool(name: str, inp: dict) -> str:
+    icon = _TOOL_ICON.get(name, "🧰")
+    if name in ("Bash", "PowerShell"):
+        detail = inp.get("command", "")
+    elif name in ("Read", "Edit", "MultiEdit", "Write", "NotebookEdit"):
+        detail = inp.get("file_path") or inp.get("notebook_path") or ""
+    elif name in ("Grep", "Glob"):
+        detail = f"{inp.get('pattern', '')}  {inp.get('path') or ''}"
+    elif name in ("Task", "Agent"):
+        detail = inp.get("description") or inp.get("prompt", "")
+    elif name == "Skill":
+        detail = inp.get("skill", "")
+    else:
+        detail = json.dumps(inp, ensure_ascii=False)
+    return f"{icon} {name}: {_short(detail, 220)}"
+
+
+def _summarize_event(ev: dict) -> list[str]:
+    """1 sự kiện stream-json của claude -p → 0..n dòng log đọc được.
+
+    Chỉ giữ cái người xem cần: Claude nói gì, gọi tool nào với tham số gì, tool
+    nào báo lỗi, và kết quả cuối. Nội dung tool trả về thành công thì bỏ — dài
+    và không cho biết thêm gì về tiến độ."""
+    t = ev.get("type")
+    if t == "system" and ev.get("subtype") == "init":
+        return [f"🚀 Claude bắt đầu · model {ev.get('model') or '?'}"]
+    if t == "assistant":
+        lines = []
+        for block in (ev.get("message") or {}).get("content") or []:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") == "text" and block.get("text", "").strip():
+                lines.append(f"💬 {_short(block['text'], 240)}")
+            elif block.get("type") == "tool_use":
+                lines.append(_describe_tool(block.get("name", ""), block.get("input") or {}))
+        return lines
+    if t == "user":
+        lines = []
+        for block in (ev.get("message") or {}).get("content") or []:
+            if isinstance(block, dict) and block.get("type") == "tool_result" and block.get("is_error"):
+                lines.append(f"   ❌ {_short(_result_text(block.get('content')), 300)}")
+        return lines
+    if t == "rate_limit_event":
+        # Sắp chạm trần quota là lý do hay gặp khiến bước chậm/đứt — cho hiện luôn.
+        info = ev.get("rate_limit_info") or {}
+        util = info.get("utilization")
+        if info.get("status") not in (None, "allowed") and isinstance(util, (int, float)):
+            return [f"⏳ Quota {info.get('rateLimitType', '?')} đã dùng {util * 100:.0f}% ({info.get('status')})"]
+        return []
+    if t == "result":
+        secs  = (ev.get("duration_ms") or 0) / 1000
+        turns = ev.get("num_turns")
+        tail  = f"{secs:.0f}s · {turns} lượt" if turns is not None else f"{secs:.0f}s"
+        lines = []
+        if ev.get("is_error") or ev.get("subtype") != "success":
+            lines.append(f"❌ Claude kết thúc lỗi ({ev.get('subtype')}) sau {tail}")
+        else:
+            lines.append(f"✅ Claude xong sau {tail}")
+        # Mỗi lần gọi `claude -p` là 1 phiên MỚI: toàn bộ system prompt + tool schema
+        # (~45K token) bị ghi lại vào cache với giá gấp đôi input. Hiện thẳng ra đây
+        # để biết bước nào đắt, thay vì đoán.
+        u = ev.get("usage") or {}
+        cost = ev.get("total_cost_usd")
+        if u or cost is not None:
+            parts = []
+            if u.get("cache_creation_input_tokens"):
+                parts.append(f"ghi cache {u['cache_creation_input_tokens']:,}")
+            if u.get("cache_read_input_tokens"):
+                parts.append(f"đọc cache {u['cache_read_input_tokens']:,}")
+            if u.get("input_tokens"):
+                parts.append(f"input {u['input_tokens']:,}")
+            if u.get("output_tokens"):
+                parts.append(f"output {u['output_tokens']:,}")
+            money = f" · ${cost:.4f}" if isinstance(cost, (int, float)) else ""
+            lines.append(f"💰 {' · '.join(parts)} token{money}")
+        return lines
+    return []
+
+
+class _Progress:
+    """Gom dòng log của 1 job, in ra terminal ngay và đẩy lên API theo đợt."""
+
+    def __init__(self, job_id: int):
+        self.job_id  = job_id
+        self._buf: list[str] = []
+        self._last  = time.monotonic()
+        self._lock  = threading.Lock()
+
+    def add(self, line: str) -> None:
+        print(f"    {line}")
+        with self._lock:
+            self._buf.append(line)
+            due = time.monotonic() - self._last >= PROGRESS_FLUSH_S
+        if due:
+            self.flush()
+
+    def flush(self) -> None:
+        with self._lock:
+            if not self._buf:
+                return
+            chunk, self._buf = "\n".join(self._buf) + "\n", []
+            self._last = time.monotonic()
+        try:
+            _req(f"/api/workflow-jobs/{self.job_id}/progress", body={"lines": chunk}, method="POST")
+        except Exception as e:
+            # Mất 1 đợt log không đáng để dừng bước — chỉ báo ở terminal.
+            print(f"[worker] ⚠️  Không đẩy được log lên dashboard: {e}")
+
+
+def _strip_output_flags(args: list[str]) -> list[str]:
+    """Bỏ --output-format/--verbose nếu người dùng đặt trong CLAUDE_ARGS: worker
+    phải tự chọn stream-json thì mới đọc được từng bước để hiện log sống."""
+    out, skip = [], False
+    for a in args:
+        if skip:
+            skip = False
+            continue
+        if a == "--output-format":
+            skip = True
+            continue
+        if a.startswith("--output-format=") or a == "--verbose":
+            continue
+        out.append(a)
+    return out
+
+
+def _run_streaming(cmd: list[str], env: dict, progress: _Progress, parse_json: bool,
+                   timeout: int) -> tuple[int, str, str]:
+    """Chạy CLI, đọc stdout từng dòng đẩy vào `progress`.
+
+    Trả (exit code, kết quả cuối, stderr). Với claude (parse_json) kết quả cuối
+    là trường `result` của sự kiện cuối; với opencode là toàn bộ stdout. stdout
+    và stderr đọc bằng 2 thread riêng — đọc tuần tự 1 pipe thì pipe kia đầy là
+    tiến trình con treo."""
+    proc = subprocess.Popen(cmd, cwd=str(ROOT), env=env,
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                            text=True, encoding="utf-8", errors="replace", bufsize=1)
+    result: list[str] = []
+    errbuf: list[str] = []
+
+    def read_out():
+        for raw in proc.stdout:
+            line = raw.rstrip("\r\n")
+            if not line:
+                continue
+            if not parse_json:
+                progress.add(line)
+                result.append(line)
+                continue
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                progress.add(line)          # claude in gì đó không phải JSON — cứ hiện
+                continue
+            for s in _summarize_event(ev):
+                progress.add(s)
+            if ev.get("type") == "result":
+                result.append(ev.get("result") or "")
+                if ev.get("is_error"):
+                    errbuf.append(f"claude: {ev.get('subtype')}")
+
+    def read_err():
+        for raw in proc.stderr:
+            errbuf.append(raw)
+
+    t_out = threading.Thread(target=read_out, daemon=True)
+    t_err = threading.Thread(target=read_err, daemon=True)
+    t_out.start()
+    t_err.start()
+    try:
+        proc.wait(timeout=timeout)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+        proc.wait()
+        t_out.join(5)
+        t_err.join(5)
+        progress.flush()
+        raise
+    t_out.join()
+    t_err.join()
+    progress.flush()
+    return proc.returncode, "\n".join(result).strip(), "".join(errbuf).strip()
 
 
 def _resolve_claude() -> str | None:
@@ -276,7 +497,13 @@ def _run_step_job(job: dict):
             print(f"[worker] X {msg}")
             _complete_step(job_id, "failed", error=msg)
             return
-        cmd = [binary, "-p", job["prompt"], *CLAUDE_ARGS]
+        cmd = [binary, "-p", job["prompt"], *_strip_output_flags(CLAUDE_ARGS),
+               "--output-format", "stream-json", "--verbose"]
+        # Model chọn trên node (haiku/sonnet/opus). Bỏ trống -> theo mặc định của
+        # CLI. Mỗi lần gọi phải nạp lại ~45K token tiền tố với giá gấp đôi input,
+        # nên bậc model nhân thẳng vào sàn chi phí của từng bước.
+        if model:
+            cmd += ["--model", model]
         # Thư mục code của project thường nằm NGOÀI repo (settings.toml khai
         # output.directory tuyệt đối). Worker chạy với cwd = gốc repo nên nếu không
         # mở quyền, Claude headless không đọc/ghi được chỗ đó và MỌI bước của
@@ -292,9 +519,10 @@ def _run_step_job(job: dict):
     print(f"[worker]    {job.get('file_path') or ''}")
     if git_env:
         print("[worker]    git: dùng token riêng của project (settings.local.toml)")
+    progress = _Progress(job_id)
     try:
-        proc = subprocess.run(cmd, cwd=str(ROOT), env=env, capture_output=True, text=True,
-                              encoding="utf-8", errors="replace", timeout=STEP_TIMEOUT_S)
+        code, out, err = _run_streaming(cmd, env, progress, parse_json=(tool != "opencode"),
+                                        timeout=STEP_TIMEOUT_S)
     except (FileNotFoundError, OSError) as e:
         msg = (f"Không chạy được '{binary}': {e}. Cài CLI đó rồi đăng nhập, "
                f"hoặc đặt CLAUDE_BIN/OPENCODE_BIN trỏ thẳng tới file.")
@@ -311,19 +539,15 @@ def _run_step_job(job: dict):
         _complete_step(job_id, "failed", error=str(e))
         return
 
-    out = (proc.stdout or "").strip()
-    err = (proc.stderr or "").strip()
-    if out:
-        print(out[-2000:])
     # opencode thoát 0 cả khi lỗi nặng — nhận diện qua stderr, giống ai_team/runner.py
     opencode_failed = tool == "opencode" and "Error:" in err and not out
-    if proc.returncode == 0 and not opencode_failed:
+    if code == 0 and not opencode_failed:
         print(f"[worker] ✅ Step job #{job_id} xong — dashboard sẽ đọc lại file task")
         _complete_step(job_id, "done", output=out)
     else:
-        print(f"[worker] ❌ Step job #{job_id} thất bại (exit {proc.returncode})")
+        print(f"[worker] ❌ Step job #{job_id} thất bại (exit {code})")
         _complete_step(job_id, "failed", output=out,
-                       error=err or f"claude exit code {proc.returncode}")
+                       error=err or f"{tool} exit code {code}")
 
 
 def main():
@@ -333,7 +557,8 @@ def main():
     print(f"[worker]   poll = {POLL}s")
     _claude = _resolve_claude()
     if _claude:
-        print(f"[worker]   step = {_claude} -p ... {' '.join(CLAUDE_ARGS)}  (chi workflow bat auto_run)")
+        flags = " ".join([*_strip_output_flags(CLAUDE_ARGS), "--output-format stream-json --verbose"])
+        print(f"[worker]   step = {_claude} -p ... {flags}  (chi workflow bat auto_run)")
     else:
         print(f"[worker]   ⚠️  KHÔNG tìm thấy CLI '{CLAUDE_BIN}' — job bước workflow sẽ fail ngay.")
         print(f"[worker]      Chạy `where {CLAUDE_BIN}`; hoặc đặt CLAUDE_BIN=<đường dẫn đầy đủ>.")

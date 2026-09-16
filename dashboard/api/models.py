@@ -243,6 +243,10 @@ class WorkflowStepJob(Base):
     status        = Column(String, default="queued") # queued/running/done/failed/canceled
     output        = Column(Text, nullable=True)      # stdout cắt ngắn, để soi khi lỗi
     error         = Column(Text, nullable=True)
+    # Log sống trong lúc chạy: worker đọc stream-json của Claude, tóm mỗi sự kiện
+    # thành 1 dòng ("🔧 Bash: git fetch…", "📖 Read: …") rồi đẩy lên theo đợt. Chỉ
+    # giữ đuôi (xem workflow_jobs._PROGRESS_KEEP) — đủ để biết nó đang kẹt ở đâu.
+    progress      = Column(Text, nullable=True)
     created_at    = Column(DateTime, server_default=func.now())
     started_at    = Column(DateTime, nullable=True)
     finished_at   = Column(DateTime, nullable=True)
@@ -263,6 +267,12 @@ class WorkflowRun(Base):
     log         = Column(JSON, default=list)           # [{node_id, message, ts}]
     created_at  = Column(DateTime, server_default=func.now())
     finished_at = Column(DateTime, nullable=True)
+    # ĐỊA CHỈ TRẢ LỜI. Lần chạy khởi nguồn từ một tin nhắn chat thì phải nhớ tin đó
+    # ở đâu, không thì trigger là đường một chiều: bấm chạy xong im bặt, muốn biết
+    # kết quả lại phải mở dashboard — đúng cái mà bot sinh ra để khỏi phải làm.
+    chat_bot_id = Column(Integer, nullable=True)   # ChatBot.id
+    chat_id     = Column(String, nullable=True)    # chat / kênh đã gửi lệnh
+    chat_thread = Column(String, nullable=True)    # Slack thread_ts · Telegram message_id
 
     workflow = relationship("Workflow", back_populates="runs")
     task     = relationship("ProjectTask", back_populates="workflow_runs")
@@ -307,3 +317,41 @@ class SubTask(Base):
 
     task  = relationship("ProjectTask", back_populates="subtasks")
     agent = relationship("Agent")
+
+
+class ChatBot(Base):
+    """1 bot chat (Telegram/Slack) và phạm vi nó phụ trách.
+
+    Vì sao thành bảng riêng thay vì nhét vào settings.local.toml như token git:
+    một dự án có nhiều QUY TRÌNH (fixbug, làm CR...) và mỗi quy trình muốn một bot
+    riêng — tức là N bot cho mỗi dự án, mỗi bot buộc vào một hoặc vài workflow.
+    Quan hệ đó là quan hệ với bảng `workflows`, nên chỗ đúng của nó là DB chứ
+    không phải một khối TOML nằm cạnh thư mục dự án.
+
+    PHẠM VI, từ rộng tới hẹp — bot chỉ thấy câu hỏi và chỉ chạy được workflow nằm
+    trong phạm vi của mình:
+
+        client_folder = NULL              -> mọi dự án (bot chung)
+        client_folder = 'udom'            -> mọi workflow của dự án udom
+        + workflow_ids = [24, 25]         -> chỉ 2 workflow đó
+
+    Khi một câu hỏi cần đẩy đi, bot KHỚP HẸP NHẤT thắng: bot buộc đúng workflow
+    được ưu tiên hơn bot cả dự án, bot cả dự án hơn bot chung. Không có luật đó
+    thì khai bot riêng cho fixbug xong câu hỏi vẫn rơi vào bot chung.
+    """
+    __tablename__ = "chat_bots"
+
+    id             = Column(Integer, primary_key=True, index=True)
+    platform       = Column(String, nullable=False)          # telegram | slack
+    name           = Column(String, nullable=False)          # nhãn người đặt: "Fixbug", "CR"
+    token          = Column(String, nullable=False, default="")   # bot token
+    signing_secret = Column(String, nullable=True)           # Slack webhook — kiểm chữ ký
+    # Slack Socket Mode: app-level token "xapp-…". Có nó thì bot mở WebSocket ĐI RA
+    # Slack, không cần URL công khai — giống hệt long polling của Telegram, và
+    # không phải phơi dashboard ra internet. Ưu tiên hơn webhook khi cả hai cùng có.
+    app_token      = Column(String, nullable=True)
+    chats          = Column(String, nullable=False, default="")   # chat id / #kênh, cách nhau dấu phẩy
+    client_folder  = Column(String, nullable=True)           # NULL = mọi dự án
+    workflow_ids   = Column(JSON, default=list)              # [] = mọi workflow của dự án đó
+    enabled        = Column(Boolean, default=True)
+    created_at     = Column(DateTime, server_default=func.now())
