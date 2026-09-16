@@ -44,6 +44,8 @@ _COLUMN_MIGRATIONS = [
     ("workflow_step_jobs", "model",             "VARCHAR"),
     # Thư mục code truyền cho CLI qua --add-dir (xem models.AgentQuestion).
     ("workflow_step_jobs", "add_dirs",          "JSON"),
+    # Agent dev của bước → worker chọn token git riêng của agent đó.
+    ("workflow_step_jobs", "agent_key",         "VARCHAR"),
     # Log sống worker đẩy lên trong lúc bước đang chạy (xem models.WorkflowStepJob).
     ("workflow_step_jobs", "progress",          "TEXT"),
     # Slack Socket Mode (xem models.ChatBot) — bảng chat_bots tạo trước khi có cột này.

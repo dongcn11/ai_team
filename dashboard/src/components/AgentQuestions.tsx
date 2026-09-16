@@ -55,24 +55,31 @@ export function QuestionCard({ q, onAnswered }: { q: AgentQuestion; onAnswered?:
   const [saving, setSaving] = useState(false);
   const [error,  setError]  = useState("");
 
-  const send = async () => {
-    const text = draft.trim();
-    if (!text) return;
+  const post = async (path: string, body?: object) => {
     setSaving(true);
     setError("");
-    const res = await fetch(`/api/workflows/questions/${q.id}/answer`, {
+    const res = await fetch(`/api/workflows/questions/${q.id}/${path}`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ answer: text }),
+      body: body ? JSON.stringify(body) : undefined,
     });
     if (res.ok) {
       setDraft("");
       onAnswered?.();
     } else {
       const d = await res.json().catch(() => ({}));
-      setError(d.detail || "Không gửi được câu trả lời");
+      setError(d.detail || "Không gửi được");
     }
     setSaving(false);
+  };
+
+  const send = () => { if (draft.trim()) post("answer", { answer: draft.trim() }); };
+
+  // Bỏ qua = bước này không chạy nữa (đánh dấu skipped). Không chạy lại gì cả.
+  const dismiss = () => {
+    if (window.confirm("Huỷ câu hỏi này? Bước sẽ bị bỏ qua, agent không chạy tiếp bước này nữa.")) {
+      post("dismiss");
+    }
   };
 
   return (
@@ -93,10 +100,17 @@ export function QuestionCard({ q, onAnswered }: { q: AgentQuestion; onAnswered?:
           value={draft}
           onChange={e => setDraft(e.target.value)}
           onKeyDown={e => { if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) send(); }} />
-        <button className="btn-primary" disabled={saving || !draft.trim()} onClick={send}
-          title="Ghi câu trả lời vào file task rồi cho bước này chạy tiếp">
-          {saving ? "Đang gửi..." : "Gửi & chạy tiếp"}
-        </button>
+        <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+          <button className="btn-primary" disabled={saving || !draft.trim()} onClick={send}
+            title="Ghi câu trả lời vào file task rồi cho bước này chạy tiếp">
+            {saving ? "Đang gửi..." : "Gửi & chạy tiếp"}
+          </button>
+          <button className="btn-muted" disabled={saving} onClick={dismiss}
+            style={{ fontSize: 12 }}
+            title="Bỏ qua câu hỏi — bước này bị đánh dấu bỏ qua, không chạy nữa">
+            Huỷ
+          </button>
+        </div>
       </div>
     </div>
   );

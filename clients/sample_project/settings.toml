@@ -1,0 +1,55 @@
+# settings.toml mẫu — copy thư mục này thành clients/<slug>/ rồi sửa lại.
+# Hoặc bấm "+ New Project" trên dashboard, nó sinh file này cho bạn.
+#
+# Thứ đặc thù từng máy (đường dẫn tuyệt đối, token) để ở settings.local.toml
+# cùng thư mục — file đó không vào git.
+# Lưu ý: dashboard ghi lại file này khi bạn sửa trên UI và sẽ bỏ các comment.
+
+[agents]
+pm_tool = "opencode"
+pm_model = "opencode/qwen3.5-plus"
+scrum_tool = "opencode"
+scrum_model = "opencode/qwen3.5-plus"
+analyst_tool = "opencode"
+analyst_model = "opencode/qwen3.5-plus"
+be1_tool = "opencode"
+be1_model = "opencode/qwen3.5-plus"
+be2_tool = "opencode"
+be2_model = "opencode/qwen3.5-plus"
+fe1_tool = "opencode"
+fe1_model = "opencode/qwen3.5-plus"
+fe2_tool = "opencode"
+fe2_model = "opencode/qwen3.5-plus"
+leader_tool = "opencode"
+leader_model = "opencode/qwen3.5-plus"
+# Thư mục RIÊNG cho từng agent dev (tuỳ chọn) — khi mỗi "ông dev" làm một repo
+# khác nhau. Không khai thì BE làm trong backend/, FE trong frontend/, fullstack
+# ở gốc. Tài khoản git riêng từng agent khai ở settings.local.toml ([git.be1]...).
+# be1_directory = "C:/www/my_api"
+# fe1_directory = "C:/www/my_web"
+# fs1_directory = "C:/www/my_app"
+
+[output]
+# Thư mục code của dự án. Đường dẫn TƯƠNG ĐỐI tính từ clients/<slug>/ (nên
+# "./output" = clients/sample_project/output). Đường dẫn tuyệt đối trên máy thật
+# (vd "C:/www/my_app") thì để ở settings.local.toml, không commit.
+directory = "./output"
+# "split" = tách backend/ + frontend/ (mặc định), "mono" = gộp 1 thư mục
+# (Laravel Blade, WordPress...). Khi split, mỗi vùng có thể trỏ riêng:
+#   backend_directory  = "C:/www/my_api"
+#   frontend_directory = "C:/www/my_web"
+layout = "split"
+
+[timeouts]
+claude_code = 600
+opencode = 600
+
+[tech_stack]
+backend = "Python FastAPI + SQLModel + SQLite"
+frontend = "React + TypeScript + Vite + TailwindCSS"
+# Khai thì mới có vùng server-side/, không khai thì agent không bịa ra
+# server_side = "Nginx + deploy script"
+
+[project]
+name = "Sample Project"
+profile = "fullstack"

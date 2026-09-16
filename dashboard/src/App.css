@@ -460,6 +460,26 @@ body {
 .aq-input:focus { border-color: #b45309; }
 
 /* Dùng ở màn hình chi tiết task (TaskManager) — màn project đã chuyển sang .pd-* */
+/* ── Thư mục & tài khoản git riêng từng agent dev ─────────────────────────── */
+.aw-list { display: grid; gap: 10px; }
+.aw-row {
+  display: grid;
+  grid-template-columns: 150px minmax(0, 1fr) minmax(0, 1fr);
+  gap: 12px;
+  align-items: end;
+  padding: 10px 12px;
+  background: #0b1220;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+}
+.aw-name { display: flex; flex-direction: column; gap: 2px; padding-bottom: 6px; }
+.aw-name strong { font-size: 13px; color: #e2e8f0; }
+.aw-name code { font-size: 10px; color: #64748b; }
+.aw-cell { min-width: 0; }
+@media (max-width: 900px) {
+  .aw-row { grid-template-columns: 1fr; }
+}
+
 .project-detail-header {
   display: flex;
   align-items: flex-start;

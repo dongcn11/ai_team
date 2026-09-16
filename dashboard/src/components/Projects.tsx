@@ -2,6 +2,7 @@ import React, { useState, useCallback, useEffect } from "react";
 import { useProjects } from "../hooks/useProjects";
 import { useProjectWorkflows } from "../hooks/useWorkflows";
 import ProjectWorkflows from "./ProjectWorkflows";
+import AgentWorkspaces from "./AgentWorkspaces";
 import RunConsole from "./RunConsole";
 import { Project, AgentFS, RunSummary, TaskRunSummary } from "../types";
 
@@ -975,7 +976,12 @@ export default function ProjectsPage() {
                 </div>
 
                 <div className="pd-config-group">
-                  <div className="pd-config-legend">GitHub</div>
+                  <div className="pd-config-legend">Agent dev — thư mục & tài khoản git riêng</div>
+                  <AgentWorkspaces projectId={selected.id} />
+                </div>
+
+                <div className="pd-config-group">
+                  <div className="pd-config-legend">GitHub — token chung của project</div>
                   <div className="pd-config-grid">
                     <div className="pd-field pd-field-wide">
                       <div className="pd-field-label">Token push code (riêng project này)</div>

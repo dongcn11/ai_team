@@ -10,4 +10,9 @@ settings.local.toml
 dashboard/dist/
 dashboard/node_modules/
 workflow_tasks/
-clients/*/_tasks/
+
+# Dự án của khách: cấu hình, PRD, file task, token — chỉ giữ 1 mẫu trong git.
+clients/*
+!clients/sample_project/
+clients/sample_project/settings.local.toml
+clients/sample_project/_tasks/

@@ -761,6 +761,118 @@ def set_project_git(folder_name: str, payload: ProjectGitPayload) -> dict:
 # nên có nhiều bot, mỗi bot buộc vào một hoặc vài workflow — quan hệ đó thuộc về
 # DB chứ không phải một khối TOML cạnh thư mục. Xem models.ChatBot + tab Bots.
 
+# ── Thư mục & tài khoản git RIÊNG từng agent dev ──────────────────────────────
+# Một project có thể có 3 "ông dev" (BE, FE, fullstack) — mỗi ông một repo/thư mục
+# và một tài khoản GitHub. Vùng backend/frontend theo tech stack là mặc định;
+# agent nào khai riêng thì thắng.
+#   settings.toml       [agents] be1_directory = "C:/www/my_api"   (thư mục)
+#   settings.local.toml [git.be1] token = "ghp_..."                 (tài khoản)
+# Không khai → rơi về vùng của vai trò (be→backend, fe→frontend), rồi về gốc;
+# token rơi về [git] của project.
+
+CODING_AGENTS = ["be1", "be2", "fe1", "fe2", "fs1", "fs2"]
+_AGENT_AREA = {"be1": "backend", "be2": "backend", "fe1": "frontend", "fe2": "frontend"}
+
+
+def _agent_dir(raw: dict, slug: str, key: str) -> tuple:
+    """(thư mục agent làm việc, "own" | "area" | "root") — cùng quy ước với
+    workflows.py::_agent_workdir; sửa một bên thì sửa cả hai."""
+    own = _norm_path(str((raw.get("agents") or {}).get(f"{key}_directory") or ""))
+    if own:
+        return (own if _is_abs_path(own) else f"clients/{slug}/{own}"), "own"
+    areas = _area_dirs(raw, slug)
+    area = _AGENT_AREA.get(key)
+    if area and area in areas:
+        return areas[area], "area"
+    return _code_root(raw, slug), "root"
+
+
+def _agent_git(folder: Path, key: str) -> dict:
+    """[git.<key>] nếu có, không thì [git] của project."""
+    git = _read_local_git(folder)
+    own = git.get(key) if isinstance(git.get(key), dict) else None
+    src = own if own and str(own.get("token") or "").strip() else None
+    cfg = src if src is not None else git
+    token = str(cfg.get("token") or "").strip()
+    return {
+        "configured": bool(token),
+        "hint":       _mask(token),
+        "username":   str(cfg.get("username") or ""),
+        "own":        src is not None,     # token riêng hay thừa kế từ project
+    }
+
+
+@router.get("/{folder_name}/agent-workspaces")
+def list_agent_workspaces(folder_name: str) -> List[dict]:
+    folder = CLIENTS_DIR / folder_name
+    if not folder.is_dir() or not (folder / "settings.toml").exists():
+        raise HTTPException(status_code=404, detail="Project not found")
+    raw = _read_toml(folder)
+    agents = get_system_agents(folder / "settings.toml")
+    present = {a["key"]: a for a in agents}
+    out = []
+    for key in CODING_AGENTS:
+        if key not in present:
+            continue
+        path, source = _agent_dir(raw, folder_name, key)
+        out.append({
+            "key":        key,
+            "name":       present[key].get("name") or key,
+            "directory":  str((raw.get("agents") or {}).get(f"{key}_directory") or ""),
+            "effective":  path,
+            "source":     source,
+            "git":        _agent_git(folder, key),
+        })
+    return out
+
+
+class AgentWorkspacePayload(BaseModel):
+    directory: Optional[str] = None   # None = giữ nguyên, "" = xoá (về vùng mặc định)
+    token: Optional[str] = None       # None = giữ nguyên, "" = xoá (về token project)
+    username: Optional[str] = None
+
+
+@router.put("/{folder_name}/agent-workspaces/{agent_key}")
+def set_agent_workspace(folder_name: str, agent_key: str, payload: AgentWorkspacePayload) -> dict:
+    folder = CLIENTS_DIR / folder_name
+    if not folder.is_dir() or not (folder / "settings.toml").exists():
+        raise HTTPException(status_code=404, detail="Project not found")
+    if agent_key not in CODING_AGENTS:
+        raise HTTPException(status_code=400, detail=f"Chỉ cấu hình được agent dev: {CODING_AGENTS}")
+
+    if payload.directory is not None:
+        raw = _read_toml_strict(folder)
+        agents = raw.setdefault("agents", {})
+        d = _norm_path(payload.directory)
+        if d:
+            agents[f"{agent_key}_directory"] = d
+        else:
+            agents.pop(f"{agent_key}_directory", None)
+        _write_toml(folder, raw)
+
+    if payload.token is not None:
+        token = payload.token.strip()
+        values = {}
+        if token:
+            values["token"] = token
+            if (payload.username or "").strip():
+                values["username"] = payload.username.strip()
+        # Khối con [git.<key>] — regex của _write_local_block khớp đúng tên khối
+        _write_local_block(folder, f"git.{agent_key}", values)
+    elif payload.username is not None:
+        git = _read_local_git(folder)
+        own = git.get(agent_key) if isinstance(git.get(agent_key), dict) else {}
+        if str(own.get("token") or "").strip():
+            _write_local_block(folder, f"git.{agent_key}",
+                               {"token": own["token"], **({"username": payload.username.strip()}
+                                                         if payload.username.strip() else {})})
+
+    for item in list_agent_workspaces(folder_name):
+        if item["key"] == agent_key:
+            return item
+    raise HTTPException(status_code=404, detail=f"Agent '{agent_key}' không có trong project")
+
+
 # ── PRD ───────────────────────────────────────────────────────────────────────
 
 class PrdPayload(BaseModel):

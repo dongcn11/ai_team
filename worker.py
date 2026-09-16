@@ -396,12 +396,20 @@ def _add_dirs(job: dict) -> list[str]:
     return out
 
 
-def _project_git_env(slug: str | None) -> dict:
-    """Token GitHub RIENG cho tung project, doc tu clients/<slug>/settings.local.toml:
+def _project_git_env(slug: str | None, agent_key: str | None = None) -> dict:
+    """Token GitHub RIENG cho tung project — va rieng tung AGENT DEV trong project.
+    Doc tu clients/<slug>/settings.local.toml:
 
-        [git]
+        [git]                     # mac dinh cho ca project
         token    = "ghp_..."      # hoac PAT cua to chuc / GitHub App installation token
         username = "dongcn11"     # tuy chon, mac dinh x-access-token
+
+        [git.be1]                 # ong BE day bang tai khoan rieng
+        token    = "ghp_..."
+        username = "dev-backend"
+
+    Buoc nao gan agent (be1/fe1/fs1...) thi lay [git.<key>] truoc, khong co moi
+    roi ve [git]. 3 ong dev = 3 repo = 3 tai khoan, khong phai chung 1 token.
 
     Vi sao khong chot 1 tai khoan trong git config --global: moi project co the day
     len mot to chuc / mot tai khoan khac nhau. Chot cung la sai ngay project thu hai.
@@ -424,6 +432,10 @@ def _project_git_env(slug: str | None) -> dict:
                 cfg = {**(tomllib.load(fh).get("git") or {}), **cfg}
         except Exception as e:
             print(f"[worker] !  Khong doc duoc [git] trong {f}: {e}")
+    # Token rieng cua agent thang token chung cua project
+    own = cfg.get(agent_key) if agent_key and isinstance(cfg.get(agent_key), dict) else None
+    if own and str(own.get("token") or "").strip():
+        cfg = own
     token = str(cfg.get("token") or "").strip()
     if not token:
         return {}
@@ -512,13 +524,14 @@ def _run_step_job(job: dict):
             cmd += ["--add-dir", d]
 
     print(f"\n[worker] 🤖 Step job #{job_id} — {label} (run #{job['run_id']})")
-    git_env = _project_git_env(job.get("client_folder"))
+    git_env = _project_git_env(job.get("client_folder"), job.get("agent_key"))
     env = {**os.environ, **git_env}
 
     print(f"[worker]    engine: {tool}{f' · {model}' if model else ''}")
     print(f"[worker]    {job.get('file_path') or ''}")
     if git_env:
-        print("[worker]    git: dùng token riêng của project (settings.local.toml)")
+        print(f"[worker]    git: token riêng ({'agent ' + job['agent_key'] if job.get('agent_key') else 'project'}) "
+              "từ settings.local.toml")
     progress = _Progress(job_id)
     try:
         code, out, err = _run_streaming(cmd, env, progress, parse_json=(tool != "opencode"),

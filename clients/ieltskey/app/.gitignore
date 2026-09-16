@@ -1,9 +1,0 @@
-# backend
-__pycache__/
-*.py[cod]
-.pytest_cache/
-*.db
-
-# frontend
-node_modules/
-dist/

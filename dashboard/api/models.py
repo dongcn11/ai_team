@@ -240,6 +240,9 @@ class WorkflowStepJob(Base):
     # thì Claude headless chạy với cwd=repo sẽ không được phép đọc/ghi thư mục code
     # nằm ngoài repo, và MỌI bước của project đó cùng chết một lỗi quyền.
     add_dirs      = Column(JSON, default=list)
+    # Agent dev chạy bước này (be1/fe1/fs1...) — worker lấy token git riêng của
+    # agent đó ([git.<key>] trong settings.local.toml). NULL = bước không gắn agent.
+    agent_key     = Column(String, nullable=True)
     status        = Column(String, default="queued") # queued/running/done/failed/canceled
     output        = Column(Text, nullable=True)      # stdout cắt ngắn, để soi khi lỗi
     error         = Column(Text, nullable=True)

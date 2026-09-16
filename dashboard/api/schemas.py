@@ -126,6 +126,7 @@ class WorkflowStepJobOut(BaseModel):
     model: Optional[str] = None
     # Thư mục code của project — worker truyền cho CLI qua --add-dir
     add_dirs: List[str] = []
+    agent_key: Optional[str] = None
     status: str
     output: Optional[str]
     error: Optional[str]
