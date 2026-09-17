@@ -19,12 +19,13 @@ import {
   type NodeProps,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { useWorkflows, useWorkflowRun, useSkills, useLatestRun, useConfigAgents, useClaudeModels } from "../hooks/useWorkflows";
+import { useWorkflows, useWorkflowRun, useLatestRun, useConfigAgents, useClaudeModels } from "../hooks/useWorkflows";
+import { useSkillCatalog } from "../hooks/useSkills";
 import { useProjects } from "../hooks/useProjects";
 import RunSteps from "./RunSteps";
 import RunConsole from "./RunConsole";
 import {
-  Workflow, WorkflowNodeType, WorkflowNodeData, NodeRunStatus, ConfigAgent,
+  Workflow, WorkflowNodeType, WorkflowNodeData, NodeRunStatus, ConfigAgent, Skill,
 } from "../types";
 
 // ── Node palette ──────────────────────────────────────────────────────────
@@ -35,10 +36,10 @@ import {
 // CHAT_TRIGGER_TYPES ở workflows.py), chỉ là không thêm mới được nữa.
 const NODE_DEFS: { type: WorkflowNodeType; icon: string; label: string; defaultData: WorkflowNodeData }[] = [
   { type: "trigger.chat_message",  icon: "📲", label: "Trigger chat",  defaultData: { label: "Trigger chat", platform: "telegram", chat: "", keyword: "" } },
-  { type: "action.generate_code",  icon: "⚙️", label: "Generate Code",  defaultData: { label: "Generate Code", skill_dirs: [], prompt: "" } },
+  { type: "action.generate_code",  icon: "⚙️", label: "Generate Code",  defaultData: { label: "Generate Code", skill_dirs: [], skill_ids: [], prompt: "" } },
   { type: "action.create_mr",      icon: "🔀", label: "Create MR",      defaultData: { label: "Create MR", provider: "gitlab", repo: "", base_branch: "main", title_template: "", description_template: "" } },
-  { type: "action.code_review",    icon: "👀", label: "Code Review",    defaultData: { label: "Code Review", skill_dirs: ["leader"], prompt: "" } },
-  { type: "action.custom",         icon: "🧩", label: "Custom Action",  defaultData: { label: "Custom Action", skill_dirs: [], prompt: "" } },
+  { type: "action.code_review",    icon: "👀", label: "Code Review",    defaultData: { label: "Code Review", skill_dirs: ["leader"], skill_ids: [], prompt: "" } },
+  { type: "action.custom",         icon: "🧩", label: "Custom Action",  defaultData: { label: "Custom Action", skill_dirs: [], skill_ids: [], prompt: "" } },
   { type: "logic.condition",       icon: "🔀", label: "Điều kiện If/Else", defaultData: {
       label: "Điều kiện", mode: "manual", expression: "", operator: "contains", value: "",
       true_label: "Đúng", false_label: "Sai",
@@ -84,6 +85,17 @@ const OPERATOR_LABEL: Record<string, string> = {
   is_empty:     "rỗng",
 };
 
+/** Skill của node hiện trên sơ đồ: cụm ghi tên, skill lẻ gộp thành "+N skill"
+ *  — liệt kê hết thì node dài bằng cả canvas khi chọn dăm ba skill. */
+function skillSummary(data: any): string {
+  const dirs = data.skill_dirs || [];
+  const ids: string[] = (data.skill_ids || []).filter((s: string) => !dirs.includes(s.split("/")[0]));
+  if (dirs.length === 0 && ids.length === 0) return "no skill";
+  if (ids.length === 0) return dirs.join("+");
+  const extra = `${ids.length} skill`;
+  return dirs.length ? `${dirs.join("+")} +${extra}` : extra;
+}
+
 function nodeSummary(type: WorkflowNodeType, data: any): string {
   if (type === "trigger.slack_mention") return `#${(data.channel || "").replace(/^#/, "")}${data.keyword ? ` · "${data.keyword}"` : ""}`;
   if (type === "trigger.chat_message")
@@ -95,10 +107,9 @@ function nodeSummary(type: WorkflowNodeType, data: any): string {
     : data.agent_key ? `${base} · 🤖 ${data.agent_key}`
     : data.claude_model ? `${base} · 🤖 ${data.claude_model}`
     : base;
-  if (type === "action.generate_code")  return withEngine((data.skill_dirs || []).join("+") || "no skill");
   if (type === "action.create_mr")      return withEngine(`${(data.provider || "").toUpperCase()} · ${data.repo || "no repo"}`);
-  if (type === "action.code_review")    return withEngine((data.skill_dirs || []).join("+") || "no skill");
-  if (type === "action.custom")         return withEngine((data.skill_dirs || []).join("+") || "no skill");
+  if (type === "action.generate_code" || type === "action.code_review" || type === "action.custom")
+    return withEngine(skillSummary(data));
   if (type === "logic.condition") {
     if (data.mode === "auto") {
       const op = OPERATOR_LABEL[data.operator] || data.operator;
@@ -209,41 +220,121 @@ const nodeTypes = {
 
 // ── Config panel ──────────────────────────────────────────────────────────
 
-function SkillPicker({ value, onChange, skills, locked = [] }: {
-  value: string[]; onChange: (v: string[]) => void; skills: string[];
-  /** Skill đến từ vai trò của agent — luôn áp, không bỏ tick được */
+/**
+ * Chọn skill cho 1 node. Hai mức, và 1 node chọn được BAO NHIÊU TUỲ THÍCH:
+ *   • cụm  — cả thư mục vai trò (`skills/be/`), lấy trọn skill bên trong
+ *   • lẻ   — từng skill một (`be/auth_jwt`), cho bước chỉ cần đúng một quy ước
+ *
+ * Trước đây chỉ chọn được cụm, nên muốn áp mỗi "React patterns" là phải nuốt cả
+ * thư mục fe — file task phình ra, mỗi bước tốn thêm token cho thứ không dùng.
+ */
+function SkillPicker({ dirs, ids, onChange, catalog, categories, locked = [] }: {
+  dirs: string[];
+  ids: string[];
+  onChange: (dirs: string[], ids: string[]) => void;
+  catalog: Skill[];
+  categories: string[];
+  /** Cụm đến từ vai trò của agent — luôn áp, không bỏ tick được */
   locked?: string[];
 }) {
-  const toggle = (s: string) => {
-    onChange(value.includes(s) ? value.filter(x => x !== s) : [...value, s]);
+  const [q, setQ] = useState("");
+  const needle = q.trim().toLowerCase();
+
+  const toggleDir = (d: string) => {
+    if (dirs.includes(d)) return onChange(dirs.filter(x => x !== d), ids);
+    // Chọn cả cụm thì skill lẻ trong cụm đó thành thừa — bỏ cho nhãn khỏi rối
+    onChange([...dirs, d], ids.filter(i => i.split("/")[0] !== d));
   };
+  const toggleId = (id: string) =>
+    onChange(dirs, ids.includes(id) ? ids.filter(x => x !== id) : [...ids, id]);
+
+  const shown = needle
+    ? catalog.filter(s => `${s.id} ${s.name} ${s.description} ${s.tags.join(" ")}`.toLowerCase().includes(needle))
+    : catalog;
+  // `locked` cũng vào danh sách: cụm của vai trò phải hiện ra kể cả khi thư mục
+  // đó chưa có skill nào, không thì người dùng tưởng agent chẳng có skill gì.
+  const groups = [...new Set([...locked, ...categories, ...catalog.map(s => s.category)])]
+    .filter(c => !needle || shown.some(s => s.category === c));
+
   return (
-    <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
-      {skills.map(s => {
-        const isLocked = locked.includes(s);
-        const checked = isLocked || value.includes(s);
-        return (
-        <label key={s} style={{
-          display: "flex", alignItems: "center", gap: 4, fontSize: 12,
-          background: isLocked ? "#312e81" : checked ? "#1e3a8a" : "#1e293b",
-          border: `1px solid ${isLocked ? "#4338ca" : "#334155"}`,
-          borderRadius: 6, padding: "3px 8px", cursor: isLocked ? "not-allowed" : "pointer",
-          opacity: isLocked ? 0.85 : 1,
-        }} title={isLocked ? "Skill của vai trò agent đã chọn — luôn được áp" : undefined}>
-          <input type="checkbox" checked={checked} disabled={isLocked}
-            onChange={() => toggle(s)} style={{ margin: 0 }} />
-          {isLocked ? `🔒 ${s}` : s}
-        </label>
-        );
-      })}
-      {skills.length === 0 && <span style={{ fontSize: 12, color: "#4b5563" }}>Không tải được danh sách skill</span>}
+    <div>
+      {catalog.length > 6 && (
+        <input className="setting-input" style={{ width: "100%", marginBottom: 6, fontSize: 12 }}
+          placeholder="Tìm skill…" value={q} onChange={e => setQ(e.target.value)} />
+      )}
+      <div style={{ maxHeight: 260, overflowY: "auto", border: "1px solid #1e293b", borderRadius: 8, padding: 8 }}>
+        {groups.map(cat => {
+          const isLocked = locked.includes(cat);
+          const dirOn = isLocked || dirs.includes(cat);
+          const items = shown.filter(s => s.category === cat);
+          return (
+            <div key={cat} style={{ marginBottom: 10 }}>
+              <label style={{
+                display: "flex", alignItems: "center", gap: 5, fontSize: 12, marginBottom: 4,
+                cursor: isLocked ? "not-allowed" : "pointer", opacity: isLocked ? 0.85 : 1,
+              }} title={isLocked
+                ? "Cụm skill của vai trò agent đã chọn — luôn được áp"
+                : `Áp trọn ${items.length} skill trong skills/${cat}/`}>
+                <input type="checkbox" checked={dirOn} disabled={isLocked}
+                  onChange={() => toggleDir(cat)} style={{ margin: 0 }} />
+                <span style={{ color: dirOn ? "#93c5fd" : "#cbd5e1", fontWeight: 600 }}>
+                  {isLocked ? `🔒 ${cat}` : cat}
+                </span>
+                <span style={{ fontSize: 10, color: "#4b5563" }}>cả cụm · {items.length}</span>
+              </label>
+              <div style={{ paddingLeft: 18, display: "flex", flexDirection: "column", gap: 2 }}>
+                {items.map(s => {
+                  const checked = dirOn || ids.includes(s.id);
+                  const nScript = (s.resources || []).filter(r => r.kind === "script").length;
+                  return (
+                    <label key={s.id} style={{
+                      display: "flex", alignItems: "center", gap: 5, fontSize: 12,
+                      cursor: dirOn ? "not-allowed" : "pointer", opacity: dirOn ? 0.55 : 1,
+                    }} title={dirOn ? "Đã nằm trong cụm được chọn" : [
+                      s.description || s.path,
+                      nScript > 0 ? `${nScript} script — agent chạy được` : "",
+                    ].filter(Boolean).join("\n")}>
+                      <input type="checkbox" checked={checked} disabled={dirOn}
+                        onChange={() => toggleId(s.id)} style={{ margin: 0 }} />
+                      <span style={{ color: checked ? "#93c5fd" : "#94a3b8" }}>{s.name}</span>
+                      {/* Skill có script khác hẳn skill chỉ có chữ: bước chọn nó là
+                          bước có công cụ chạy được, đáng để thấy ngay khi chọn. */}
+                      {nScript > 0 && <span style={{ fontSize: 9, color: "#fbbf24" }}>⚙️{nScript}</span>}
+                      {s.format === "folder" && <span style={{ fontSize: 9 }} title="Skill thư mục (SKILL.md)">📁</span>}
+                    </label>
+                  );
+                })}
+                {items.length === 0 && (
+                  <span style={{ fontSize: 11, color: "#4b5563" }}>(cụm rỗng)</span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+        {catalog.length === 0 && (
+          <span style={{ fontSize: 12, color: "#4b5563" }}>
+            Chưa có skill nào — tạo ở tab <b>Skills</b>.
+          </span>
+        )}
+      </div>
+      {/* Skill đã chọn nhưng không còn trên đĩa (bị xoá/đổi tên ở tab Skills).
+          Không hiện ra thì node im lặng chạy thiếu skill, chỉ lòi ra trong file task. */}
+      {ids.filter(i => !catalog.some(s => s.id === i)).map(i => (
+        <div key={i} style={{ fontSize: 11, color: "#fbbf24", marginTop: 6 }}>
+          ⚠ <code>{i}</code> không còn trong kho skill —{" "}
+          <button className="btn-muted" style={{ fontSize: 10, padding: "1px 6px" }}
+            onClick={() => onChange(dirs, ids.filter(x => x !== i))}>bỏ chọn</button>
+        </div>
+      ))}
     </div>
   );
 }
 
-function ConfigPanel({ node, skills, agents, onUpdate, onChangeType, onDelete, onClose }: {
+function ConfigPanel({ node, skills, skillCategories, agents, onUpdate, onChangeType, onDelete, onClose }: {
   node: Node;
-  skills: string[];
+  /** Kho skill (tab Skills) — node chọn cả cụm lẫn từng skill lẻ */
+  skills: Skill[];
+  skillCategories: string[];
   agents: ConfigAgent[];
   onUpdate: (data: any) => void;
   onChangeType: (type: WorkflowNodeType, data: any) => void;
@@ -259,8 +350,10 @@ function ConfigPanel({ node, skills, agents, onUpdate, onChangeType, onDelete, o
   const selectedAgent = agents.find(a => a.key === (data.agent_key || "")) || null;
   const lockedSkills = selectedAgent ? ["shared", ...(selectedAgent.skill_dirs || [])] : [];
 
-  /** Đổi agent → bỏ những skill vai trò của agent KHÁC đang tick, giữ skill lạ do
-   *  người dùng tự thêm. Không dọn thì đổi từ Leader sang PM vẫn còn tick "leader". */
+  /** Đổi agent → bỏ những cụm skill vai trò của agent KHÁC đang tick, giữ cụm lạ
+   *  do người dùng tự thêm. Không dọn thì đổi từ Leader sang PM vẫn còn tick
+   *  "leader". Skill LẺ giữ nguyên: đó là lựa chọn có chủ đích cho riêng bước
+   *  này, không phải hệ quả của việc chọn vai trò. */
   const changeAgent = (key: string) => {
     const next = agents.find(a => a.key === key) || null;
     const roleSkills = new Set(agents.flatMap(a => a.skill_dirs || []));
@@ -370,16 +463,21 @@ function ConfigPanel({ node, skills, agents, onUpdate, onChangeType, onDelete, o
 
           <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>
             {lockedSkills.length > 0 ? "Skill thêm (ngoài skill của vai trò)" : "Skill"}
+            <span style={{ color: "#4b5563", fontWeight: 400 }}> — chọn bao nhiêu cũng được</span>
           </label>
           <div style={{ marginBottom: 4 }}>
-            <SkillPicker value={data.skill_dirs || []} skills={skills} locked={lockedSkills}
-              onChange={v => set({ skill_dirs: v })} />
+            <SkillPicker
+              dirs={data.skill_dirs || []} ids={data.skill_ids || []}
+              catalog={skills} categories={skillCategories} locked={lockedSkills}
+              onChange={(skill_dirs, skill_ids) => set({ skill_dirs, skill_ids })} />
           </div>
           <p style={{ fontSize: 11, color: "#4b5563", marginTop: 0, marginBottom: 12 }}>
             {lockedSkills.length > 0
-              ? <>🔒 = skill của <b>{selectedAgent?.name}</b>, luôn được áp (giống pipeline). Tick thêm ô khác
-                 chỉ khi bước này thật sự cần quy ước của vai trò khác.</>
-              : <>Nội dung <code>skills/&lt;tên&gt;/*.md</code> được nhúng thẳng vào file task (kèm <code>shared</code>).</>}
+              ? <>🔒 = cụm skill của <b>{selectedAgent?.name}</b>, luôn được áp (giống pipeline). Tick thêm
+                 skill lẻ khi bước này cần đúng một quy ước cụ thể.</>
+              : <>Tick <b>cả cụm</b> để lấy trọn <code>skills/&lt;cụm&gt;/</code>, hoặc tick <b>từng skill</b> cho gọn.
+                 Nội dung skill được nhúng thẳng vào file task (kèm cụm <code>shared</code>).</>}
+            {" "}Sửa nội dung skill ở tab <b>Skills</b>.
           </p>
           <label className="setting-label" style={{ display: "block", marginBottom: 4 }}>Nội dung / prompt</label>
           <textarea className="setting-input" style={{ width: "100%", minHeight: 120, resize: "vertical", marginBottom: 12 }}
@@ -591,7 +689,7 @@ export function WorkflowEditor({ workflow, onBack, onSaved, lockProject }: {
   /** true khi mở từ trong 1 project — workflow đã thuộc project đó, không cho đổi */
   lockProject?: boolean;
 }) {
-  const skills = useSkills();
+  const { skills, categories: skillCategories } = useSkillCatalog();
   const configAgents = useConfigAgents();
   const wrapperRef = useRef<HTMLDivElement>(null);
   const { screenToFlowPosition, fitView } = useReactFlow();
@@ -1121,6 +1219,7 @@ export function WorkflowEditor({ workflow, onBack, onSaved, lockProject }: {
           <ConfigPanel
             node={selectedNode}
             skills={skills}
+            skillCategories={skillCategories.map(c => c.name)}
             agents={configAgents}
             onUpdate={updateSelectedData}
             onChangeType={changeSelectedType}

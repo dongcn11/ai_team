@@ -9,13 +9,14 @@ import { RunHistory }  from "./components/RunHistory";
 import Settings        from "./components/Settings";
 import ProjectsPage    from "./components/Projects";
 import AgentsPage      from "./components/Agents";
+import SkillsPage      from "./components/Skills";
 import LogsPage        from "./components/LogsPage";
 import WorkflowsPage   from "./components/Workflows";
 import BotsPage        from "./components/Bots";
 import RunConsole      from "./components/RunConsole";
 import "./App.css";
 
-type Tab = "dashboard" | "projects" | "agents" | "workflows" | "runs" | "bots" | "logs" | "settings";
+type Tab = "dashboard" | "projects" | "agents" | "skills" | "workflows" | "runs" | "bots" | "logs" | "settings";
 
 import { RunSummary } from "./types";
 
@@ -116,6 +117,10 @@ export default function App() {
             <button className={`nav-tab ${tab === "agents" ? "active" : ""}`} onClick={() => setTab("agents")}>
               Agents
             </button>
+            <button className={`nav-tab ${tab === "skills" ? "active" : ""}`} onClick={() => setTab("skills")}
+              title="Kho skill (SKILL.md + frontmatter) — node workflow và pipeline cùng đọc">
+              Skills
+            </button>
             <button className={`nav-tab ${tab === "workflows" ? "active" : ""}`} onClick={() => setTab("workflows")}>
               Workflows
             </button>
@@ -157,6 +162,7 @@ export default function App() {
 
         {tab === "projects"  && <ProjectsPage />}
         {tab === "agents"    && <AgentsPage />}
+        {tab === "skills"    && <SkillsPage />}
         {tab === "workflows" && <WorkflowsPage />}
         {tab === "runs"      && <RunConsole />}
         {tab === "bots"      && <BotsPage />}

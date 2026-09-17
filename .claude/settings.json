@@ -16,7 +16,8 @@
       "Bash(gh:*)",
       "Skill(bmad-brainstorming)",
       "Skill(bmad-brainstorming:*)",
-      "Bash(docker compose *)"
+      "Bash(docker compose *)",
+      "Bash(npm:*)"
     ]
   }
 }

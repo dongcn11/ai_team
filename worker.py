@@ -313,19 +313,45 @@ def _strip_output_flags(args: list[str]) -> list[str]:
     return out
 
 
+def _metrics_from_result(ev: dict) -> dict:
+    """Số liệu 1 lần chạy, moi từ sự kiện `result` của stream-json.
+
+    Gửi lên dashboard để thẻ kết quả nói được: model nào chạy, hết bao nhiêu
+    token, quy ra bao nhiêu tiền. Trước đây mấy số này chỉ nằm trong log sống
+    rồi trôi mất — không cộng lại được theo lần chạy hay theo dự án."""
+    u = ev.get("usage") or {}
+    mu = ev.get("modelUsage") or {}
+    # modelUsage có thể liệt kê cả model phụ (haiku chạy nền); lấy con tốn tiền
+    # nhất làm "model đã chạy" — đó là con thật sự làm việc.
+    model = max(mu.items(), key=lambda kv: (kv[1] or {}).get("costUSD") or 0)[0] if mu else None
+    return {
+        "model_used": model,
+        "cost_usd": ev.get("total_cost_usd"),
+        "duration_ms": ev.get("duration_ms"),
+        "usage": {
+            "input":       u.get("input_tokens") or 0,
+            "output":      u.get("output_tokens") or 0,
+            "cache_write": u.get("cache_creation_input_tokens") or 0,
+            "cache_read":  u.get("cache_read_input_tokens") or 0,
+            "turns":       ev.get("num_turns"),
+        },
+    }
+
+
 def _run_streaming(cmd: list[str], env: dict, progress: _Progress, parse_json: bool,
-                   timeout: int) -> tuple[int, str, str]:
+                   timeout: int) -> tuple[int, str, str, dict]:
     """Chạy CLI, đọc stdout từng dòng đẩy vào `progress`.
 
-    Trả (exit code, kết quả cuối, stderr). Với claude (parse_json) kết quả cuối
-    là trường `result` của sự kiện cuối; với opencode là toàn bộ stdout. stdout
-    và stderr đọc bằng 2 thread riêng — đọc tuần tự 1 pipe thì pipe kia đầy là
-    tiến trình con treo."""
+    Trả (exit code, kết quả cuối, stderr, số liệu). Với claude (parse_json) kết
+    quả cuối là trường `result` của sự kiện cuối; với opencode là toàn bộ stdout.
+    stdout và stderr đọc bằng 2 thread riêng — đọc tuần tự 1 pipe thì pipe kia đầy
+    là tiến trình con treo."""
     proc = subprocess.Popen(cmd, cwd=str(ROOT), env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, encoding="utf-8", errors="replace", bufsize=1)
     result: list[str] = []
     errbuf: list[str] = []
+    metrics: dict = {}
 
     def read_out():
         for raw in proc.stdout:
@@ -345,6 +371,7 @@ def _run_streaming(cmd: list[str], env: dict, progress: _Progress, parse_json: b
                 progress.add(s)
             if ev.get("type") == "result":
                 result.append(ev.get("result") or "")
+                metrics.update(_metrics_from_result(ev))
                 if ev.get("is_error"):
                     errbuf.append(f"claude: {ev.get('subtype')}")
 
@@ -368,7 +395,7 @@ def _run_streaming(cmd: list[str], env: dict, progress: _Progress, parse_json: b
     t_out.join()
     t_err.join()
     progress.flush()
-    return proc.returncode, "\n".join(result).strip(), "".join(errbuf).strip()
+    return proc.returncode, "\n".join(result).strip(), "".join(errbuf).strip(), metrics
 
 
 def _resolve_claude() -> str | None:
@@ -464,10 +491,12 @@ def _claim_step() -> dict | None:
     return _req("/api/workflow-jobs/claim", body={}, method="POST")
 
 
-def _complete_step(job_id: int, status: str, output: str = "", error: str = ""):
+def _complete_step(job_id: int, status: str, output: str = "", error: str = "",
+                   metrics: dict | None = None):
     try:
         _req(f"/api/workflow-jobs/{job_id}/complete",
-             body={"status": status, "output": output[-8000:], "error": error[:2000]},
+             body={"status": status, "output": output[-8000:], "error": error[:2000],
+                   **(metrics or {})},
              method="POST")
     except Exception as e:
         print(f"[worker] ⚠️  Không báo được complete cho step job #{job_id}: {e}")
@@ -534,8 +563,9 @@ def _run_step_job(job: dict):
               "từ settings.local.toml")
     progress = _Progress(job_id)
     try:
-        code, out, err = _run_streaming(cmd, env, progress, parse_json=(tool != "opencode"),
-                                        timeout=STEP_TIMEOUT_S)
+        code, out, err, metrics = _run_streaming(cmd, env, progress,
+                                                 parse_json=(tool != "opencode"),
+                                                 timeout=STEP_TIMEOUT_S)
     except (FileNotFoundError, OSError) as e:
         msg = (f"Không chạy được '{binary}': {e}. Cài CLI đó rồi đăng nhập, "
                f"hoặc đặt CLAUDE_BIN/OPENCODE_BIN trỏ thẳng tới file.")
@@ -556,11 +586,11 @@ def _run_step_job(job: dict):
     opencode_failed = tool == "opencode" and "Error:" in err and not out
     if code == 0 and not opencode_failed:
         print(f"[worker] ✅ Step job #{job_id} xong — dashboard sẽ đọc lại file task")
-        _complete_step(job_id, "done", output=out)
+        _complete_step(job_id, "done", output=out, metrics=metrics)
     else:
         print(f"[worker] ❌ Step job #{job_id} thất bại (exit {code})")
         _complete_step(job_id, "failed", output=out,
-                       error=err or f"{tool} exit code {code}")
+                       error=err or f"{tool} exit code {code}", metrics=metrics)
 
 
 def main():

@@ -75,6 +75,48 @@ export interface ConfigAgent {
   skill_dirs: string[];
 }
 
+/** 1 skill trong kho `skills/` — xem dashboard/api/skills_store.py.
+ *  Cùng quy ước với skill của Claude Code / BMAD: SKILL.md + frontmatter. */
+export interface Skill {
+  /** "<cụm>/<slug>", vd "be/auth_jwt" — cũng là thứ node workflow lưu lại */
+  id: string;
+  category: string;
+  slug: string;
+  name: string;
+  description: string;
+  tags: string[];
+  /** folder = SKILL.md (kèm được file phụ) · file = 1 file .md kiểu cũ */
+  format: "folder" | "file";
+  path: string;
+  chars: number;
+  updated_at: string | null;
+  has_frontmatter: boolean;
+  /** file phụ trong skill thư mục: script, mẫu, thư mục con… */
+  resources: SkillResource[];
+}
+
+/** 1 file đi kèm skill. Skill thật hay có script mà chính SKILL.md bảo agent chạy. */
+export interface SkillResource {
+  /** đường dẫn tương đối trong thư mục skill (có thể lồng: templates/story.md) */
+  path: string;
+  size: number;
+  /** false = nhị phân, chỉ tải về được chứ không sửa trên web */
+  is_text: boolean;
+  kind: "doc" | "script" | "data" | "binary";
+}
+
+export interface SkillDetail extends Skill {
+  /** phần thân, đã bỏ frontmatter */
+  body: string;
+  /** nguyên văn file */
+  content: string;
+}
+
+export interface SkillCategory {
+  name: string;
+  count: number;
+}
+
 /** Profile trong profiles.yaml — quyết định agent nào được bật */
 export interface Profile {
   key: string;
@@ -107,6 +149,8 @@ export interface Project {
   /** Thư mục riêng cho từng vùng; trống = <output_dir>/backend, <output_dir>/frontend */
   backend_dir?: string;
   frontend_dir?: string;
+  /** Thư mục tài liệu KHÁCH CUNG CẤP. Trống = clients/<slug>/docs */
+  client_docs_dir?: string;
   /** settings.toml sai cú pháp TOML — project vẫn hiện nhưng không đọc được cấu hình */
   config_error?: string | null;
 }
@@ -211,7 +255,10 @@ export interface SlackMentionData {
 
 export interface GenerateCodeData {
   label: string;
+  /** Cụm skill = thư mục vai trò (`skills/be/`) — áp trọn skill nằm trong đó */
   skill_dirs: string[];
+  /** Skill lẻ, id `<cụm>/<slug>` (vd "be/auth_jwt"). 1 node chọn được nhiều skill. */
+  skill_ids?: string[];
   prompt: string;
   /** Key agent pipeline (pm/be1/leader...) chạy bước này bằng opencode.
    *  Bỏ trống = Claude headless hoặc bạn chạy tay. */
@@ -234,7 +281,10 @@ export interface CreateMrData {
 
 export interface CodeReviewData {
   label: string;
+  /** Cụm skill = thư mục vai trò (`skills/be/`) — áp trọn skill nằm trong đó */
   skill_dirs: string[];
+  /** Skill lẻ, id `<cụm>/<slug>` (vd "be/auth_jwt"). 1 node chọn được nhiều skill. */
+  skill_ids?: string[];
   prompt: string;
   /** Key agent pipeline (pm/be1/leader...) chạy bước này bằng opencode.
    *  Bỏ trống = Claude headless hoặc bạn chạy tay. */
@@ -246,7 +296,10 @@ export interface CodeReviewData {
 
 export interface CustomActionData {
   label: string;
+  /** Cụm skill = thư mục vai trò (`skills/be/`) — áp trọn skill nằm trong đó */
   skill_dirs: string[];
+  /** Skill lẻ, id `<cụm>/<slug>` (vd "be/auth_jwt"). 1 node chọn được nhiều skill. */
+  skill_ids?: string[];
   prompt: string;
   /** Key agent pipeline (pm/be1/leader...) chạy bước này bằng opencode.
    *  Bỏ trống = Claude headless hoặc bạn chạy tay. */
@@ -397,6 +450,14 @@ export interface RunStep {
   started_at: string | null;
   finished_at: string | null;
   duration_s: number | null;
+  /** Số liệu đo được của lần chạy bước này (worker gửi lên lúc hoàn tất) */
+  run_metrics?: {
+    model: string | null;
+    cost_usd: number | null;
+    duration_ms: number | null;
+    tool: string | null;
+    usage: { input?: number; output?: number; cache_write?: number; cache_read?: number; turns?: number };
+  } | null;
 }
 
 export interface RunDetail {

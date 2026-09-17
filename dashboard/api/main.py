@@ -6,7 +6,7 @@ from sqlalchemy import text
 
 from database import engine, Base
 from routers import (runs, tasks, issues, settings, projects, agents, project_tasks, system,
-                     run_jobs, workflows, workflow_jobs, slack_events, chat_bots)
+                     run_jobs, workflows, workflow_jobs, slack_events, chat_bots, skills)
 from routers.workflows import poll_running_workflow_runs
 
 Base.metadata.create_all(bind=engine)
@@ -56,6 +56,11 @@ _COLUMN_MIGRATIONS = [
     ("workflow_runs",      "chat_bot_id",       "INTEGER"),
     ("workflow_runs",      "chat_id",           "VARCHAR"),
     ("workflow_runs",      "chat_thread",       "VARCHAR"),
+    # Số liệu chạy của từng bước (model, token, tiền) — xem models.WorkflowStepJob.
+    ("workflow_step_jobs", "model_used",        "VARCHAR"),
+    ("workflow_step_jobs", "cost_usd",          "DOUBLE PRECISION"),
+    ("workflow_step_jobs", "usage",             "JSON"),
+    ("workflow_step_jobs", "duration_ms",       "INTEGER"),
 ]
 
 for _table, _column, _ddl in _COLUMN_MIGRATIONS:
@@ -159,6 +164,7 @@ app.include_router(workflows.router,       prefix="/api/workflows",    tags=["wo
 app.include_router(workflow_jobs.router,   prefix="/api/workflow-jobs", tags=["workflow-jobs"])
 app.include_router(slack_events.router,    prefix="/api/slack",        tags=["slack"])
 app.include_router(chat_bots.router,       prefix="/api/chat-bots",    tags=["chat-bots"])
+app.include_router(skills.router,          prefix="/api/skills",       tags=["skills"])
 
 
 _POLL_INTERVAL_S = 5

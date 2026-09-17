@@ -60,6 +60,44 @@ const JOB_META: Record<string, { label: string; color: string; bg: string }> = {
   canceled: { label: "đã huỷ",                color: "#94a3b8", bg: "#1e293b" },
 };
 
+const fmtNum = (n?: number) => (n ?? 0).toLocaleString("vi-VN");
+
+/** Model / token / tiền của một bước đã chạy.
+ *
+ *  Vì sao đáng hiện ngay trên thẻ kết quả: mỗi bước là một phiên CLI MỚI, riêng
+ *  phần nạp lại system prompt + tool schema (~45K token, tính giá gấp đôi) đã tốn
+ *  vài chục cent với Opus. Không bày ra thì không ai biết bước nào ăn tiền. */
+function RunMetrics({ m }: { m?: RunStep["run_metrics"] }) {
+  if (!m || (m.cost_usd == null && !m.usage?.input && !m.usage?.cache_write)) return null;
+  const u = m.usage || {};
+  const total = (u.input || 0) + (u.output || 0) + (u.cache_write || 0) + (u.cache_read || 0);
+  const secs = m.duration_ms != null ? Math.round(m.duration_ms / 1000) : null;
+
+  const chip = (label: string, value: string, color = "#94a3b8") => (
+    <span key={label} style={{ display: "inline-flex", gap: 4, alignItems: "baseline" }}>
+      <span style={{ color: "#475569" }}>{label}</span>
+      <span style={{ color }}>{value}</span>
+    </span>
+  );
+
+  return (
+    <div style={{
+      display: "flex", flexWrap: "wrap", gap: "4px 14px", alignItems: "baseline",
+      fontSize: 11, marginBottom: 8, padding: "6px 9px",
+      background: "#0b1220", border: "1px solid #1e293b", borderRadius: 6,
+    }}>
+      {m.model && chip("model", m.model, "#93c5fd")}
+      {secs != null && chip("thời gian", `${secs}s`)}
+      {chip("token", fmtNum(total))}
+      {m.cost_usd != null && chip("tiền", `$${m.cost_usd.toFixed(4)}`, "#fbbf24")}
+      <span style={{ color: "#334155" }}>
+        vào {fmtNum(u.input)} · ra {fmtNum(u.output)} · ghi cache {fmtNum(u.cache_write)} · đọc cache {fmtNum(u.cache_read)}
+        {u.turns != null ? ` · ${u.turns} lượt` : ""}
+      </span>
+    </div>
+  );
+}
+
 /** Đồng hồ "đang chạy được bao lâu" — tự nhảy mỗi giây khi job còn chạy. */
 function useElapsed(startedAt: string | null, running: boolean): string {
   const [, tick] = useState(0);
@@ -327,6 +365,19 @@ export default function RunConsole({ mode = "page", initialWorkflowId = null, in
     return out;
   }, [jobs]);
 
+  /* SỐ LIỆU TOKEN/TIỀN VỀ SAU KHI RUN ĐÃ "XONG".
+     Trạng thái bước đọc từ FILE TASK (CLI vừa ghi `status: done` là run thành
+     done), còn model/token/tiền chỉ có khi WORKER báo job xong — sau đó vài giây
+     tới vài chục giây (run 59: file xong 08:56:32, worker báo 08:56:50). Vòng
+     poll của useRunDetail dừng ngay khi run hết "running", nên thẻ kết quả đứng
+     hình ở bản KHÔNG có số liệu, phải F5 mới thấy.
+     Job vẫn được poll riêng, nên job đổi trạng thái thì kéo lại chi tiết run —
+     đúng một lần cho mỗi lần đổi, không phải poll thêm vô hạn. */
+  const jobSig = useMemo(() => jobs.map(j => `${j.id}:${j.status}`).join(","), [jobs]);
+  const reloadRef = useRef(reloadDetail);
+  reloadRef.current = reloadDetail;
+  useEffect(() => { if (jobSig) reloadRef.current(); }, [jobSig]);
+
   /** Bật/tắt tự chạy bằng Claude headless cho workflow đang xem. */
   const [savingAuto, setSavingAuto] = useState(false);
   const toggleAutoRun = async () => {
@@ -579,6 +630,7 @@ export default function RunConsole({ mode = "page", initialWorkflowId = null, in
                       {fmtTime(s.finished_at)}{s.duration_s !== null ? ` · ${s.duration_s}s` : ""}
                     </span>
                   </div>
+                  <RunMetrics m={s.run_metrics} />
                   <pre style={{
                     margin: 0, fontSize: 12, lineHeight: 1.6, color: "#cbd5e1", background: "#0b1220",
                     border: "1px solid #1e293b", borderRadius: 6, padding: 10,

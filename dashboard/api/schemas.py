@@ -133,6 +133,11 @@ class WorkflowStepJobOut(BaseModel):
     created_at: datetime
     started_at: Optional[datetime]
     finished_at: Optional[datetime]
+    # Số liệu đo được của lần chạy: model thật sự chạy, token, tiền, thời gian
+    model_used: Optional[str] = None
+    cost_usd: Optional[float] = None
+    usage: Optional[Dict[str, Any]] = None
+    duration_ms: Optional[int] = None
 
     model_config = {"from_attributes": True}
 
@@ -162,6 +167,11 @@ class WorkflowStepJobComplete(BaseModel):
     status: str            # done | failed
     output: Optional[str] = None
     error: Optional[str] = None
+    # Số liệu worker đo được từ sự kiện `result` của CLI
+    model_used: Optional[str] = None
+    cost_usd: Optional[float] = None
+    usage: Optional[Dict[str, Any]] = None
+    duration_ms: Optional[int] = None
 
 
 class WorkflowStepJobProgress(BaseModel):
@@ -482,3 +492,64 @@ class ChatBotOut(BaseModel):
     stale_workflow_ids: List[int] = []
 
     model_config = {"from_attributes": True}
+
+
+# ── Skill (kho file trong skills/, xem skills_store.py) ───────────────────
+
+class SkillResource(BaseModel):
+    """1 file phụ trong skill thư mục — script, mẫu, dữ liệu, thư mục con."""
+    path: str                   # tương đối so với thư mục skill
+    size: int = 0
+    is_text: bool = True        # false = nhị phân, chỉ tải về được
+    kind: str = "data"          # doc | script | data | binary
+
+
+class SkillOut(BaseModel):
+    """1 skill = 1 SKILL.md (hoặc 1 file .md kiểu cũ) trong skills/<category>/."""
+    id: str                     # "<category>/<slug>"
+    category: str
+    slug: str
+    name: str
+    description: str = ""
+    tags: List[str] = []
+    format: str = "folder"      # folder (SKILL.md + file phụ) | file (.md đơn lẻ)
+    path: str = ""              # đường dẫn tương đối repo, để mở bằng editor
+    chars: int = 0
+    updated_at: Optional[str] = None
+    has_frontmatter: bool = False
+    resources: List[SkillResource] = []   # script, mẫu, thư mục con…
+
+
+class SkillDetailOut(SkillOut):
+    body: str = ""              # phần thân, đã bỏ frontmatter
+    content: str = ""           # nguyên văn file
+
+
+class SkillCreate(BaseModel):
+    category: str
+    name: str
+    description: str = ""
+    body: str = ""
+    slug: Optional[str] = None          # bỏ trống = slugify(name)
+    tags: List[str] = []
+    format: str = "folder"
+
+
+class SkillUpdate(BaseModel):
+    """None = không đụng tới. Đổi category/slug là DI CHUYỂN file → id đổi theo."""
+    name: Optional[str] = None
+    description: Optional[str] = None
+    body: Optional[str] = None
+    tags: Optional[List[str]] = None
+    category: Optional[str] = None
+    slug: Optional[str] = None
+
+
+class SkillDuplicate(BaseModel):
+    slug: Optional[str] = None
+    category: Optional[str] = None
+
+
+class SkillResourceWrite(BaseModel):
+    content: str = ""
+

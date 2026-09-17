@@ -337,6 +337,7 @@ def _folder_to_project(folder: Path) -> dict:
         "code_layout":  _code_layout(raw),
         "backend_dir":  raw.get("output", {}).get("backend_directory", ""),
         "frontend_dir": raw.get("output", {}).get("frontend_directory", ""),
+        "client_docs_dir": raw.get("output", {}).get("client_docs_directory", ""),
         "config_error": _toml_error(folder),
     }
 
@@ -460,6 +461,9 @@ class ProjectPatch(BaseModel):
     frontend: Optional[str] = None
     server_side: Optional[str] = None
     output_dir: Optional[str] = None
+    # Thư mục tài liệu KHÁCH CUNG CẤP. Để riêng vì tài liệu thường rất nặng, không
+    # nên nằm chung clients/. Rỗng = mặc định clients/<slug>/docs.
+    client_docs_dir: Optional[str] = None
     layout: Optional[str] = None
     backend_dir: Optional[str] = None
     frontend_dir: Optional[str] = None
@@ -497,6 +501,13 @@ def patch_project(folder_name: str, payload: ProjectPatch) -> dict:
             tech.pop("server_side", None)     # xoá trắng = dự án không có vùng này
 
     workspace = None
+    if payload.client_docs_dir is not None:
+        out = raw.setdefault("output", {})
+        val = payload.client_docs_dir.strip().replace(chr(92), "/").rstrip("/")
+        if val:
+            out["client_docs_directory"] = val
+        else:
+            out.pop("client_docs_directory", None)
     if any(v is not None for v in (payload.output_dir, payload.layout,
                                    payload.backend_dir, payload.frontend_dir)):
         _apply_output_settings(raw, folder_name,
@@ -1317,6 +1328,146 @@ def _scan_dir(base: Path, source: str) -> List[dict]:
             "source":   source,
         })
     return files
+
+
+# ── Tài liệu khách hàng cung cấp ──────────────────────────────────────────────
+# clients/<slug>/docs/ — API design, đặc tả, sơ đồ, file Excel… thứ KHÁCH ĐƯA VÀO.
+#
+# Cố ý tách khỏi tab Docs sẵn có: tab đó đọc thư mục CODE, nơi agent tự sinh
+# api_contract.md và bạn bè. Trộn hai thứ vào một chỗ là sớm muộn agent ghi đè
+# mất tài liệu gốc của khách — thứ duy nhất không tạo lại được.
+#
+# Chỉ lưu trên đĩa, không có bảng DB: nhờ vậy khách gửi cả thư mục thì bạn chép
+# thẳng vào `clients/<slug>/docs/` bằng Explorer là dashboard thấy ngay, không
+# phải upload từng file. Danh sách quét đệ quy nên thư mục con vẫn hiện.
+
+def _client_docs_setting(folder: Path) -> str:
+    """Giá trị thô người dùng khai. Rỗng = mặc định clients/<slug>/docs."""
+    raw = _read_toml(folder).get("output", {}) or {}
+    return str(raw.get("client_docs_directory") or "").strip()
+
+
+def _project_docs_dir(folder: Path) -> tuple[str, Optional[Path]]:
+    """(đường dẫn để HIỂN THỊ, đường dẫn THẬT đọc được từ container hoặc None).
+
+    Tài liệu khách thường rất nặng nên để ngoài clients/ là đúng — nhưng dashboard
+    chạy trong Docker, chỉ nhìn thấy các mount (clients/, output/, config/,
+    skills/, workflow_tasks/). Đường dẫn tuyệt đối kiểu D:/tai-lieu nằm ngoài đó:
+    agent trên máy thật đọc tốt, dashboard thì mù.
+
+    Trả None cho vế sau thay vì lặng lẽ rơi về thư mục khác — hiện danh sách rỗng
+    mà không nói lý do là kiểu hỏng khó chịu nhất."""
+    raw = _client_docs_setting(folder)
+    if not raw:
+        return f"clients/{folder.name}/docs", folder / "docs"
+    norm = raw.replace(chr(92), "/").rstrip("/")
+    if _is_abs_path(norm):
+        return norm, None                      # ngoài container — không đọc được
+    return f"clients/{folder.name}/{norm.lstrip('./')}", (folder / norm).resolve()
+
+
+def _safe_rel(base: Path, rel: str) -> Path:
+    """Chặn '../' thoát ra ngoài thư mục tài liệu."""
+    target = (base / rel).resolve()
+    if not str(target).startswith(str(base.resolve())):
+        raise HTTPException(status_code=403, detail="Đường dẫn không hợp lệ")
+    return target
+
+
+@router.get("/{folder_name}/project-docs")
+def list_project_docs(folder_name: str) -> dict:
+    """Tài liệu khách cung cấp của 1 dự án."""
+    folder = CLIENTS_DIR / folder_name
+    if not folder.is_dir():
+        raise HTTPException(status_code=404, detail="Project not found")
+    shown, real = _project_docs_dir(folder)
+    return {
+        # Đường dẫn để bạn tự chép file vào bằng Explorer thay vì upload từng cái
+        "dir":      shown,
+        "readable": real is not None,
+        "exists":   bool(real and real.is_dir()),
+        "files":    _scan_dir(real, "project-docs") if real else [],
+    }
+
+
+@router.post("/{folder_name}/project-docs")
+async def upload_project_doc(folder_name: str, file: UploadFile = File(...),
+                             subdir: str = Form("")) -> dict:
+    folder = CLIENTS_DIR / folder_name
+    if not folder.is_dir():
+        raise HTTPException(status_code=404, detail="Project not found")
+    _, docs = _project_docs_dir(folder)
+    if docs is None:
+        raise HTTPException(status_code=400, detail=(
+            "Thư mục tài liệu nằm ngoài container nên dashboard không ghi vào được. "
+            "Chép file bằng Explorer, hoặc đổi sang đường dẫn tương đối trong repo."))
+    # subdir cho phép gom theo nhóm ("api", "thiet-ke"), nhưng vẫn phải nằm trong docs/
+    target_dir = _safe_rel(docs, subdir.strip().strip("/")) if subdir.strip() else docs
+    target_dir.mkdir(parents=True, exist_ok=True)
+
+    name = _safe_filename(file.filename or "file")
+    target = target_dir / name
+    # Trùng tên thì thêm hậu tố thay vì ghi đè — tài liệu khách không được phép mất
+    if target.exists():
+        stem, suf = Path(name).stem, Path(name).suffix
+        target = target_dir / f"{stem}_{uuid.uuid4().hex[:6]}{suf}"
+
+    total = 0
+    with open(target, "wb") as out:
+        while True:
+            chunk = await file.read(1024 * 1024)
+            if not chunk:
+                break
+            total += len(chunk)
+            if total > _MAX_FILE_BYTES:
+                out.close()
+                target.unlink(missing_ok=True)
+                raise HTTPException(status_code=413,
+                                    detail=f"File quá lớn (giới hạn {_MAX_FILE_BYTES // (1024*1024)} MB)")
+            out.write(chunk)
+    return {"path": str(target.relative_to(docs)).replace("\\", "/"),
+            "name": target.name, "size": total}
+
+
+@router.get("/{folder_name}/project-docs/content")
+def get_project_doc(folder_name: str, path: str) -> dict:
+    folder = CLIENTS_DIR / folder_name
+    _, docs = _project_docs_dir(folder)
+    if docs is None:
+        raise HTTPException(status_code=400, detail="Thư mục tài liệu nằm ngoài container — dashboard không đọc được")
+    target = _safe_rel(docs, path)
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Không có file này")
+    try:
+        return {"path": path, "content": target.read_text(encoding="utf-8"), "text": True}
+    except (UnicodeDecodeError, OSError):
+        # Ảnh, PDF, Excel… xem không được thì tải về
+        return {"path": path, "content": "", "text": False}
+
+
+@router.get("/{folder_name}/project-docs/download")
+def download_project_doc(folder_name: str, path: str):
+    folder = CLIENTS_DIR / folder_name
+    _, docs = _project_docs_dir(folder)
+    if docs is None:
+        raise HTTPException(status_code=400, detail="Thư mục tài liệu nằm ngoài container — dashboard không đọc được")
+    target = _safe_rel(docs, path)
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Không có file này")
+    return FileResponse(str(target), filename=target.name)
+
+
+@router.delete("/{folder_name}/project-docs")
+def delete_project_doc(folder_name: str, path: str) -> dict:
+    folder = CLIENTS_DIR / folder_name
+    _, docs = _project_docs_dir(folder)
+    if docs is None:
+        raise HTTPException(status_code=400, detail="Thư mục tài liệu nằm ngoài container — dashboard không đọc được")
+    target = _safe_rel(docs, path)
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail="Không có file này")
+    target.unlink()
+    return {"ok": True}
 
 
 @router.get("/{folder_name}/docs")

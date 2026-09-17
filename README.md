@@ -57,6 +57,49 @@ ai-team-orchestrator/
     └── tasks.json             ← Status 7 agents real-time
 ```
 
+## Skills — quy ước nghề, dùng chung cho cả 2 làn
+
+`skills/` là kho quy ước mà agent phải đọc trước khi làm. **Một skill = một
+thư mục có `SKILL.md` mở đầu bằng frontmatter `name` + `description`**, bên cạnh
+là mọi thứ skill cần: script, test, mẫu, thư mục con — đúng định dạng skill của
+Claude Code và BMAD, nên skill viết cho Claude bê thẳng vào đây được.
+
+```
+skills/
+├── shared/                    ← mọi vai trò đều đọc
+│   └── code_quality.md        ← skill 1 file (dạng cũ, vẫn chạy)
+├── be/                        ← "cụm" skill = thư mục vai trò
+│   └── screen-spec/           ← skill thư mục
+│       ├── SKILL.md           ← frontmatter + hướng dẫn
+│       ├── check_closure.py   ← script skill bảo agent chạy
+│       ├── make_qa.py
+│       └── templates/         ← thư mục con cũng được
+└── fe/ · pm/ · scrum/ · analyst/ · leader/
+```
+
+Quản lý trên dashboard ở tab **Skills**: tạo/sửa/xoá/nhân bản, tải script lên,
+sửa từng file, đổi cụm, và **nhập skill có sẵn** — chọn nguyên thư mục
+`.claude/skills/<tên>` hoặc file `.zip`, SKILL.md + script + thư mục con vào hết
+(rác kiểu `__pycache__`, `.pyc` bị bỏ). Skill 1 file cũ bấm *Chuyển sang thư mục*
+là chứa được script.
+
+Nguồn sự thật là file trên đĩa (không phải DB) nên `git diff` vẫn đọc ra và sửa
+bằng editor vẫn được.
+
+Skill quá dài thì **không** bị nhồi vào file task: bước chỉ nhận tên, mô tả,
+đường dẫn `SKILL.md` và danh sách script (chạy với cwd = gốc repo) — agent tự mở
+đọc khi cần, đúng cách skill của Claude hoạt động.
+
+Skill được dùng ở cả hai làn:
+
+| Làn | Cách nhận skill |
+|-----|-----------------|
+| Pipeline (`python main.py`) | Vai trò nào đọc cụm nào — xem `ai_team/skill_loader.py`, nội dung nhét thẳng vào prompt agent |
+| Workflow (dashboard) | Mỗi node tự chọn: **cả cụm** (`be`) và/hoặc **từng skill lẻ** (`be/auth_jwt`) — một node chọn bao nhiêu skill cũng được. Node chọn agent thì tự nhận cụm của vai trò đó. Nội dung nhúng vào file task của bước |
+
+> Sửa skill trên dashboard cần `skills/` ghi được: mount trong
+> `dashboard/docker-compose.yml` phải là `../skills:/skills` (không `:ro`).
+
 ## ⚠️ Chính sách: pipeline không dùng Claude Code
 
 Pipeline này chạy nền qua `worker.py`, nhiều project trong hàng đợi, agent song

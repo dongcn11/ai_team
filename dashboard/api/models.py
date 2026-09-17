@@ -254,6 +254,13 @@ class WorkflowStepJob(Base):
     # thành 1 dòng ("🔧 Bash: git fetch…", "📖 Read: …") rồi đẩy lên theo đợt. Chỉ
     # giữ đuôi (xem workflow_jobs._PROGRESS_KEEP) — đủ để biết nó đang kẹt ở đâu.
     progress      = Column(Text, nullable=True)
+    # SỐ LIỆU 1 LẦN CHẠY — worker đọc từ sự kiện `result` của stream-json rồi gửi
+    # kèm lúc /complete. Lưu thành cột chứ không chỉ để trong log: có cột mới cộng
+    # được tiền theo lần chạy / theo dự án, và mới hiện lên thẻ kết quả.
+    model_used    = Column(String, nullable=True)   # vd "claude-opus-5[1m]"
+    cost_usd      = Column(Float, nullable=True)
+    usage         = Column(JSON, nullable=True)     # {input, output, cache_write, cache_read, turns}
+    duration_ms   = Column(Integer, nullable=True)
     created_at    = Column(DateTime, server_default=func.now())
     started_at    = Column(DateTime, nullable=True)
     finished_at   = Column(DateTime, nullable=True)

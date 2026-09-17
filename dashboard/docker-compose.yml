@@ -47,7 +47,9 @@ services:
       - ../config:/config:ro
       - ../profiles.yaml:/profiles.yaml:ro
       - ../output:/output:ro
-      - ../skills:/skills:ro
+      # KHÔNG :ro — trang Skills trên dashboard tạo/sửa/xoá file trong đây
+      # (xem api/skills_store.py). Để chỉ-đọc thì mọi nút Lưu đều báo lỗi.
+      - ../skills:/skills
       - ../workflow_tasks:/workflow_tasks
     depends_on:
       db:

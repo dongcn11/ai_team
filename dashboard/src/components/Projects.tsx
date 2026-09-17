@@ -30,7 +30,7 @@ export default function ProjectsPage() {
   const { projects, loading, error, refetch } = useProjects();
   const [selected,    setSelected]    = useState<Project | null>(null);
   const [projRuns,    setProjRuns]    = useState<RunSummary[]>([]);
-  const [activeTab,   setActiveTab]   = useState<"features" | "workflows" | "agents" | "prd" | "runs" | "docs">("features");
+  const [activeTab,   setActiveTab]   = useState<"features" | "workflows" | "agents" | "prd" | "runs" | "clientdocs" | "docs">("features");
 
   // Danh sách workflow của RIÊNG project đang mở — dùng cho tab Workflows và
   // cho dropdown "Workflow" ở từng task bên tab Features.
@@ -56,7 +56,7 @@ export default function ProjectsPage() {
 
   // Inline-editable project header fields
   type EditableField = "name" | "backend" | "frontend" | "server_side"
-                     | "output_dir" | "backend_dir" | "frontend_dir";
+                     | "output_dir" | "backend_dir" | "frontend_dir" | "client_docs_dir";
   const [editingField, setEditingField] = useState<EditableField | null>(null);
   const [editDraft,    setEditDraft]    = useState("");
   const [editSaving,   setEditSaving]   = useState(false);
@@ -503,6 +503,7 @@ export default function ProjectsPage() {
     if (editingField === "output_dir")   body.output_dir   = editDraft;
     if (editingField === "backend_dir")  body.backend_dir  = editDraft;
     if (editingField === "frontend_dir") body.frontend_dir = editDraft;
+    if (editingField === "client_docs_dir") body.client_docs_dir = editDraft;
 
     const res = await fetch(`/api/projects/${selected.id}`, {
       method: "PATCH",
@@ -612,11 +613,62 @@ export default function ProjectsPage() {
   };
 
   useEffect(() => {
-    if (!selected) { setGitCfg(null); return; }
+    if (!selected) { setGitCfg(null); setClientDocs([]); setCdOpen(null); return; }
     loadGit(selected.id);
     setGitEditing(false);
     setGitToken("");
   }, [selected, loadGit]);
+
+  // Tài liệu khách hàng cung cấp — clients/<slug>/docs/. Tách hẳn khỏi tab Docs
+  // (thư mục code, do agent sinh): trộn vào là sớm muộn agent ghi đè mất bản gốc.
+  type ClientDoc = { path: string; name: string; size: number; modified: number };
+  const [clientDocs,  setClientDocs]  = useState<ClientDoc[]>([]);
+  const [cdDir,       setCdDir]       = useState("");
+  /** Thư mục nằm ngoài container ⇒ dashboard mù: không liệt kê, không upload được. */
+  const [cdReadable,  setCdReadable]  = useState(true);
+  const [cdUploading, setCdUploading] = useState(false);
+  const [cdError,     setCdError]     = useState<string | null>(null);
+  const [cdOpen,      setCdOpen]      = useState<{ path: string; content: string; text: boolean } | null>(null);
+
+  const loadClientDocs = useCallback(async (id: string) => {
+    const res = await fetch(`/api/projects/${id}/project-docs`);
+    if (res.ok) {
+      const d = await res.json();
+      setClientDocs(d.files || []);
+      setCdDir(d.dir || "");
+      setCdReadable(d.readable !== false);
+    }
+  }, []);
+
+  const uploadClientDocs = async (files: FileList | null) => {
+    if (!selected || !files || files.length === 0) return;
+    setCdUploading(true); setCdError(null);
+    try {
+      for (const f of Array.from(files)) {
+        const form = new FormData();
+        form.append("file", f);
+        const res = await fetch(`/api/projects/${selected.id}/project-docs`, { method: "POST", body: form });
+        if (!res.ok) {
+          setCdError((await res.json().catch(() => ({}))).detail || `Không tải lên được ${f.name}`);
+          break;
+        }
+      }
+      await loadClientDocs(selected.id);
+    } finally { setCdUploading(false); }
+  };
+
+  const openClientDoc = async (path: string) => {
+    if (!selected) return;
+    const res = await fetch(`/api/projects/${selected.id}/project-docs/content?path=${encodeURIComponent(path)}`);
+    if (res.ok) setCdOpen(await res.json());
+  };
+
+  const deleteClientDoc = async (path: string) => {
+    if (!selected) return;
+    const res = await fetch(`/api/projects/${selected.id}/project-docs?path=${encodeURIComponent(path)}`,
+                            { method: "DELETE" });
+    if (res.ok) { if (cdOpen?.path === path) setCdOpen(null); loadClientDocs(selected.id); }
+  };
 
   const loadDocs = useCallback(async (id: string) => {
     const res = await fetch(`/api/projects/${id}/docs`);
@@ -921,14 +973,29 @@ export default function ProjectsPage() {
                 </div>
 
                 <div className="pd-config-group">
-                  <div className="pd-config-legend">Workspace — tài liệu của project</div>
+                  <div className="pd-config-legend">Workspace của project</div>
                   <div className="pd-config-grid">
                     <div className="pd-field pd-field-wide">
                       <div className="pd-field-label">Thư mục workspace (cố định theo slug)</div>
                       <div className="pd-field-static"><code>clients/{selected.id}/</code></div>
                       <div className="pd-field-note">
-                        PRD, tài liệu, task file và <code>settings.toml</code> luôn nằm ở đây.
+                        PRD, task file và <code>settings.toml</code> nằm ở đây.
                         Đây <strong>không phải</strong> nơi agent ghi code — thư mục code khai riêng bên dưới.
+                      </div>
+                      {/* Nhãn cũ của khối này là "Workspace — tài liệu của project" nên ai cũng
+                          tìm chỗ upload ngay tại đây. Chỉ thẳng sang tab Tài liệu, kèm nút nhảy. */}
+                      <div className="pd-field-note" style={{ color: "#93c5fd" }}>
+                        Muốn <strong>tải tài liệu khách hàng cung cấp</strong> (API design, đặc tả…)?
+                        Không làm ở đây — sang tab{" "}
+                        <button type="button"
+                          onClick={() => { setActiveTab("clientdocs"); loadClientDocs(selected.id); }}
+                          style={{
+                            background: "#172554", border: "1px solid #1e3a8a", borderRadius: 5,
+                            color: "#93c5fd", cursor: "pointer", font: "inherit",
+                            padding: "1px 7px", margin: "0 2px",
+                          }}>📎 Tài liệu</button>
+                        {" "}— file vào <code>clients/{selected.id}/docs/</code> và agent được nhắc đọc
+                        trong mọi file task.
                       </div>
                     </div>
                   </div>
@@ -984,6 +1051,31 @@ export default function ProjectsPage() {
                 <div className="pd-config-group">
                   <div className="pd-config-legend">Agent dev — thư mục & tài khoản git riêng</div>
                   <AgentWorkspaces projectId={selected.id} />
+                </div>
+
+                <div className="pd-config-group">
+                  <div className="pd-config-legend">Tài liệu khách hàng cung cấp</div>
+                  <div className="pd-config-grid">
+                    {cfgField("client_docs_dir", "Thư mục tài liệu", selected.client_docs_dir || "", {
+                      hint: "Nơi để API design, đặc tả… khách gửi. Bỏ trống = clients/<slug>/docs",
+                      empty: `clients/${selected.id}/docs`,
+                      warn: isAbsPath(selected.client_docs_dir || "")
+                        ? "Đường dẫn tuyệt đối: agent trên máy bạn đọc được, nhưng dashboard chạy "
+                          + "trong Docker nên KHÔNG liệt kê/tải lên được — chép file bằng Explorer."
+                        : null,
+                    })}
+                    <div className="pd-field pd-field-wide">
+                      <div className="pd-field-note" style={{ marginTop: 0 }}>
+                        Tài liệu khách thường rất nặng nên tách ra ngoài <code>clients/</code> là đúng —
+                        giống thư mục code. Đổi lại dashboard mù chỗ đó: xem và tải lên phải dùng
+                        Explorer, còn agent vẫn đọc bình thường vì nó chạy trên máy thật.
+                        <div style={{ marginTop: 4 }}>
+                          Muốn giữ được xem/tải lên trên web thì để đường dẫn <b>tương đối</b>{" "}
+                          (vd <code>./tai-lieu</code> → <code>clients/{selected.id}/tai-lieu</code>).
+                        </div>
+                      </div>
+                    </div>
+                  </div>
                 </div>
 
                 <div className="pd-config-group">
@@ -1055,13 +1147,14 @@ export default function ProjectsPage() {
 
           {/* Tabs */}
           <div className="pd-tabs">
-            {(["features","workflows","agents","prd","runs","docs"] as const).map(tab => {
+            {(["features","workflows","agents","prd","runs","clientdocs","docs"] as const).map(tab => {
               const meta = {
                 features:  { label: "Features",  count: features.length as number | null },
                 workflows: { label: "Workflows", count: projectWorkflows.length as number | null },
                 agents:    { label: "Agents",    count: settingsAgents.length as number | null },
                 prd:       { label: "PRD",       count: null as number | null },
                 runs:      { label: "Runs",      count: projRuns.length as number | null },
+                clientdocs:{ label: "📎 Tài liệu KH", count: (clientDocs.length || null) as number | null },
                 docs:      { label: "Docs",      count: (docFiles.length || null) as number | null },
               }[tab];
               return (
@@ -1070,6 +1163,7 @@ export default function ProjectsPage() {
                     setActiveTab(tab);
                     if (tab === "prd" && prdContent === null) loadPrd(selected.id);
                     if (tab === "docs" && docFiles.length === 0) loadDocs(selected.id);
+                    if (tab === "clientdocs") loadClientDocs(selected.id);
                     if (tab === "features" && !featuresLoaded) loadFeatures(selected.id);
                   }}>
                   {meta.label}
@@ -1609,6 +1703,110 @@ export default function ProjectsPage() {
           )}
 
           {/* Docs tab */}
+          {/* Tài liệu khách hàng cung cấp — clients/<slug>/docs/ */}
+          {activeTab === "clientdocs" && (
+            <div style={{ marginTop: 16 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap", marginBottom: 10 }}>
+                <h4 style={{ fontSize: 14, margin: 0 }}>Tài liệu khách hàng cung cấp ({clientDocs.length})</h4>
+                <div style={{ flex: 1 }} />
+                {cdReadable && (
+                  <label className="btn-primary" style={{ fontSize: 12, padding: "6px 14px", cursor: cdUploading ? "wait" : "pointer" }}>
+                    {cdUploading ? "Đang tải lên..." : "⬆ Tải tài liệu lên"}
+                    <input type="file" multiple style={{ display: "none" }} disabled={cdUploading}
+                      onChange={e => uploadClientDocs(e.target.files)} />
+                  </label>
+                )}
+              </div>
+
+              <div style={{
+                background: "#0b1220", border: "1px solid #1e293b", borderRadius: 8,
+                padding: "10px 12px", marginBottom: 12, fontSize: 12, color: "#94a3b8", lineHeight: 1.75,
+              }}>
+                Đây là <strong>đầu vào từ khách</strong> — API design, đặc tả, sơ đồ. Agent được nhắc
+                đọc thư mục này trong mọi file task, và <strong>không được sửa</strong> nó.
+                <div style={{ marginTop: 4 }}>
+                  Nằm ở <code style={{ color: "#93c5fd" }}>{cdDir || "clients/<slug>/docs"}</code> —
+                  khách gửi cả thư mục thì chép thẳng vào đó bằng Explorer, không phải tải từng file.
+                  Thư mục con vẫn hiện. Đổi chỗ ở <b>⚙ Cấu hình → Tài liệu khách hàng cung cấp</b>.
+                </div>
+                <div style={{ marginTop: 4, color: "#64748b" }}>
+                  Khác tab <b>Docs</b>: tab đó là tài liệu <i>agent tự sinh</i> trong thư mục code.
+                </div>
+              </div>
+
+              {cdError && <div className="state err" style={{ marginBottom: 10 }}>{cdError}</div>}
+
+              {!cdReadable ? (
+                <div className="card" style={{ fontSize: 13, color: "#94a3b8", lineHeight: 1.8 }}>
+                  <b style={{ color: "#fbbf24" }}>Thư mục này nằm ngoài container</b> nên dashboard
+                  không liệt kê hay tải lên được — đúng như đã cảnh báo lúc khai đường dẫn.
+                  <div style={{ marginTop: 6 }}>
+                    Mở bằng Explorer: <code style={{ color: "#93c5fd" }}>{cdDir}</code> rồi chép tài
+                    liệu vào đó. <b>Agent vẫn đọc bình thường</b> vì nó chạy trên máy thật — file task
+                    có sẵn đường dẫn này.
+                  </div>
+                  <div style={{ marginTop: 6, color: "#64748b" }}>
+                    Muốn xem/tải lên ngay trên web thì đổi sang đường dẫn tương đối ở{" "}
+                    <b>⚙ Cấu hình → Tài liệu khách hàng cung cấp</b>.
+                  </div>
+                </div>
+              ) : clientDocs.length === 0 ? (
+                <div className="card" style={{ textAlign: "center", color: "#64748b", fontSize: 13 }}>
+                  Chưa có tài liệu nào.
+                </div>
+              ) : (
+                <div style={{ border: "1px solid #1e293b", borderRadius: 8, overflow: "hidden" }}>
+                  {clientDocs.map(f => (
+                    <div key={f.path} style={{
+                      display: "flex", alignItems: "center", gap: 10, padding: "8px 12px",
+                      borderBottom: "1px solid #16202f", fontSize: 12,
+                    }}>
+                      <span style={{ color: "#e2e8f0", flex: 1, minWidth: 0, overflow: "hidden",
+                                     textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                        📄 {f.path}
+                      </span>
+                      <span style={{ color: "#475569", flexShrink: 0 }}>
+                        {f.size < 1024 ? `${f.size} B` : `${Math.round(f.size / 1024)} KB`}
+                      </span>
+                      <button className="pd-ghost-btn" style={{ fontSize: 11, padding: "3px 9px" }}
+                        onClick={() => openClientDoc(f.path)}>Xem</button>
+                      <a className="pd-ghost-btn" style={{ fontSize: 11, padding: "3px 9px", textDecoration: "none" }}
+                        href={`/api/projects/${selected.id}/project-docs/download?path=${encodeURIComponent(f.path)}`}>
+                        Tải
+                      </a>
+                      <button className="pd-ghost-btn danger" style={{ fontSize: 11, padding: "3px 9px" }}
+                        onClick={() => deleteClientDoc(f.path)}>Xoá</button>
+                    </div>
+                  ))}
+                </div>
+              )}
+
+              {cdOpen && (
+                <div style={{ marginTop: 12 }}>
+                  <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6 }}>
+                    <strong style={{ fontSize: 12, color: "#93c5fd" }}>{cdOpen.path}</strong>
+                    <div style={{ flex: 1 }} />
+                    <button className="pd-ghost-btn" style={{ fontSize: 11, padding: "3px 9px" }}
+                      onClick={() => setCdOpen(null)}>✕ Đóng</button>
+                  </div>
+                  {cdOpen.text ? (
+                    <pre style={{
+                      margin: 0, padding: "10px 12px", background: "#0b1220",
+                      border: "1px solid #1e293b", borderRadius: 8, fontSize: 12,
+                      color: "#cbd5e1", whiteSpace: "pre-wrap", wordBreak: "break-word",
+                      maxHeight: 460, overflow: "auto",
+                    }}>{cdOpen.content}</pre>
+                  ) : (
+                    <div className="card" style={{ fontSize: 12, color: "#94a3b8" }}>
+                      File này không phải văn bản (ảnh, PDF, Excel…) — bấm <b>Tải</b> để mở bằng ứng dụng
+                      trên máy. Agent vẫn đọc được vì nó nằm trong repo.
+                    </div>
+                  )}
+                </div>
+              )}
+            </div>
+          )}
+
           {activeTab === "docs" && (() => {
             type DocFile = { path: string; name: string; size: number; source: string };
             const planningFiles = (docFiles as DocFile[]).filter(f => f.source === "docs");

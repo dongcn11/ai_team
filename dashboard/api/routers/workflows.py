@@ -50,6 +50,7 @@ from sqlalchemy import desc
 from database import get_db, SessionLocal
 from models import AgentQuestion, Workflow, WorkflowRun, WorkflowStepJob, Project, ProjectTask
 from system_config import SKILLS_DIR, WORKSPACE_AREAS, get_system_agents
+import skills_store
 from schemas import AgentQuestionOut, AgentQuestionAnswer, WorkflowCreate, WorkflowUpdate, WorkflowOut, WorkflowRunOut
 from routers.projects import _get_or_create_db_project
 
@@ -885,9 +886,48 @@ def _workspace_section(wf: Workflow, node: dict) -> str:
         "",
         f"Spec thì ngược lại — vẫn ở `clients/{wf.client_folder}/`: `prd.md` (yêu cầu dự án) và "
         f"`_tasks/` (các file task như file này). Đọc thoải mái nhưng **đừng ghi code vào đó**.",
-        "",
     ]
+    lines += _project_docs_lines(wf)
+    lines.append("")
     return "\n".join(lines) + "\n"
+
+
+# Bao nhiêu file tài liệu thì liệt kê tên; quá số này chỉ nói thư mục cho đỡ loãng
+# prompt (mỗi bước là một phiên CLI mới, chữ thừa là tiền thừa).
+_DOCS_LIST_LIMIT = 25
+
+
+def _project_docs_lines(wf: Workflow) -> list:
+    """Cho agent biết tài liệu KHÁCH CUNG CẤP nằm ở đâu và có những gì.
+
+    Không có khối này thì khai thư mục tài liệu cũng vô ích — agent không tự đi mò
+    một thư mục nó chưa từng nghe tên.
+
+    Thư mục này thường nằm NGOÀI container (tài liệu nặng, để riêng ra ổ khác).
+    Dashboard mù chỗ đó nhưng agent chạy trên máy thật thì đọc được — nên vẫn phải
+    nói đường dẫn ra, chỉ là không liệt kê nổi tên file."""
+    if not wf.client_folder:
+        return []
+    from routers.projects import _project_docs_dir
+    shown, real = _project_docs_dir(CLIENTS_DIR / wf.client_folder)
+
+    head = ["",
+            "## Tài liệu khách hàng cung cấp",
+            f"Nằm ở `{shown}/` — **đọc trước khi làm**, đây là yêu cầu gốc từ khách "
+            "(API design, đặc tả…). Chỉ đọc, đừng sửa."]
+
+    if real is None:
+        # Ngoài container: không liệt kê được, nhưng agent tự `ls` lấy.
+        return head + ["- Tự liệt kê thư mục đó rồi đọc file liên quan tới task này."]
+
+    if not real.is_dir():
+        return []                       # chưa có thư mục ⇒ đừng bịa ra cho agent
+    files = sorted(f for f in real.rglob("*") if f.is_file() and not f.name.startswith("."))
+    if not files:
+        return []
+    if len(files) <= _DOCS_LIST_LIMIT:
+        return head + [f"- `{shown}/{f.relative_to(real).as_posix()}`" for f in files]
+    return head + [f"- {len(files)} file trong thư mục đó — tự liệt kê rồi đọc cái liên quan."]
 
 
 def _task_file_path(tasks_dir: Path, workflow_id: int, run_id: int, node_id: str) -> Path:
@@ -906,11 +946,38 @@ def _demote_headings(md: str) -> str:
     """Ha cap heading cua noi dung skill xuong ####.
 
     File task dung '## Ket qua' lam moc de doc ket qua (xem _RESULT_RE). Skill nao
-    tinh co co heading '## Ket qua' se khien dashboard doc nham khoi do."""
-    return _HEADING_RE.sub(lambda m: "#" * (len(m.group(1)) + 2) + " ", md)
+    tinh co co heading '## Ket qua' se khien dashboard doc nham khoi do.
+
+    Ha 3 cap chu khong phai 2: moi skill duoc gioi thieu bang mot '### <ten>', ha
+    2 cap thi '# Tieu de' cua skill thanh '###' - ngang hang voi tieu de skill,
+    nhin khong ra dau la skill moi."""
+    return _HEADING_RE.sub(lambda m: "#" * min(len(m.group(1)) + 3, 6) + " ", md)
 
 
-def _skill_section(skill_dirs: List[str]) -> str:
+def _resource_lines(skill: dict, indent: str = "") -> str:
+    """Liet ke file di kem cua 1 skill, tach rieng SCRIPT.
+
+    Skill that khong chi la chu: udom-screen-spec bao agent chay
+    `check_closure.py` nam canh SKILL.md. Khong noi ro file do o dau trong repo
+    thi agent doc xong huong dan van khong chay duoc gi."""
+    res = skill.get("resources") or []
+    if not res:
+        return ""
+    folder = skill["path"].rsplit("/", 1)[0]
+    scripts = [r for r in res if r.get("kind") == "script"]
+    others  = [r for r in res if r.get("kind") != "script"]
+    out = []
+    if scripts:
+        names = ", ".join(f"`{folder}/{r['path']}`" for r in scripts[:10])
+        out.append(f"{indent}_Script của skill (chạy được, cwd = gốc repo): {names}_")
+    if others:
+        names = ", ".join(f"`{folder}/{r['path']}`" for r in others[:10])
+        more = f" (+{len(others) - 10} file nữa)" if len(others) > 10 else ""
+        out.append(f"{indent}_File kèm theo: {names}{more}_")
+    return "\n\n" + "\n".join(out)
+
+
+def _skill_section(categories: List[str], skill_ids: Optional[List[str]] = None) -> str:
     """Noi dung skill THAT, khong chi cai ten.
 
     Truoc day cho nay chi liet ke ten thu muc - nguoi/agent chay buoc khong he
@@ -919,56 +986,86 @@ def _skill_section(skill_dirs: List[str]) -> str:
     nghia khac nhau. Gio nhung thang noi dung, phan vuot han muc thi ghi duong
     dan de tu doc.
 
+    Nhan 2 danh sach: `categories` = ca cum (thu muc vai tro) va `skill_ids` =
+    tung skill le ("be/auth_jwt"). Xem skills_store.resolve - no bung ca hai
+    thanh cung mot danh sach skill, bo trung.
+
     `shared` luon duoc them vao - giong skill_loader: moi vai tro deu doc no."""
-    dirs = [d for d in dict.fromkeys(skill_dirs or []) if d]
-    if not dirs:
+    cats = [c for c in dict.fromkeys(categories or []) if c]
+    ids  = [s for s in dict.fromkeys(skill_ids or []) if s]
+    if not cats and not ids:
         return "## Skill áp dụng\n- (không chọn skill nào)\n"
-    if (SKILLS_DIR / "shared").is_dir() and "shared" not in dirs:
-        dirs.insert(0, "shared")
+    if (SKILLS_DIR / "shared").is_dir() and "shared" not in cats:
+        cats.insert(0, "shared")
 
     inlined: List[str] = []
     deferred: List[str] = []
+    missing: List[str] = []
     used = 0
-    for d in dirs:
-        folder = SKILLS_DIR / d
-        files = sorted(folder.glob("*.md")) if folder.is_dir() else []
-        if not files:
-            deferred.append(f"- `skills/{d}/` — không tìm thấy file .md nào")
+    for sk in skills_store.resolve(cats, ids):
+        if sk.get("missing"):
+            missing.append(f"- `{sk.get('id', '?')}` — {sk['missing']}")
             continue
-        for f in files:
-            rel = f"skills/{d}/{f.name}"
-            try:
-                text = f.read_text(encoding="utf-8", errors="replace").strip()
-            except OSError as e:
-                deferred.append(f"- `{rel}` — không đọc được ({e})")
-                continue
-            if used + len(text) <= _SKILL_INLINE_BUDGET:
-                inlined.append(f"### {rel}\n\n{_demote_headings(text)}")
-                used += len(text)
-            else:
-                deferred.append(f"- Đọc thêm: `{rel}`")
+        body = sk.get("body") or ""
+        head = f"### {sk['name']} (`{sk['path']}`)"
+        desc = f"> {sk['description']}\n\n" if sk.get("description") else ""
+        extra = _resource_lines(sk)
+        if used + len(body) <= _SKILL_INLINE_BUDGET:
+            inlined.append(f"{head}\n\n{desc}{_demote_headings(body)}{extra}")
+            used += len(body)
+        else:
+            # Skill to (SKILL.md vai chuc KB) khong nhung het duoc — dua duong dan
+            # va bat doc. Day dung la cach skill cua Claude hoat dong: metadata
+            # truoc, noi dung doc khi can.
+            tail = f"\n  {sk['description']}" if sk.get("description") else ""
+            deferred.append(
+                f"- **{sk['name']}** — MỞ VÀ ĐỌC `{sk['path']}` trước khi làm."
+                f"{tail}{_resource_lines(sk, indent='  ')}"
+            )
 
+    picked: List[str] = []
+    if cats:
+        picked.append("cụm " + ", ".join(cats))
+    if ids:
+        picked.append("skill lẻ " + ", ".join(ids))
     out = ["## Skill áp dụng",
-           f"Vai trò: {', '.join(dirs)}. Đọc kỹ phần dưới trước khi làm — đây là quy ước "
-           "bắt buộc của vai trò này, không phải gợi ý.", ""]
+           f"Áp cho bước này: {' · '.join(picked)}. Đọc kỹ phần dưới trước khi làm — đây là "
+           "quy ước bắt buộc của bước này, không phải gợi ý.", ""]
     out.extend(inlined)
     if deferred:
         out.append("### Skill chưa nhúng (tự mở file mà đọc)")
         out.extend(deferred)
         out.append("")
+    if missing:
+        out.append("### Skill khai trong workflow nhưng không tìm thấy")
+        out.extend(missing)
+        out.append("")
     return "\n".join(out) + "\n"
 
 
-def _effective_skills(node: dict) -> List[str]:
-    """Skill thực sự áp cho 1 bước.
+def _effective_skill_refs(node: dict) -> tuple[List[str], List[str]]:
+    """(cụm skill, skill lẻ) thực sự áp cho 1 bước.
 
     Chọn agent = nhận luôn bộ skill của vai trò đó (giống pipeline), phần tick tay
     chỉ là skill THÊM. Trước đây 2 ô độc lập nên chọn PM Agent mà tick skill leader
-    vẫn được — agent đọc quy ước của vai trò khác, vô lý."""
+    vẫn được — agent đọc quy ước của vai trò khác, vô lý.
+
+    Skill lẻ nằm trong một cụm đã chọn thì bỏ đi: cụm đã kéo cả cụm vào rồi, giữ
+    lại chỉ làm nhãn trên dashboard dài ra mà không thêm nội dung nào."""
     data = node.get("data", {}) or {}
     agent = _node_agent(node)
-    base = list(agent.get("skill_dirs") or []) if agent else []
-    return list(dict.fromkeys(base + list(data.get("skill_dirs") or [])))
+    cats = list(agent.get("skill_dirs") or []) if agent else []
+    cats += list(data.get("skill_dirs") or [])
+    cats = list(dict.fromkeys(c for c in cats if c))
+    ids = [s for s in dict.fromkeys(data.get("skill_ids") or [])
+           if s and s.split("/")[0] not in cats]
+    return cats, ids
+
+
+def _effective_skills(node: dict) -> List[str]:
+    """Nhãn skill của bước, cho dashboard hiển thị (cụm trước, skill lẻ sau)."""
+    cats, ids = _effective_skill_refs(node)
+    return cats + ids
 
 
 def _task_body(node: dict) -> str:
@@ -980,12 +1077,12 @@ def _task_body(node: dict) -> str:
         agent = _node_agent(node)
         who = (f"{agent['name']} — {agent['tool']} · {agent['model']}" if agent
                else "Claude headless (hoặc bạn chạy tay)")
-        skills = _effective_skills(node)
+        skill_cats, skill_ids = _effective_skill_refs(node)
         return (
             f"# {label}\n\n"
             f"> Người thực thi: {who}\n\n"
             f"## Yêu cầu\n{data.get('prompt', '') or '(chưa có nội dung)'}\n\n"
-            f"{_skill_section(skills)}"
+            f"{_skill_section(skill_cats, skill_ids)}"
         )
 
     if ntype == "action.create_mr":
@@ -1460,6 +1557,20 @@ def get_run_steps(run_id: int, db: Session = Depends(get_db)) -> dict:
     edges = definition.get("edges", []) or []
     node_status = run.node_status or {}
 
+    # Số liệu chạy của từng bước (model / token / tiền) — lấy job MỚI NHẤT của mỗi
+    # node. Bước chạy lại vài lần thì lần cuối mới là cái đang hiển thị.
+    job_metrics: Dict[str, dict] = {}
+    for j in (db.query(WorkflowStepJob)
+                .filter(WorkflowStepJob.run_id == run.id)
+                .order_by(WorkflowStepJob.id).all()):
+        if j.cost_usd is None and not j.usage and not j.model_used:
+            continue
+        job_metrics[j.node_id] = {
+            "model": j.model_used, "cost_usd": j.cost_usd,
+            "usage": j.usage or {}, "duration_ms": j.duration_ms,
+            "tool": j.tool,
+        }
+
     # thời điểm bắt đầu/kết thúc mỗi node suy ra từ log
     started: Dict[str, str] = {}
     finished: Dict[str, str] = {}
@@ -1518,6 +1629,7 @@ def get_run_steps(run_id: int, db: Session = Depends(get_db)) -> dict:
             "started_at": started.get(nid),
             "finished_at": finished.get(nid),
             "duration_s": duration_s,
+            "run_metrics": job_metrics.get(nid),
         })
 
     total = len(steps)

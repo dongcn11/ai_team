@@ -844,7 +844,10 @@ body {
   gap: 2px;
   margin-top: 18px;
   border-bottom: 1px solid #1e293b;
-  overflow-x: auto;
+  /* XUỐNG DÒNG chứ không cuộn ngang. Bản cũ dùng overflow-x:auto — cửa sổ hẹp là
+     mấy tab cuối biến mất mà không có dấu hiệu gì, người dùng tưởng chưa có tính
+     năng. Tab bị giấu còn tệ hơn tab xuống dòng xấu. */
+  flex-wrap: wrap;
 }
 .pd-tab {
   display: inline-flex;

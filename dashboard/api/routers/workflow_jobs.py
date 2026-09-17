@@ -137,6 +137,12 @@ def complete_job(job_id: int, payload: WorkflowStepJobComplete, db: Session = De
     job.status = payload.status
     job.output = (payload.output or "")[:8000] or None
     job.error = (payload.error or "")[:2000] or None
+    # Số liệu chạy — thiếu thì để None chứ không ghi 0, vì 0 nghĩa là "đo được và
+    # bằng 0", còn None nghĩa là "worker cũ không gửi".
+    if payload.model_used:  job.model_used  = payload.model_used
+    if payload.cost_usd is not None:    job.cost_usd    = payload.cost_usd
+    if payload.usage:       job.usage       = payload.usage
+    if payload.duration_ms is not None: job.duration_ms = payload.duration_ms
     job.finished_at = datetime.utcnow()
     db.commit()
     db.refresh(job)
