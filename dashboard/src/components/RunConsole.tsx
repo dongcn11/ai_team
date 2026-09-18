@@ -21,10 +21,15 @@ const POLL_MS = 4000;
 
 function useRunDetail(runId: number | null) {
   const [detail, setDetail] = useState<RunDetail | null>(null);
+  // Người dùng đổi run trong lúc request cũ còn bay: phản hồi về muộn mà cứ set
+  // thì `detail` lại là run cũ, kéo ô chọn workflow về theo (xem effect đồng bộ).
+  const current = useRef(runId);
+  current.current = runId;
 
   const load = useCallback(async () => {
     if (runId === null) { setDetail(null); return; }
     const res = await fetch(`/api/workflows/runs/${runId}/steps`);
+    if (current.current !== runId) return;
     if (res.ok) setDetail(await res.json());
   }, [runId]);
 
@@ -39,16 +44,24 @@ function useRunDetail(runId: number | null) {
   return { detail, reload: load };
 }
 
+const EMPTY_RUNS: WorkflowRun[] = [];
+
 function useRunList(workflowId: number | null) {
-  const [runs, setRuns] = useState<WorkflowRun[]>([]);
+  // Nhớ danh sách này của workflow nào: vừa đổi workflow thì phải trả [] ngay,
+  // không thì effect "tự chọn run đầu" bên dưới vớ luôn run của workflow CŨ.
+  const [state, setState] = useState<{ wf: number | null; runs: WorkflowRun[] }>({ wf: null, runs: [] });
+  const current = useRef(workflowId);
+  current.current = workflowId;
 
   const load = useCallback(async () => {
-    if (workflowId === null) { setRuns([]); return; }
+    if (workflowId === null) { setState({ wf: null, runs: [] }); return; }
     const res = await fetch(`/api/workflows/${workflowId}/runs?limit=30`);
-    if (res.ok) setRuns(await res.json());
+    if (current.current !== workflowId) return;
+    if (res.ok) setState({ wf: workflowId, runs: await res.json() });
   }, [workflowId]);
 
   useEffect(() => { load(); }, [load]);
+  const runs = state.wf === workflowId ? state.runs : EMPTY_RUNS;
   return { runs, reload: load };
 }
 
@@ -347,10 +360,14 @@ export default function RunConsole({ mode = "page", initialWorkflowId = null, in
   const { detail, reload: reloadDetail } = useRunDetail(runId);
   const refresh = useCallback(() => { reloadDetail(); reloadRuns(); }, [reloadDetail, reloadRuns]);
 
-  // Ô chọn workflow luôn khớp với run đang xem
+  // Ô chọn workflow luôn khớp với run đang xem (mở từ 1 task thì chỉ có runId).
+  // Chỉ chạy khi RUN ĐÃ TẢI đổi — không phụ thuộc workflowId: người dùng vừa chọn
+  // workflow khác thì detail vẫn là run cũ, dựa vào nó là kéo ô chọn về chỗ cũ.
+  const loadedRunId = detail?.run_id ?? null;
+  const loadedWfId  = detail?.workflow_id ?? null;
   useEffect(() => {
-    if (detail && detail.workflow_id !== workflowId) setWorkflowId(detail.workflow_id);
-  }, [detail, workflowId]);
+    if (loadedWfId !== null) setWorkflowId(loadedWfId);
+  }, [loadedRunId, loadedWfId]);
 
   const [cancelling, setCancelling] = useState(false);
   const [cancelErr, setCancelErr]   = useState<string | null>(null);
@@ -512,7 +529,8 @@ export default function RunConsole({ mode = "page", initialWorkflowId = null, in
           chỗ đó chỉ để soạn sơ đồ nên nhìn rối; việc phải làm thuộc về màn hình này. */}
       {mode === "page" && (
         <div style={{ paddingTop: 16 }}>
-          <ActiveTasks onOpenRun={(wfId, rId) => { setWorkflowId(wfId); setRunId(rId); }} />
+          <ActiveTasks activeRunId={runId}
+            onOpenRun={(wfId, rId) => { setWorkflowId(wfId); setRunId(rId); }} />
         </div>
       )}
 

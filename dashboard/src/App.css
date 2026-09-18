@@ -459,6 +459,205 @@ body {
 }
 .aq-input:focus { border-color: #b45309; }
 
+/* ── Hộp "việc chờ bạn chạy" (ActiveTasks, màn hình chạy) ─────────────────
+   Danh sách dòng mỏng gom theo project. Phải chịu được hàng trăm dòng nên:
+   khung cuộn riêng (không đẩy bảng chi tiết run xuống dưới), tiêu đề nhóm
+   dính khi cuộn, lệnh chỉ hiện khi bung dòng. */
+.ibx {
+  background: #0f172a;
+  border: 1px solid #1e293b;
+  border-radius: 10px;
+  margin-bottom: 16px;
+  overflow: hidden;
+}
+.ibx-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid #1e293b;
+  font-size: 13px;
+  color: #e2e8f0;
+  min-height: 40px;
+}
+.ibx-head strong {
+  font-size: 12px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+  color: #9ca3af;
+  white-space: nowrap;
+}
+.ibx-count {
+  background: #1e293b;
+  border-radius: 999px;
+  color: #cbd5e1;
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.5;
+  min-width: 20px;
+  padding: 1px 7px;
+  text-align: center;
+}
+.ibx-count.hot { background: #b45309; color: #fff; }
+.ibx-sub { font-size: 11px; color: #64748b; white-space: nowrap; }
+.ibx-search {
+  flex: 1;
+  min-width: 160px;
+  max-width: 380px;
+  margin-left: auto;
+  background: #0b1220;
+  border: 1px solid #1e293b;
+  border-radius: 6px;
+  color: #e2e8f0;
+  font-family: inherit;
+  font-size: 12px;
+  outline: none;
+  padding: 4px 9px;
+}
+.ibx-search:focus { border-color: #2563eb88; }
+.ibx-search::placeholder { color: #475569; }
+
+.ibx-chev {
+  flex-shrink: 0;
+  width: 16px;
+  padding: 0;
+  background: none;
+  border: none;
+  color: #64748b;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1;
+  text-align: center;
+}
+.ibx-chev:hover { color: #e2e8f0; }
+
+.ibx-body { max-height: 42vh; overflow-y: auto; padding: 4px 6px 6px; }
+.ibx-empty { font-size: 12px; color: #4b5563; padding: 10px 14px; }
+
+.ibx-group { margin-top: 2px; }
+.ibx-group-head {
+  position: sticky;
+  top: 0;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 5px 6px;
+  background: #0f172a;
+  border: none;
+  border-radius: 6px;
+  color: #cbd5e1;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 600;
+  text-align: left;
+}
+.ibx-group-head:hover { background: #111a2e; }
+.ibx-group-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.ibx-line {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 8px 4px 20px;
+  border-left: 2px solid transparent;
+  border-radius: 6px;
+  cursor: pointer;
+}
+.ibx-line:hover { background: #111a2e; }
+.ibx-row.active > .ibx-line { background: #0f1f3d; border-left-color: #3b82f6; }
+.ibx-icon { flex-shrink: 0; width: 18px; font-size: 13px; text-align: center; }
+.ibx-main {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  overflow: hidden;
+  white-space: nowrap;
+}
+.ibx-label {
+  flex-shrink: 0;
+  max-width: 45%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  font-size: 13px;
+  font-weight: 500;
+  color: #e2e8f0;
+}
+.ibx-meta { min-width: 0; overflow: hidden; text-overflow: ellipsis; font-size: 11px; color: #64748b; }
+.ibx-age { flex-shrink: 0; width: 56px; font-size: 11px; color: #4b5563; text-align: right; white-space: nowrap; }
+.ibx-actions { display: flex; gap: 4px; flex-shrink: 0; }
+
+.ibx-btn {
+  background: #1e293b;
+  border: 1px solid #334155;
+  border-radius: 5px;
+  color: #d1d5db;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+  line-height: 1.5;
+  padding: 2px 8px;
+  white-space: nowrap;
+}
+.ibx-btn:hover { border-color: #4b5563; }
+.ibx-btn:disabled { opacity: 0.5; cursor: not-allowed; }
+.ibx-btn.ok { background: #2563eb; border-color: #2563eb; color: #fff; font-weight: 600; }
+.ibx-btn.ok:hover { background: #1d4ed8; }
+.ibx-btn.no { background: #450a0a; border-color: #7f1d1d; color: #fca5a5; }
+.ibx-btn.no:hover { background: #7f1d1d; }
+
+.ibx-detail {
+  margin: 2px 8px 6px 44px;
+  padding: 8px 10px;
+  background: #0b1220;
+  border: 1px solid #1e293b;
+  border-radius: 6px;
+}
+.ibx-cmd {
+  display: block;
+  font-size: 12px;
+  line-height: 1.6;
+  color: #bfdbfe;
+  white-space: pre-wrap;
+  word-break: break-all;
+  user-select: all;
+}
+.ibx-detail-foot { display: flex; align-items: center; gap: 6px; margin-top: 8px; }
+.ibx-path { flex: 1; font-size: 11px; color: #64748b; word-break: break-all; }
+.ibx-file {
+  margin: 8px 0 0;
+  padding: 8px 10px;
+  max-height: 260px;
+  overflow: auto;
+  background: #0a0f1c;
+  border: 1px solid #1e293b;
+  border-radius: 6px;
+  color: #9ca3af;
+  font-size: 11px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+}
+.ibx-more {
+  display: block;
+  width: calc(100% - 20px);
+  margin: 4px 0 2px 20px;
+  padding: 4px;
+  background: none;
+  border: 1px dashed #1e293b;
+  border-radius: 6px;
+  color: #64748b;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 11px;
+}
+.ibx-more:hover { color: #93c5fd; border-color: #2563eb55; }
+
 /* Dùng ở màn hình chi tiết task (TaskManager) — màn project đã chuyển sang .pd-* */
 /* ── Bộ thư mục & tài khoản git riêng từng agent dev ──────────────────────── */
 .aw-list { display: grid; gap: 12px; }
