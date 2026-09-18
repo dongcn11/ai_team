@@ -1,5 +1,5 @@
-from pydantic import BaseModel
-from typing import Optional, List, Dict, Any
+from pydantic import BaseModel, Field
+from typing import Optional, List, Dict, Any, Literal
 from datetime import datetime
 
 
@@ -127,6 +127,11 @@ class WorkflowStepJobOut(BaseModel):
     # Thư mục code của project — worker truyền cho CLI qua --add-dir
     add_dirs: List[str] = []
     agent_key: Optional[str] = None
+    # Tài khoản Claude người dùng chọn ở Settings + có cho worker tự chuyển khi hết
+    # quota không. Đọc lúc claim (không phải lúc tạo job) để đổi lựa chọn là bước
+    # KẾ TIẾP ăn ngay. Chỉ là TÊN — token nằm trên host, worker tự tra.
+    claude_account: Optional[str] = None
+    claude_auto_switch: bool = True
     status: str
     output: Optional[str]
     error: Optional[str]
@@ -140,6 +145,19 @@ class WorkflowStepJobOut(BaseModel):
     duration_ms: Optional[int] = None
 
     model_config = {"from_attributes": True}
+
+
+class ClaudeAccountState(BaseModel):
+    """Trạng thái 1 tài khoản Claude worker đang cầm — không có token."""
+    name: str = Field(max_length=100)
+    state: Literal["ready", "cooling", "error"]
+    until: Optional[str] = None    # ISO UTC, chỉ khi cooling
+    note: Optional[str] = Field(default=None, max_length=300)
+
+
+class WorkflowStepJobClaim(BaseModel):
+    """Body worker gửi khi hỏi việc. Worker cũ gửi `{}` → accounts None → giữ snapshot cũ."""
+    accounts: Optional[List[ClaudeAccountState]] = Field(default=None, max_length=50)
 
 
 class AgentQuestionOut(BaseModel):

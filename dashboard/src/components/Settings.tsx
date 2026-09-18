@@ -1,5 +1,6 @@
 import React, { useCallback, useEffect, useState } from "react";
 import { useSettings } from "../hooks/useSettings";
+import { useWorkerStatus, type ClaudeAccountState } from "../hooks/useWorkflows";
 
 const SETTING_KEYS = {
   aiProvider:    { key: "ai_provider",    label: "AI Provider",         type: "select", options: ["openai", "anthropic", "google", "local"], fallback: "openai" },
@@ -56,6 +57,7 @@ export default function Settings() {
 
   return (
     <div className="settings-page">
+      <div className="settings-stack">
       <div className="settings-card">
         <h2 className="settings-title">Team Settings</h2>
         <p className="settings-sub">Configure AI provider, model, and runtime options.</p>
@@ -78,6 +80,117 @@ export default function Settings() {
         )}
       </div>
 
+      <ClaudeAccountsCard
+        chosen={getValue("claude_account", "")}
+        autoSwitch={getValue("claude_auto_switch", "true") !== "false"}
+        saving={saving}
+        onChoose={name => saveSetting("claude_account", name)}
+        onAutoSwitch={on => saveSetting("claude_auto_switch", on ? "true" : "false")}
+      />
+      </div>
+    </div>
+  );
+}
+
+// ── Tài khoản Claude ──────────────────────────────────────────────────────────
+// Worker trên host cầm token của từng tài khoản Pro (config/claude_accounts.local.toml)
+// và báo tên + trạng thái lên qua heartbeat. Ở đây chỉ chọn TÊN — lưu Setting
+// `claude_account`; worker đọc lúc claim nên bước KẾ TIẾP dùng ngay, bước đang
+// chạy giữ nguyên. Không có worker/không có file → chỉ hướng dẫn, không lỗi.
+
+const ACC_STATE: Record<ClaudeAccountState["state"], { icon: string; label: string }> = {
+  ready:   { icon: "🟢", label: "sẵn sàng" },
+  cooling: { icon: "⏳", label: "hết quota, nghỉ tới" },
+  error:   { icon: "🔴", label: "lỗi" },
+};
+
+function fmtUntil(iso: string | null): string {
+  if (!iso) return "";
+  const d = new Date(iso);
+  if (isNaN(d.getTime())) return "";
+  const hm = d.toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+  const today = d.toDateString() === new Date().toDateString();
+  return today ? hm : `${hm} ${d.toLocaleDateString()}`;
+}
+
+function ClaudeAccountsCard({ chosen, autoSwitch, saving, onChoose, onAutoSwitch }: {
+  chosen: string;
+  autoSwitch: boolean;
+  saving: boolean;
+  onChoose: (name: string) => void;
+  onAutoSwitch: (on: boolean) => void;
+}) {
+  const worker = useWorkerStatus(true);
+  const online = worker?.online ?? false;
+  // Snapshot chỉ mới khi worker hỏi việc — đang chạy 1 bước dài thì nó im. Mốc
+  // "nghỉ tới" đã qua thì coi như sẵn sàng thay vì hiện giờ cũ.
+  const accounts = (worker?.accounts ?? []).map(a =>
+    a.state === "cooling" && a.until && Date.parse(a.until) < Date.now() ? { ...a, state: "ready" as const, until: null } : a);
+  // Đang chọn 1 tên không còn trong file (xoá/đổi tên) → nói rõ worker sẽ tự lấy tài khoản đầu tiên
+  const chosenMissing = chosen !== "" && !accounts.some(a => a.name === chosen);
+  const lastSeen = worker?.last_seen ? fmtUntil(worker.last_seen.endsWith("Z") ? worker.last_seen : worker.last_seen + "Z") : "";
+
+  return (
+    <div className="settings-card">
+      <h2 className="settings-title">Tài khoản Claude</h2>
+      <p className="settings-sub">
+        Bước workflow chạy headless dùng tài khoản nào. Đổi ở đây áp cho bước kế tiếp — không cần vào terminal.
+      </p>
+
+      {!online && (
+        <div className="claude-acc-hint">
+          ○ Worker chưa hỏi việc{worker?.silent_s != null ? ` ${worker.silent_s}s` : ""} — đang bận 1 bước, hoặc chưa chạy
+          (<code>python worker.py</code>). Danh sách bên dưới là lần báo gần nhất{lastSeen ? ` lúc ${lastSeen}` : ""}.
+        </div>
+      )}
+      {online && accounts.length === 0 && (
+        <div className="claude-acc-hint">
+          Worker chưa có tài khoản nào. Chép <code>config/claude_accounts.example.toml</code> thành{" "}
+          <code>config/claude_accounts.local.toml</code>, chạy <code>claude setup-token</code> cho từng tài khoản Pro
+          rồi dán token vào. Không cần khởi động lại worker. Chưa có file thì worker dùng đăng nhập trong <code>~/.claude</code> như cũ.
+        </div>
+      )}
+
+      {(accounts.length > 0 || chosen !== "") && (
+        <div className="claude-acc-list">
+          <label className={`claude-acc-row ${chosen === "" ? "chosen" : ""}`}>
+            <input type="radio" name="claude_account" checked={chosen === ""} disabled={saving}
+                   onChange={() => onChoose("")} />
+            <span className="claude-acc-name">Tự động</span>
+            <span className="claude-acc-state">tài khoản sẵn sàng đầu tiên theo thứ tự file</span>
+          </label>
+          {accounts.map(a => {
+            const st = ACC_STATE[a.state] ?? ACC_STATE.error;
+            return (
+              <label key={a.name} className={`claude-acc-row ${chosen === a.name ? "chosen" : ""}`}
+                     title={a.note ?? undefined}>
+                <input type="radio" name="claude_account" checked={chosen === a.name} disabled={saving}
+                       onChange={() => onChoose(a.name)} />
+                <span className="claude-acc-name">{a.name}</span>
+                <span className={`claude-acc-state ${a.state}`}>
+                  {st.icon} {st.label}{a.state === "cooling" ? ` ${fmtUntil(a.until)}` : ""}
+                  {a.state === "error" && a.note ? ` — ${a.note}` : ""}
+                </span>
+              </label>
+            );
+          })}
+        </div>
+      )}
+      {chosenMissing && (
+        <div className="claude-acc-hint warn">
+          Đang chọn “{chosen}” nhưng worker không báo có tài khoản này — worker sẽ dùng tài khoản sẵn sàng đầu tiên.
+          Chọn “Tự động” ở trên để bỏ.
+        </div>
+      )}
+
+      <label className="setting-checkbox-label claude-acc-auto">
+        <input type="checkbox" checked={autoSwitch} disabled={saving} onChange={e => onAutoSwitch(e.target.checked)} />
+        <span className="setting-checkbox-text">
+          Tự chuyển tài khoản khi hết quota
+          <span className="claude-acc-sub"> — chạy lại ngay bằng tài khoản kế tiếp nếu Claude chưa gọi tool nào (chưa đọc/sửa gì);
+          đã gọi rồi thì bước báo lỗi kèm tên tài khoản kế tiếp để bạn bấm chạy lại. Tắt: chỉ dùng đúng tài khoản đã chọn.</span>
+        </span>
+      </label>
     </div>
   );
 }

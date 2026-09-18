@@ -1,0 +1,26 @@
+# Tài khoản Claude Pro cho worker (bước workflow chạy `claude -p`)
+# ==================================================================
+# Chép file này thành  config/claude_accounts.local.toml  (đã gitignore) rồi điền token.
+#
+# Lấy token cho TỪNG tài khoản (làm 1 lần, cần trình duyệt):
+#     claude setup-token
+# → đăng nhập bằng tài khoản Pro đó, dán chuỗi sk-ant-oat01-... vào đây.
+#
+# Worker bơm token vào env CLAUDE_CODE_OAUTH_TOKEN khi spawn — ghi đè phiên đăng
+# nhập trong ~/.claude/.credentials.json, KHÔNG đụng vào file đó. Worker không
+# gửi token qua API (dashboard chỉ thấy tên + trạng thái) và che token nếu nó
+# lọt vào log. Nhưng token nằm trong env của tiến trình Claude — giống GH_TOKEN
+# của git — nên vẫn phải coi máy chạy worker là máy tin cậy.
+#
+# Thứ tự khai báo = thứ tự ưu tiên khi tự chuyển lúc hết quota.
+# Chọn tài khoản chủ động trên Dashboard → Settings → "Tài khoản Claude".
+# Sửa file này không cần khởi động lại worker; file lỗi cú pháp thì worker giữ
+# danh sách cũ và cảnh báo ở terminal.
+
+[[account]]
+name  = "pro-1"
+token = "sk-ant-oat01-..."
+
+[[account]]
+name  = "pro-2"
+token = "sk-ant-oat01-..."

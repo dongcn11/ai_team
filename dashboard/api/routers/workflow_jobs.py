@@ -26,8 +26,8 @@ from sqlalchemy import desc
 from sqlalchemy.orm import Session
 
 from database import get_db
-from models import WorkflowStepJob, WorkflowRun
-from schemas import (WorkflowStepJobOut, WorkflowStepJobComplete,
+from models import WorkflowStepJob, WorkflowRun, Setting
+from schemas import (WorkflowStepJobOut, WorkflowStepJobComplete, WorkflowStepJobClaim,
                      WorkflowStepJobProgress, WorkflowStepJobProgressOut)
 import worker_heartbeat
 
@@ -59,11 +59,25 @@ def worker_status():
     return worker_heartbeat.status()
 
 
+def _claude_prefs(db: Session) -> dict:
+    """Tài khoản Claude chọn ở Settings + cờ tự chuyển. Trống = worker tự lấy tài
+    khoản sẵn sàng đầu tiên trong file của nó."""
+    rows = {s.key: s.value for s in
+            db.query(Setting).filter(Setting.key.in_(["claude_account", "claude_auto_switch"])).all()}
+    return {
+        "claude_account":     (rows.get("claude_account") or "").strip() or None,
+        "claude_auto_switch": (rows.get("claude_auto_switch") or "true").strip().lower() != "false",
+    }
+
+
 @router.post("/claim", response_model=Optional[WorkflowStepJobOut])
-def claim_job(db: Session = Depends(get_db)):
+def claim_job(payload: Optional[WorkflowStepJobClaim] = None, db: Session = Depends(get_db)):
     """worker gọi đây. Trả job `queued` cũ nhất và đánh dấu `running`.
-    Trả null khi hàng đợi rỗng HOẶC đang có job chạy — 1 bước/lần, cố ý."""
-    worker_heartbeat.touch()
+    Trả null khi hàng đợi rỗng HOẶC đang có job chạy — 1 bước/lần, cố ý.
+    Body kèm snapshot tài khoản Claude của worker (xem worker_heartbeat)."""
+    worker_heartbeat.touch(
+        accounts=[a.model_dump() for a in payload.accounts]
+        if payload is not None and payload.accounts is not None else None)
     cutoff = datetime.utcnow() - _STUCK_AFTER
     stuck = (db.query(WorkflowStepJob)
                .filter(WorkflowStepJob.status == "running",
@@ -95,12 +109,16 @@ def claim_job(db: Session = Depends(get_db)):
         db.commit()
         return None
 
+    # Đọc lựa chọn tài khoản TRƯỚC khi commit: query này mà hỏng sau commit thì
+    # job đã 'running' mà worker không nhận được → kẹt hàng đợi tới _STUCK_AFTER.
+    prefs = _claude_prefs(db)
     job.status = "running"
     job.started_at = datetime.utcnow()
     job.progress = None
     db.commit()
     db.refresh(job)
-    return job
+    # Gắn lựa chọn tài khoản vào bản trả về, không đụng ORM (không phải cột).
+    return WorkflowStepJobOut.model_validate(job).model_copy(update=prefs)
 
 
 @router.post("/{job_id}/progress", response_model=WorkflowStepJobProgressOut)

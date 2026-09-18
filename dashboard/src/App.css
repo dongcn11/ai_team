@@ -1626,3 +1626,44 @@ body {
 .history-bar.done    { background: #22c55e; }
 .history-bar.failed  { background: #ef4444; }
 .history-bar.pending { background: #334155; }
+
+/* ── Settings › Tài khoản Claude ── */
+.settings-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+  width: 100%;
+  max-width: 560px;
+}
+.claude-acc-hint {
+  font-size: 12px;
+  color: #9ca3af;
+  line-height: 1.7;
+  background: #0b1220;
+  border: 1px solid #1e293b;
+  border-radius: 8px;
+  padding: 10px 14px;
+  margin-bottom: 12px;
+}
+.claude-acc-hint code { color: #e2e8f0; background: #1e293b; padding: 1px 5px; border-radius: 4px; }
+.claude-acc-hint.warn { color: #fbbf24; border-color: #78350f; background: #1c1917; }
+.claude-acc-list { display: flex; flex-direction: column; margin-bottom: 12px; }
+.claude-acc-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 8px;
+  border-bottom: 1px solid #1e293b;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 13px;
+}
+.claude-acc-row:hover  { background: #111a2e; }
+.claude-acc-row.chosen { background: #1e3a5f33; }
+.claude-acc-row input  { accent-color: #3b82f6; }
+.claude-acc-name  { color: #e2e8f0; font-weight: 500; min-width: 90px; }
+.claude-acc-state { color: #9ca3af; font-size: 12px; }
+.claude-acc-state.cooling { color: #fbbf24; }
+.claude-acc-state.error   { color: #f87171; }
+.claude-acc-auto  { padding-top: 6px; align-items: flex-start; }
+.claude-acc-sub   { color: #6b7280; font-size: 12px; }

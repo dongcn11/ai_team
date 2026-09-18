@@ -153,9 +153,25 @@ export function useStepJobs(runId: number | null, enabled: boolean) {
   return { jobs, refetch: fetchAll };
 }
 
+/** 1 tài khoản Claude worker đang cầm token — chỉ tên + trạng thái, không có token. */
+export interface ClaudeAccountState {
+  name: string;
+  state: "ready" | "cooling" | "error";
+  until: string | null;   // ISO UTC, chỉ khi cooling
+  note: string | null;
+}
+
+export interface WorkerStatus {
+  online: boolean;
+  silent_s: number | null;
+  last_seen?: string | null;   // ISO UTC lần worker hỏi việc gần nhất
+  /** Snapshot worker gửi kèm mỗi lần hỏi việc (xem worker_heartbeat.py). */
+  accounts?: ClaudeAccountState[];
+}
+
 /** Worker trên host có đang hỏi việc không — để UI nói rõ "chưa chạy worker.py". */
 export function useWorkerStatus(enabled: boolean) {
-  const [status, setStatus] = useState<{ online: boolean; silent_s: number | null } | null>(null);
+  const [status, setStatus] = useState<WorkerStatus | null>(null);
 
   useEffect(() => {
     if (!enabled) { setStatus(null); return; }
