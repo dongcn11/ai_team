@@ -33,28 +33,38 @@ _lock = Lock()
 _last_seen: Optional[datetime] = None
 # [{name, state: ready|cooling|error, until: iso|None, note: str|None}]
 _accounts: list[dict] = []
+# Trạng thái MCP lần chạy gần nhất, theo (dự án, server):
+# [{slug, server, status, at}]. Worker gửi kèm cùng nhịp tim — API chạy trong
+# container nên tự nó không thể biết server trên host có lên được không.
+_mcp: list[dict] = []
 
 
-def touch(accounts: Optional[list[dict]] = None) -> None:
+def touch(accounts: Optional[list[dict]] = None, mcp: Optional[list[dict]] = None) -> None:
     """Worker vừa hỏi việc. `accounts` = snapshot tài khoản Claude nếu worker gửi
-    (chỉ /workflow-jobs/claim gửi; /run-jobs/claim thì không → giữ bản cũ)."""
-    global _last_seen, _accounts
+    (chỉ /workflow-jobs/claim gửi; /run-jobs/claim thì không → giữ bản cũ).
+    `mcp` cũng vậy: None nghĩa là không có tin mới, giữ bản cũ."""
+    global _last_seen, _accounts, _mcp
     with _lock:
         _last_seen = datetime.utcnow()
         if accounts is not None:
             _accounts = accounts
+        if mcp is not None:
+            _mcp = mcp
 
 
 def status() -> dict:
     with _lock:
         seen = _last_seen
         accounts = list(_accounts)
+        mcp = list(_mcp)
     if seen is None:
-        return {"online": False, "last_seen": None, "silent_s": None, "accounts": accounts}
+        return {"online": False, "last_seen": None, "silent_s": None,
+                "accounts": accounts, "mcp": mcp}
     silent = (datetime.utcnow() - seen).total_seconds()
     return {
         "online": silent < _ONLINE_WINDOW.total_seconds(),
         "last_seen": seen.isoformat(),
         "silent_s": int(silent),
         "accounts": accounts,
+        "mcp": mcp,
     }

@@ -84,6 +84,8 @@ OPENCODE_ARGS  = shlex.split(os.getenv("OPENCODE_ARGS", "--dangerously-skip-perm
 # bị bỏ (xem _strip_output_flags) — không thì log sống câm.
 CLAUDE_ARGS    = shlex.split(os.getenv("CLAUDE_ARGS", "--permission-mode acceptEdits"))
 STEP_TIMEOUT_S = int(os.getenv("STEP_TIMEOUT_S", "1800"))
+# Hạn riêng cho việc khởi động MCP server, NGẮN HƠN hẳn hạn của cả bước.
+MCP_START_TIMEOUT_S = int(os.getenv("MCP_START_TIMEOUT_S", "20"))
 
 
 def _req(path: str, body: dict | None = None, method: str = "GET"):
@@ -197,7 +199,35 @@ def _result_text(content) -> str:
     return str(content or "")
 
 
+# Tool MCP có tác dụng GHI. Nhận diện theo tiền tố hành động trong tên tool — tên
+# tool do server đặt, nhưng quy ước create/append/insert/update/delete/move/share
+# thì gần như phổ quát. Bắt hụt thì chỉ mất một dòng nhật ký; bắt thừa thì thừa
+# một dòng — cả hai đều không nguy hiểm, nên chọn bắt rộng.
+# Động từ nằm BẤT KỲ đâu trong tên tool, không chỉ ở đầu: tên thật của server
+# Google là `sheets-append-values`, `docs-insert-text`, `slides-delete-slide`.
+_MCP_WRITE_RE = re.compile(
+    r"(^|[-_])(create|append|insert|add|update|write|upload|copy|move|delete|remove|share|"
+    r"replace|clear|duplicate|resolve|merge|unmerge|sort|format|resize)([-_]|$)", re.I)
+# Khoá trong input có khả năng là định danh của đối tượng bị ghi vào.
+_ID_KEY_RE = re.compile(r"(^|[-_])(id|ids)$|Id$|Ids$")
+
+
+def _mcp_target(inp: dict) -> str:
+    """Định danh đối tượng đích của một thao tác ghi, để lần ngược được khi khách
+    hỏi 'file này ở đâu ra'. Gom mọi khoá trông như id, cộng `name`/`title`."""
+    bits = []
+    for k, v in (inp or {}).items():
+        if isinstance(v, (str, int)) and (_ID_KEY_RE.search(str(k)) or k in ("name", "title")):
+            bits.append(f"{k}={v}")
+    return " ".join(bits[:4])
+
+
 def _describe_tool(name: str, inp: dict) -> str:
+    if name.startswith("mcp__") and _MCP_WRITE_RE.search(name.split("__", 2)[-1]):
+        # Mọi lần ghi để lại dấu vết, kèm định danh đích. Đây là thứ duy nhất cho
+        # phép đối chiếu với nội dung thật trên Drive khi có sự cố.
+        target = _mcp_target(inp) or _short(json.dumps(inp, ensure_ascii=False), 120)
+        return f"📝 {name}: {_short(target, 200)}"
     icon = _TOOL_ICON.get(name, "🧰")
     if name in ("Bash", "PowerShell"):
         detail = inp.get("command", "")
@@ -222,7 +252,16 @@ def _summarize_event(ev: dict) -> list[str]:
     và không cho biết thêm gì về tiến độ."""
     t = ev.get("type")
     if t == "system" and ev.get("subtype") == "init":
-        return [f"🚀 Claude bắt đầu · model {ev.get('model') or '?'}"]
+        lines = [f"🚀 Claude bắt đầu · model {ev.get('model') or '?'}"]
+        # Nguồn sự thật để đối chiếu bộ MCP thực tế với cấu hình đã khai: đây là
+        # CLI tự báo, không phải worker tự tin vào thứ mình vừa truyền vào.
+        tools = [x for x in (ev.get("tools") or []) if str(x).startswith("mcp__")]
+        for srv in (ev.get("mcp_servers") or []):
+            name = (srv or {}).get("name") or "?"
+            state = (srv or {}).get("status") or "?"
+            n = len([x for x in tools if str(x).startswith(f"mcp__{name}__")])
+            lines.append(f"🔌 MCP: {name} · {state}" + (f" · {n} tool" if n else ""))
+        return lines
     if t == "assistant":
         lines = []
         for block in (ev.get("message") or {}).get("content") or []:
@@ -349,8 +388,14 @@ def _metrics_from_result(ev: dict) -> dict:
     }
 
 
+class _McpStartTimeout(Exception):
+    """Server MCP không lên trong hạn riêng. Tách khỏi TimeoutExpired của cả bước:
+    chờ 20 giây rồi báo đúng bệnh hơn hẳn chờ 30 phút rồi báo 'quá giờ'."""
+
+
 def _run_streaming(cmd: list[str], env: dict, progress: _Progress, parse_json: bool,
-                   timeout: int, watch: "_StepWatch | None" = None) -> tuple[int, str, str, dict]:
+                   timeout: int, watch: "_StepWatch | None" = None,
+                   init_timeout: int | None = None) -> tuple[int, str, str, dict]:
     """Chạy CLI, đọc stdout từng dòng đẩy vào `progress`.
 
     Trả (exit code, kết quả cuối, stderr, số liệu). Với claude (parse_json) kết
@@ -401,7 +446,29 @@ def _run_streaming(cmd: list[str], env: dict, progress: _Progress, parse_json: b
     t_out.start()
     t_err.start()
     try:
-        proc.wait(timeout=timeout)
+        # Hạn riêng cho lúc khởi động server MCP: sự kiện `system/init` chưa tới
+        # trong ngần này giây thì server chết, không có lý do gì chờ tới hết
+        # STEP_TIMEOUT_S (1800s) rồi mới báo một câu "quá giờ" vô nghĩa.
+        started = time.time()
+        deadline = started + init_timeout if (init_timeout and watch is not None) else None
+        while True:
+            left = timeout - (time.time() - started)
+            if left <= 0:
+                raise subprocess.TimeoutExpired(cmd, timeout)
+            slice_s = left
+            if deadline and not watch.saw_init:
+                slice_s = min(left, max(0.2, deadline - time.time()))
+            try:
+                proc.wait(timeout=slice_s)
+                break
+            except subprocess.TimeoutExpired:
+                if deadline and not watch.saw_init and time.time() >= deadline:
+                    proc.kill()
+                    proc.wait()
+                    t_out.join(5)
+                    t_err.join(5)
+                    progress.flush()
+                    raise _McpStartTimeout(init_timeout)
     except subprocess.TimeoutExpired:
         proc.kill()
         proc.wait()
@@ -503,6 +570,348 @@ def _project_git_env(slug: str | None, agent_key: str | None = None) -> dict:
     }
 
 
+# ── MCP theo từng dự án ──────────────────────────────────────────────────────
+# Mỗi dự án khai bộ MCP server riêng trong clients/<slug>/mcp.json. Bước của dự
+# án nào chỉ thấy server của dự án đó — connector mức tài khoản bị cắt bằng
+# --strict-mcp-config. Vì sao không dùng connector claude.ai: nó gắn với TÀI
+# KHOẢN chứ không gắn với dự án, nên bật Drive là mọi khách đều thấy Drive, và
+# bộ tool còn đổi theo tài khoản đang tới lượt trong vòng xoay quota.
+#
+# File này KHÔNG chứa bí mật: credential khai bằng đường dẫn trong
+# settings.local.toml ([mcp.<server>]) và đi vào env của tiến trình con — MCP
+# server là con của Claude Code nên thừa kế env (đã kiểm trên CLI 2.1.273).
+# Nhờ vậy mcp.json commit lên git cũng không lộ gì.
+#
+# Đọc lại theo (mtime, size) như _Accounts; file hỏng thì GIỮ cấu hình cũ.
+
+# Tên server chui thẳng vào tên tool `mcp__<server>__<tool>` và vào --allowedTools.
+# Ký tự lạ làm hỏng lặng lẽ, nên chặn ngay từ lúc đọc.
+_MCP_NAME_RE = re.compile(r"^[a-z0-9_-]+$")
+
+
+class _McpServer:
+    __slots__ = ("name", "template", "profile", "declared_write_scope")
+
+    def __init__(self, name: str, template: str, profile: str, declared_write_scope: dict):
+        self.name = name
+        self.template = template
+        self.profile = profile
+        # Vùng ghi KHAI BÁO — để hiển thị và để trả lời khách, KHÔNG phải hàng rào.
+        # Hàng rào thật là phạm vi chia sẻ phía Google. Đừng viết code bảo vệ dựa
+        # vào trường này.
+        self.declared_write_scope = declared_write_scope
+
+
+class _McpConfig:
+    """Cấu hình MCP của từng dự án, cache theo (mtime, size) của từng file.
+
+    servers(slug) trả [] khi: không có file · JSON hỏng (lần đầu) · `enabled`
+    gốc = false · không server nào bật. [] nghĩa là bước chạy y hệt trước khi
+    có tính năng này — không thêm một tham số CLI nào."""
+
+    def __init__(self, root: Path):
+        self.root = root
+        self._stamps: dict[str, tuple[float, int] | None] = {}
+        self._cache:  dict[str, list[_McpServer]] = {}
+        self._seen_secrets: set[str] = set()
+
+    def path(self, slug: str) -> Path:
+        return self.root / "clients" / slug / "mcp.json"
+
+    def servers(self, slug: str | None) -> list[_McpServer]:
+        if not slug:
+            return []
+        path = self.path(slug)
+        try:
+            st = path.stat()
+        except OSError:
+            self._stamps.pop(slug, None)
+            self._cache.pop(slug, None)
+            return []
+        stamp = (st.st_mtime, st.st_size)
+        if self._stamps.get(slug) != stamp:
+            self._stamps[slug] = stamp     # ghi trước: file hỏng cũng chỉ cảnh báo 1 lần
+            self._cache[slug] = self._parse(path, slug)
+        return self._cache.get(slug, [])
+
+    def _parse(self, path: Path, slug: str) -> list[_McpServer]:
+        keep = self._cache.get(slug, [])
+        try:
+            with open(path, "rb") as fh:
+                raw = json.load(fh)
+        except Exception as e:
+            print(f"[worker] ⚠️  clients/{slug}/mcp.json lỗi cú pháp, GIỮ cấu hình cũ "
+                  f"({len(keep)} server): {e}")
+            return keep
+        if not isinstance(raw, dict):
+            print(f"[worker] ⚠️  clients/{slug}/mcp.json: gốc phải là object, GIỮ cấu hình cũ")
+            return keep
+        if raw.get("enabled") is False:        # công tắc cấp dự án
+            return []
+        servers = raw.get("servers")
+        if servers is None:
+            return []
+        if not isinstance(servers, dict):
+            print(f"[worker] ⚠️  clients/{slug}/mcp.json: `servers` phải là object, GIỮ cấu hình cũ")
+            return keep
+        out: list[_McpServer] = []
+        for name, row in servers.items():
+            if not isinstance(row, dict) or row.get("enabled") is False:
+                continue
+            name = str(name).strip()
+            if not _MCP_NAME_RE.match(name):
+                print(f"[worker] ⚠️  clients/{slug}/mcp.json: tên server '{name}' chỉ được dùng "
+                      f"a-z 0-9 _ - (nó thành tên tool mcp__<server>__<tool>) — bỏ qua")
+                continue
+            template = str(row.get("template") or "").strip()
+            if not template:
+                print(f"[worker] ⚠️  clients/{slug}/mcp.json: server '{name}' thiếu `template` — bỏ qua")
+                continue
+            scope = row.get("declared_write_scope")
+            out.append(_McpServer(
+                name=name,
+                template=template,
+                profile=str(row.get("profile") or "read-only").strip(),
+                declared_write_scope=scope if isinstance(scope, dict) else {},
+            ))
+        return out
+
+    # ── Credential: đường dẫn, không phải giá trị ────────────────────────────
+    # settings.local.toml (đã gitignore) khai ĐƯỜNG DẪN tới file credential:
+    #
+    #     [mcp.gdrive]
+    #     credentials_path = "C:/secure/udom-service-account.json"
+    #
+    # Nội dung file đó không bao giờ đi vào tiến trình này — worker chỉ chuyền
+    # đường dẫn qua env cho MCP server tự đọc. Đọc cả settings.toml lẫn
+    # settings.local.toml, local thắng — y như _project_git_env.
+
+    def secrets(self, slug: str, servers: list) -> tuple[dict, list[str]]:
+        """Trả ({ten_server: duong_dan}, [lỗi cần nói cho người vận hành]).
+
+        Mỗi lỗi nêu ĐỦ HAI VẾ: thiếu cái gì, và sửa ở file/khoá nào — bước fail
+        vì thiếu credential phải sửa được mà không cần đọc log CLI thô."""
+        cfg = {}
+        for name in ("settings.toml", "settings.local.toml"):
+            f = self.root / "clients" / slug / name
+            if not f.exists():
+                continue
+            try:
+                with open(f, "rb") as fh:
+                    cfg = {**cfg, **(tomllib.load(fh).get("mcp") or {})}
+            except Exception as e:
+                print(f"[worker] ⚠️  Không đọc được [mcp] trong {f}: {e}")
+        out: dict[str, str] = {}
+        problems: list[str] = []
+        where = f"clients/{slug}/settings.local.toml"
+        for s in servers:
+            row = cfg.get(s.name)
+            if not isinstance(row, dict):
+                problems.append(f"Server '{s.name}' chưa có credential. Thêm mục "
+                                f"[mcp.{s.name}] với khoá `credentials_path` vào {where}.")
+                continue
+            path = str(row.get("credentials_path") or "").strip()
+            if not path:
+                problems.append(f"Server '{s.name}' thiếu `credentials_path` trong "
+                                f"[mcp.{s.name}] của {where}.")
+                continue
+            if not Path(path).exists():
+                problems.append(f"Không thấy file credential của server '{s.name}': {path} "
+                                f"(khai trong [mcp.{s.name}] của {where}).")
+                continue
+            out[s.name] = path
+            self._seen_secrets.add(path)     # để _redact che, xem AR13
+        return out, problems
+
+    def secret_values(self) -> list[str]:
+        """Mọi đường dẫn credential đã từng thấy — nguồn cho _redact. Đường dẫn
+        không phải bí mật như token, nhưng nó lộ bố cục máy chủ nên vẫn che."""
+        return [v for v in self._seen_secrets if v]
+
+
+MCP_TEMPLATES_FILE = Path(os.getenv("MCP_TEMPLATES_FILE",
+                                    str(ROOT / "config" / "mcp_templates.toml")))
+
+
+class _McpTemplates:
+    """Danh sách mẫu server + hồ sơ quyền, đọc lại theo (mtime, size).
+
+    Chỉ chạy server có trong file này. Cho khai lệnh tự do từ dashboard nghĩa là
+    cho tạo tiến trình tuỳ ý trên máy vận hành qua HTTP — thêm server mới phải
+    sửa file trên host, có chủ đích."""
+
+    def __init__(self, path: Path):
+        self.path = path
+        self._stamp: tuple[float, int] | None = None
+        self._items: dict = {}
+
+    def _load(self) -> None:
+        try:
+            st = self.path.stat()
+        except OSError:
+            self._items, self._stamp = {}, None
+            return
+        stamp = (st.st_mtime, st.st_size)
+        if stamp == self._stamp:
+            return
+        self._stamp = stamp            # ghi trước: file hỏng cũng chỉ cảnh báo 1 lần
+        try:
+            with open(self.path, "rb") as fh:
+                raw = tomllib.load(fh).get("template") or {}
+        except Exception as e:
+            print(f"[worker] ⚠️  {self.path.name} lỗi cú pháp, GIỮ danh sách mẫu cũ "
+                  f"({len(self._items)} mẫu): {e}")
+            return
+        self._items = raw if isinstance(raw, dict) else {}
+
+    def get(self, name: str) -> dict | None:
+        self._load()
+        row = self._items.get(name)
+        return row if isinstance(row, dict) else None
+
+    def names(self) -> list[str]:
+        self._load()
+        return sorted(self._items)
+
+    def tools(self, template: str, profile: str) -> list[str] | None:
+        row = self.get(template)
+        if not row:
+            return None
+        profiles = row.get("profiles")
+        if not isinstance(profiles, dict):
+            return None
+        got = profiles.get(profile)
+        return [str(t) for t in got] if isinstance(got, list) else None
+
+
+MCP = _McpConfig(ROOT)
+MCP_TEMPLATES = _McpTemplates(MCP_TEMPLATES_FILE)
+
+
+MCP_MIN_CLI = (2, 1, 273)     # bản đầu tiên đã kiểm chứng có --mcp-config + --strict-mcp-config
+_CLI_VERSION: tuple | None | str = "chua-hoi"      # cache: hỏi 1 lần cho cả đời worker
+
+
+def _claude_version() -> tuple | None:
+    """(major, minor, patch) của CLI, None nếu không đọc được. Hỏi đúng một lần."""
+    global _CLI_VERSION
+    if _CLI_VERSION != "chua-hoi":
+        return _CLI_VERSION
+    _CLI_VERSION = None
+    binary = _resolve_claude()
+    if binary:
+        try:
+            out = subprocess.run([binary, "--version"], capture_output=True, text=True,
+                                 timeout=30, encoding="utf-8", errors="replace").stdout or ""
+            m = re.search(r"(\d+)\.(\d+)\.(\d+)", out)
+            if m:
+                _CLI_VERSION = tuple(int(x) for x in m.groups())
+        except Exception as e:
+            print(f"[worker] ⚠️  Không đọc được phiên bản Claude CLI: {e}")
+    return _CLI_VERSION
+
+
+def _mcp_plan(slug: str | None) -> tuple[list[str], dict, list[str]]:
+    """Dịch cấu hình của một dự án thành thứ truyền cho CLI.
+
+    Trả (tham số CLI, env cần trộn thêm, danh sách lỗi).
+
+    Không có cấu hình → ([], {}, []) và bước chạy y HỆT trước khi có tính năng
+    này: đây là cổng duy nhất, mọi tham số mới nằm sau nó.
+
+    Có lỗi → trả luôn lỗi, KHÔNG trả tham số. Chạy nửa vời với một server thiếu
+    credential là cách chắc chắn nhất để sinh ra lỗi khó chẩn đoán."""
+    servers = MCP.servers(slug)
+    if not servers:
+        return [], {}, []
+
+    # CLI quá cũ thì KHÔNG âm thầm bỏ cờ rồi chạy tiếp: bước sẽ chạy không có tool
+    # nào, agent báo "không tìm thấy tài liệu", và người vận hành đi tìm lỗi ở
+    # Google trong khi thủ phạm là phiên bản CLI.
+    ver = _claude_version()
+    if ver is not None and ver < MCP_MIN_CLI:
+        got = ".".join(str(x) for x in ver)
+        need = ".".join(str(x) for x in MCP_MIN_CLI)
+        return [], {}, [f"Claude Code CLI {got} quá cũ cho MCP (cần >= {need}). "
+                        f"Nâng cấp CLI, hoặc tắt MCP của dự án bằng `enabled = false` ở gốc "
+                        f"clients/{slug}/mcp.json."]
+
+    # Hỏi mẫu TRƯỚC: chỉ server có `credential_env` mới cần credential. Mẫu
+    # filesystem (dùng để nghiệm thu) không cần gì cả — đòi credential của nó là
+    # chặn nhầm. Thứ tự này cũng khiến lỗi template/hồ sơ hiện ra trước lỗi
+    # credential, đúng thứ tự người vận hành sẽ phải sửa.
+    problems: list[str] = []
+    native: dict = {}
+    allowed: list[str] = []
+    env: dict = {}
+    needs_cred = []
+
+    for s in servers:
+        tpl = MCP_TEMPLATES.get(s.template)
+        if tpl and str(tpl.get("credential_env") or "").strip():
+            needs_cred.append(s)
+    secret_paths, cred_problems = MCP.secrets(slug, needs_cred) if needs_cred else ({}, [])
+
+    for s in servers:
+        tpl = MCP_TEMPLATES.get(s.template)
+        if not tpl:
+            problems.append(f"Server '{s.name}' khai template '{s.template}' không có trong "
+                            f"{MCP_TEMPLATES_FILE.name}. Mẫu hợp lệ: {', '.join(MCP_TEMPLATES.names()) or '(trống)'}.")
+            continue
+        tools = MCP_TEMPLATES.tools(s.template, s.profile)
+        if tools is None:
+            profiles = (tpl.get("profiles") or {})
+            problems.append(f"Server '{s.name}' khai hồ sơ quyền '{s.profile}' mà template "
+                            f"'{s.template}' không có. Hồ sơ hợp lệ: "
+                            f"{', '.join(sorted(profiles)) or '(trống)'}.")
+            continue
+
+        # Rào chuỗi cung ứng, cưỡng chế bằng mã chứ không bằng lời dặn trong
+        # comment: `npx -y` tải bản mới nhất tại thời điểm spawn và chạy nó trên
+        # máy vận hành. Áp cho MỌI mẫu, kể cả mẫu dev không có credential — server
+        # local vẫn thấy cả thư mục làm việc của bước.
+        if str(tpl.get("command") or "") == "npx" or \
+                any(str(a) in ("-y", "--yes") for a in (tpl.get("args") or [])):
+            problems.append(f"Template '{s.template}' dùng `npx -y` — không cho phép. Cài sẵn server "
+                            f"ở phiên bản đã ghim rồi trỏ `command`/`args` vào đó trong "
+                            f"{MCP_TEMPLATES_FILE.name}.")
+            continue
+
+        args = [str(a) for a in (tpl.get("args") or [])]
+        # Đường dẫn tương đối trong mẫu quy về gốc repo — cwd của tiến trình con
+        # là gốc repo, nhưng ghi tuyệt đối thì không phụ thuộc chuyện đó nữa.
+        args = [str(ROOT / a) if a.endswith(".js") and not Path(a).is_absolute() else a
+                for a in args]
+        # Mẫu nào nhận thư mục qua tham số (server filesystem) thì lấy từ vùng khai báo.
+        scope_key = str(tpl.get("args_from_scope") or "").strip()
+        if scope_key:
+            args += [str(v) for v in (s.declared_write_scope.get(scope_key) or [])]
+
+        cred_env = str(tpl.get("credential_env") or "").strip()
+        if cred_env:
+            path = secret_paths.get(s.name)
+            if not path:
+                continue           # đã có lỗi từ MCP.secrets(), không báo trùng
+            env[cred_env] = path
+
+        native[s.name] = {"command": str(tpl.get("command") or ""), "args": args}
+        allowed += [f"mcp__{s.name}__{t}" for t in tools]
+
+    problems += cred_problems
+    if problems:
+        return [], {}, problems
+    if not native:
+        return [], {}, []
+
+    # Chuỗi JSON inline thay vì file tạm: cấu hình không chứa bí mật (credential
+    # đi đường env) nên dòng lệnh sạch, và không có vòng đời file tạm để quản khi
+    # worker chết giữa chừng. Đã kiểm chứng CLI nhận chuỗi inline.
+    cmd = ["--mcp-config", json.dumps({"mcpServers": native}, ensure_ascii=False),
+           "--strict-mcp-config",
+           "--allowedTools", ",".join(allowed)]
+    return cmd, env, []
+
+
 # ── Tài khoản Claude ─────────────────────────────────────────────────────────
 # Mỗi tài khoản Pro có trần quota 5 giờ. Trước đây hết trần là phải ra terminal
 # `claude auth login` sang tài khoản khác rồi xác nhận trên trình duyệt — mỗi
@@ -529,6 +938,11 @@ _RATE_LIMIT_RE = re.compile(r"usage limit|rate.?limit|hit your limit|out of extr
 _AUTH_FAIL_RE  = re.compile(r"authentication[_ ](error|failed|token)|invalid api key"
                             r"|invalid.{0,30}(oauth|token|credentials)|oauth.{0,20}(expired|revoked|invalid)"
                             r"|not logged in|please run /login|(http|status|error)\W{0,3}401\b", re.I)
+# Tool MCP bị từ chối vì chưa nằm trong --allowedTools. Câu CLI thật sự in ra:
+# "Claude requested permissions to use mcp__x__y, but you haven't granted it yet."
+# Phải tách khỏi "server trả lỗi": một cái sửa bằng hồ sơ quyền, cái kia sửa ở
+# tận dịch vụ phía sau — chẩn đoán nhầm là mất cả buổi tối.
+_MCP_DENIED_RE = re.compile(r"requested permissions|haven'?t granted", re.I)
 
 
 def _epoch(v) -> float | None:
@@ -712,10 +1126,16 @@ ACCOUNTS = _Accounts(CLAUDE_ACCOUNTS_FILE)
 
 def _redact(text: str) -> str:
     """Token nằm trong env của tiến trình con — Claude có thể `echo` nó ra và dòng
-    đó sẽ lên log/DB/UI. Che mọi token đã biết trước khi gửi bất cứ gì lên API."""
+    đó sẽ lên log/DB/UI. Che mọi token đã biết trước khi gửi bất cứ gì lên API.
+
+    ĐÂY LÀ ĐIỂM CHE DUY NHẤT. Có bí mật mới thì thêm nguồn vào đây, đừng dựng
+    điểm che thứ hai — hai điểm nghĩa là sẽ có một điểm bị quên."""
     for tok in ACCOUNTS.tokens():
         if tok and tok in text:
             text = text.replace(tok, "***")
+    for path in MCP.secret_values():
+        if path in text:
+            text = text.replace(path, "***")
     return text
 
 
@@ -730,13 +1150,47 @@ class _StepWatch:
         self.saw_result  = False        # CLI có phát sự kiện result không (chết sớm thì không)
         self.resets_at: float | None = None
         self.limit_type: str | None = None
+        # ── Quan sát MCP ─────────────────────────────────────────────────────
+        self.saw_init    = False        # đã thấy system/init chưa (mốc khởi động server)
+        self.mcp_servers: list[tuple[str, str]] = []   # [(tên, trạng thái)] từ init
+        self.mcp_denied: list[str] = []      # tool bị từ chối vì chưa cấp quyền
+        self.mcp_errors: list[str] = []      # tool MCP trả lỗi (không phải chuyện quyền)
+        # Server MCP trả lỗi xác thực (Google thu quyền service account chẳng hạn).
+        # Giữ riêng để KHÔNG quy thành "token Claude hỏng" — xem feed_text.
+        self.mcp_auth_error = False
+        self._tool_names: dict[str, str] = {}   # tool_use_id → tên tool
 
     def feed(self, ev: dict) -> None:
         t = ev.get("type")
+        if t == "system" and ev.get("subtype") == "init":
+            self.saw_init = True
+            for srv in (ev.get("mcp_servers") or []):
+                if isinstance(srv, dict):
+                    self.mcp_servers.append((str(srv.get("name") or "?"),
+                                             str(srv.get("status") or "?")))
         if t == "assistant":
             for block in (ev.get("message") or {}).get("content") or []:
                 if isinstance(block, dict) and block.get("type") == "tool_use":
                     self.tool_used = True
+                    if block.get("id"):
+                        self._tool_names[str(block["id"])] = str(block.get("name") or "")
+        elif t == "user":
+            # tool_result không mang tên tool, chỉ mang tool_use_id — tra ngược để
+            # biết lỗi này của MCP hay của tool nội bộ.
+            for block in (ev.get("message") or {}).get("content") or []:
+                if not (isinstance(block, dict) and block.get("type") == "tool_result"
+                        and block.get("is_error")):
+                    continue
+                name = self._tool_names.get(str(block.get("tool_use_id") or ""), "")
+                if not name.startswith("mcp__"):
+                    continue
+                text = _result_text(block.get("content"))
+                if _MCP_DENIED_RE.search(text):
+                    self.mcp_denied.append(name)
+                else:
+                    self.mcp_errors.append(f"{name}: {_short(text, 160)}")
+                    if _AUTH_FAIL_RE.search(text):
+                        self.mcp_auth_error = True
         elif t == "rate_limit_event":
             info = ev.get("rate_limit_info") or {}
             if info.get("status") == "rejected":
@@ -766,6 +1220,12 @@ class _StepWatch:
             if m and self.resets_at is None:
                 self.resets_at = _epoch(int(m.group(1)))
         elif _AUTH_FAIL_RE.search(text) and not (from_stderr and self.saw_result):
+            # Server MCP đã trả lỗi xác thực trước đó → chữ "authentication failed"
+            # trong result là Claude đang THUẬT LẠI lỗi của Google, không phải token
+            # của nó hỏng. Kết luận nhầm ở đây làm tài khoản Pro bị cho nghỉ oan và
+            # bị loại khỏi vòng xoay. stderr trước khi có result vẫn tin như cũ.
+            if self.mcp_auth_error and not from_stderr:
+                return
             self.auth_failed = True
 
     def why(self) -> str:
@@ -773,12 +1233,49 @@ class _StepWatch:
             return "token lỗi"
         return f"hết quota{_LIMIT_LABEL.get(self.limit_type or '', '')}{_reset_txt(self.resets_at)}"
 
+    def mcp_problem(self) -> str | None:
+        """Bốn nguyên nhân hỏng liên quan MCP → thông báo hai vế: nguyên nhân +
+        chỗ sửa. None nghĩa là MCP không phải thủ phạm."""
+        if self.mcp_denied:
+            names = ", ".join(sorted(set(self.mcp_denied)))
+            return (f"Tool {names} chưa được cấp quyền. Hồ sơ quyền của server không có tool này — "
+                    f"đổi `profile` trong clients/<slug>/mcp.json, hoặc thêm tool vào hồ sơ trong "
+                    f"config/mcp_templates.toml.")
+        dead = [n for n, st in self.mcp_servers if st != "connected"]
+        if dead:
+            return (f"Server MCP không khởi động được: {', '.join(dead)}. Kiểm tra `command` và `args` "
+                    f"của template trong config/mcp_templates.toml, và xem server đã được cài chưa.")
+        if self.mcp_errors:
+            return (f"Server MCP trả lỗi: {self.mcp_errors[0]}. Đây là lỗi của server hoặc của dịch vụ "
+                    f"phía sau nó, không phải lỗi tài khoản Claude.")
+        return None
+
+
+
+# Kết quả nối MCP của lần chạy gần nhất, theo (dự án, server). API chạy trong
+# container nên tự nó không biết được server trên host có lên nổi không — chỉ
+# worker biết, và nó gửi kèm nhịp tim sẵn có thay vì mở endpoint mới.
+MCP_SEEN: dict[tuple[str, str], dict] = {}
+
+
+def _mcp_note(slug: str | None, servers: list[tuple[str, str]]) -> None:
+    if not slug:
+        return
+    now = _iso(time.time())
+    for name, state in servers:
+        MCP_SEEN[(slug, name)] = {"slug": slug, "server": name, "status": state, "at": now}
+
+
+def _mcp_snapshot() -> list[dict]:
+    return list(MCP_SEEN.values())[:200]
 
 
 def _claim_step() -> dict | None:
     """Job bước workflow (chạy bằng Claude headless). Server giữ tuần tự.
-    Gửi kèm trạng thái tài khoản Claude — dashboard hiện ở Settings."""
-    return _req("/api/workflow-jobs/claim", body={"accounts": ACCOUNTS.snapshot()}, method="POST")
+    Gửi kèm trạng thái tài khoản Claude và trạng thái MCP — dashboard hiện lại."""
+    return _req("/api/workflow-jobs/claim",
+                body={"accounts": ACCOUNTS.snapshot(), "mcp": _mcp_snapshot()},
+                method="POST")
 
 
 def _complete_step(job_id: int, status: str, output: str = "", error: str = "",
@@ -802,6 +1299,7 @@ def _run_step_job(job: dict):
     label  = job.get("node_label") or job["node_id"]
     tool  = (job.get("tool") or "claude").lower()
     model = job.get("model")
+    mcp_env: dict = {}          # opencode không có MCP ở đây; nhánh claude điền
 
     if tool == "opencode":
         # Node chon 1 agent cua pipeline -> chay dung tool/model cua agent do,
@@ -842,6 +1340,18 @@ def _run_step_job(job: dict):
         for d in _add_dirs(job):
             cmd += ["--add-dir", d]
 
+        # ── Cổng DUY NHẤT của MCP ────────────────────────────────────────────
+        # Dự án không khai MCP → _mcp_plan trả rỗng → lệnh không đổi một chữ so
+        # với trước khi có tính năng này. Mọi tham số mới nằm sau cổng này, không
+        # rải if khắp nơi: một cổng thì kiểm được bằng một test.
+        mcp_cmd, mcp_env, mcp_problems = _mcp_plan(job.get("client_folder"))
+        if mcp_problems:
+            msg = " ".join(mcp_problems)
+            print(f"[worker] ❌ Step job #{job_id}: cấu hình MCP chưa chạy được — {msg}")
+            _complete_step(job_id, "failed", error=msg)
+            return
+        cmd += mcp_cmd
+
     print(f"\n[worker] 🤖 Step job #{job_id} — {label} (run #{job['run_id']})")
     git_env = _project_git_env(job.get("client_folder"), job.get("agent_key"))
 
@@ -872,14 +1382,26 @@ def _run_step_job(job: dict):
         return
     tried = 0
     while True:
-        env = {**os.environ, **git_env, **(account.env() if account else {})}
+        env = {**os.environ, **git_env, **mcp_env, **(account.env() if account else {})}
         if account:
             progress.add(f"🔑 Tài khoản Claude: {account.name}")
         watch = _StepWatch()
         try:
             code, out, err, metrics = _run_streaming(cmd, env, progress,
                                                      parse_json=(tool != "opencode"),
-                                                     timeout=STEP_TIMEOUT_S, watch=watch)
+                                                     timeout=STEP_TIMEOUT_S, watch=watch,
+                                                     init_timeout=MCP_START_TIMEOUT_S if mcp_cmd else None)
+        except _McpStartTimeout as e:
+            _mcp_note(job.get("client_folder"),
+                      [(s.name, "start-timeout") for s in MCP.servers(job.get("client_folder"))])
+            names = ", ".join(s.name for s in MCP.servers(job.get("client_folder"))) or "?"
+            msg = (f"Server MCP ({names}) không khởi động được trong {e.args[0]} giây. "
+                   f"Kiểm tra `command` và `args` của template trong config/mcp_templates.toml, "
+                   f"và xem server đã được cài chưa.")
+            progress.add(f"❌ {msg}")
+            print(f"[worker] ❌ Step job #{job_id}: {msg}")
+            _complete_step(job_id, "failed", error=msg)
+            return
         except (FileNotFoundError, OSError) as e:
             msg = (f"Không chạy được '{binary}': {e}. Cài CLI đó rồi đăng nhập, "
                    f"hoặc đặt CLAUDE_BIN/OPENCODE_BIN trỏ thẳng tới file.")
@@ -897,6 +1419,7 @@ def _run_step_job(job: dict):
             return
 
         # opencode thoát 0 cả khi lỗi nặng — nhận diện qua stderr, giống ai_team/runner.py
+        _mcp_note(job.get("client_folder"), watch.mcp_servers)
         failed = code != 0 or (tool == "opencode" and "Error:" in err and not out)
         if failed:
             watch.feed_text(err, from_stderr=True)
@@ -913,9 +1436,11 @@ def _run_step_job(job: dict):
             return
 
         if not (account and (watch.limit_hit or watch.auth_failed)):
+            # MCP là thủ phạm thì nói thẳng nguyên nhân và chỗ sửa, đừng ném ra
+            # exit code để người vận hành tự đoán lúc 11 giờ đêm.
+            why = watch.mcp_problem() or err or f"{tool} exit code {code}"
             print(f"[worker] ❌ Step job #{job_id} thất bại (exit {code})")
-            _complete_step(job_id, "failed", output=out,
-                           error=err or f"{tool} exit code {code}", metrics=metrics)
+            _complete_step(job_id, "failed", output=out, error=why, metrics=metrics)
             return
 
         # Tài khoản này chết vì quota/token. Còn tài khoản khác và Claude CHƯA gọi

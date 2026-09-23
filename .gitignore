@@ -17,3 +17,6 @@ clients/*
 !clients/sample_project/
 clients/sample_project/settings.local.toml
 clients/sample_project/_tasks/
+
+# MCP server cai san (ghim phien ban trong config/mcp_templates.toml)
+vendor/mcp/

@@ -1,0 +1,110 @@
+# Mẫu MCP server và hồ sơ quyền
+# ==============================
+# Dự án khai `template` + `profile` trong clients/<slug>/mcp.json; file này dịch
+# chúng thành lệnh chạy và thành danh sách tool cho --allowedTools.
+#
+# VÌ SAO CHỈ CHẠY SERVER TRONG DANH SÁCH NÀY:
+# Một MCP server là mã của bên thứ ba chạy trên máy vận hành, với quyền vào thư
+# mục dự án và credential của khách. Cho phép khai lệnh tự do từ dashboard nghĩa
+# là cho phép tạo tiến trình tuỳ ý trên máy bạn qua HTTP. Muốn thêm server mới
+# thì sửa file này trên host — có chủ đích, không phải vài cú click.
+#
+# VÌ SAO KHÔNG DÙNG `npx -y`:
+# npx -y tải bản MỚI NHẤT tại thời điểm spawn. Cài sẵn, ghim phiên bản, trỏ
+# thẳng vào file. Ghi `version` lại để tái lập được.
+#
+# HỒ SƠ QUYỀN:
+# Tên tool trong `profiles` được ghép thành mcp__<ten-server>__<ten-tool> rồi
+# truyền cho --allowedTools. Đã kiểm chứng: cấp lẻ từng tool thì tool KHÔNG nằm
+# trong danh sách bị từ chối thật sự (không chỉ báo lỗi) — đây là cách FR21
+# "không ghi đè, không xoá" được cưỡng chế.
+#
+# Nguyên tắc: hồ sơ mặc định khi quên khai là `read-only`, không phải ngược lại.
+
+
+# ── Dùng cho phát triển và nghiệm thu, không cắm vào dự án khách ─────────────
+# Server vô hại để chạy thử toàn bộ đường dây mà không cần Google và không cần
+# credential. Lát 1A nghiệm thu bằng chính nó.
+[template.filesystem]
+# Cài một lần, ghim phiên bản:
+#   npm i --prefix vendor/mcp/filesystem @modelcontextprotocol/server-filesystem@<ver>
+# KHÔNG dùng `npx -y` kể cả cho mẫu dev. Server local vẫn là mã bên thứ ba chạy
+# trên máy vận hành, và vì Claude Code gửi thư mục làm việc xuống qua roots, nó
+# thấy cả gốc repo — không có credential không có nghĩa là vô hại.
+command  = "node"
+args     = ["vendor/mcp/filesystem/node_modules/@modelcontextprotocol/server-filesystem/dist/index.js"]
+# Server này nhận thư mục qua tham số chứ không qua env.
+# ⚠️ ĐÃ KIỂM CHỨNG: tham số này KHÔNG giới hạn được gì. Claude Code gửi thư mục
+# làm việc của phiên (cwd + --add-dir) xuống server qua giao thức roots, và
+# server honor roots thay vì argv. Phạm vi thật của server local = thư mục làm
+# việc của bước. Giữ tham số vì server vẫn đòi nó, nhưng đừng coi là hàng rào.
+args_from_scope = "paths"
+credential_env  = ""
+version  = "@modelcontextprotocol/server-filesystem@2026.8.31 — cài 2026-09-22"
+
+[template.filesystem.profiles]
+read-only   = ["read_text_file", "read_multiple_files", "list_directory", "search_files",
+               "get_file_info", "directory_tree", "list_allowed_directories"]
+read-create = ["read_text_file", "read_multiple_files", "list_directory", "search_files",
+               "get_file_info", "directory_tree", "list_allowed_directories",
+               "write_file", "create_directory"]
+read-write  = ["read_text_file", "read_multiple_files", "list_directory", "search_files",
+               "get_file_info", "directory_tree", "list_allowed_directories",
+               "write_file", "create_directory", "edit_file", "move_file"]
+
+
+# ── Google Workspace: Drive / Docs / Sheets ─────────────────────────────────
+# Server: @us-all/google-drive-mcp, cài sẵn tại vendor/mcp/google-drive-mcp/.
+# Xác thực bằng service account — KHÔNG đặt GOOGLE_IMPERSONATE_USER, vì đó là
+# đường domain-wide delegation mà kiến trúc đã loại bỏ (AD7): service account
+# thường chỉ cần khách chia sẻ thư mục cho email của nó, không cần admin bật gì.
+#
+# Ghi phải vào SHARED DRIVE. Service account không có hạn mức lưu trữ và không
+# sở hữu được file, nên ghi vào My Drive của khách sẽ hỏng với
+# storageQuotaExceeded dù đã cấp quyền Editor.
+#
+# ✅ ĐÃ ĐỐI CHIẾU với bản cài thật (2026-09-22): server cung cấp 100 tool, đọc ra
+# từ sự kiện `system/init`. Danh sách dưới đây là tên THẬT, không phải đoán.
+#
+# Trong 100 tool đó có những thứ phải giữ ngoài tầm với của agent:
+#   delete-file · remove-permission · share-file · move-file · update-file
+#   sheets-clear-values · sheets-update-values · docs-delete-range · docs-replace-text
+#   slides-delete-slide · remove-label
+# `share-file` và `remove-permission` đáng sợ nhất: chúng đổi được AI truy cập
+# được tài liệu của khách. Whitelist không phải cho đẹp.
+[template.google-workspace]
+command = "node"
+args    = ["vendor/mcp/google-drive-mcp/node_modules/@us-all/google-drive-mcp/dist/index.js"]
+credential_env = "GOOGLE_SERVICE_ACCOUNT_KEY_PATH"
+version = "@us-all/google-drive-mcp@1.15.8 — cài 2026-09-22"
+
+[template.google-workspace.profiles]
+read-only = [
+  # Drive
+  "list-files", "get-file", "read-file", "search-files", "get-folder-tree",
+  "export-file", "list-shared-drives",
+  # Sheets — chỉ đọc
+  "sheets-get-spreadsheet", "sheets-get-values", "sheets-batch-get-values",
+  # Docs — chỉ đọc
+  "docs-get-document", "docs-get-content", "docs-list-tabs",
+  # Bình luận — đọc để hiểu ngữ cảnh khách trao đổi
+  "list-comments", "get-comment",
+]
+# MVP dùng hồ sơ này: đọc mọi thứ trong vùng được chia sẻ, chỉ TẠO MỚI và APPEND.
+# Không có tool sửa, không có tool xoá, không có tool đổi quyền chia sẻ — đó là
+# cách FR21 "không ghi đè, không xoá" được cưỡng chế.
+# sheets-append-values được phép vì nó thêm dòng mới, không đè lên dòng có sẵn.
+read-create = [
+  "list-files", "get-file", "read-file", "search-files", "get-folder-tree",
+  "export-file", "list-shared-drives",
+  "sheets-get-spreadsheet", "sheets-get-values", "sheets-batch-get-values",
+  "docs-get-document", "docs-get-content", "docs-list-tabs",
+  "list-comments", "get-comment",
+  # Tạo mới
+  "create-file", "create-folder",
+  "docs-create-document", "sheets-create-spreadsheet",
+  "sheets-append-values", "create-comment",
+]
+# read-write (sửa/xoá tài liệu đã tồn tại) CỐ Ý CHƯA KHAI — kiến trúc hoãn sang
+# Phase 2 vì cần bước xác nhận mà MVP chưa có. Khai bừa ở đây là mở đường cho
+# agent sửa tài liệu của khách trước khi có cơ chế lùi.

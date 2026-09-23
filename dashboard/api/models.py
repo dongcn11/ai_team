@@ -1,4 +1,5 @@
-from sqlalchemy import Column, Integer, String, DateTime, ForeignKey, Text, Table, Float, Boolean, JSON
+from sqlalchemy import (Column, Integer, String, DateTime, ForeignKey, Text, Table, Float,
+                        Boolean, JSON, UniqueConstraint)
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from database import Base
@@ -44,6 +45,17 @@ class RunJob(Base):
     created_at    = Column(DateTime, server_default=func.now())
     started_at    = Column(DateTime, nullable=True)
     finished_at   = Column(DateTime, nullable=True)
+    # Nguồn gốc job: người bấm ▶ hay lịch tự chạy (xem Schedule bên dưới).
+    source        = Column(String, default="manual")   # manual / schedule
+    schedule_id   = Column(Integer, nullable=True)     # Schedule.id khi source='schedule'
+    fire_time     = Column(DateTime, nullable=True)    # mốc lịch (UTC) job này thuộc về
+
+    # Một mốc lịch chỉ được đẻ đúng 1 job. Đây là thứ DUY NHẤT chặn bắn trùng khi
+    # tick chạy lại do `uvicorn --reload`, hoặc khi chạy bù lúc máy bật lại.
+    # NULL không vi phạm UNIQUE nên job bấm tay (schedule_id=NULL) không bị ảnh hưởng.
+    __table_args__ = (
+        UniqueConstraint("schedule_id", "fire_time", name="uq_run_jobs_schedule_fire"),
+    )
 
 
 class Task(Base):
@@ -369,3 +381,61 @@ class ChatBot(Base):
     workflow_ids   = Column(JSON, default=list)              # [] = mọi workflow của dự án đó
     enabled        = Column(Boolean, default=True)
     created_at     = Column(DateTime, server_default=func.now())
+
+
+class Schedule(Base):
+    """Lịch chạy định kỳ của MỘT dự án (xem _bmad-output/implementation-artifacts/
+    spec-project-schedules.md).
+
+    Đây là "schedule store" — nguồn sự thật bền vững. Vòng tick trong main.py đọc
+    bảng này; `run_jobs` vẫn là hàng đợi và worker.py vẫn là executor, KHÔNG đổi.
+
+    `next_run_at` là cột trung tâm: nó có index, luôn lưu UTC, và là thứ cho phép
+    chạy bù sau khi máy tắt — scheduler chỉ-trong-bộ-nhớ không làm được việc đó.
+    """
+    __tablename__ = "schedules"
+
+    id            = Column(Integer, primary_key=True, index=True)
+    project_id    = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    name          = Column(String, nullable=False)
+    # unix-cron 5 trường (phút giờ ngày tháng thứ) — chuẩn người dùng đã quen.
+    # KHÔNG dùng phương ngữ 8 trường của APScheduler.
+    cron_expression = Column(String, nullable=False)
+    # Tên tz database, ví dụ "Asia/Ho_Chi_Minh". Không bao giờ dựa vào giờ hệ thống.
+    timezone      = Column(String, default="Asia/Ho_Chi_Minh")
+    enabled       = Column(Boolean, default=True)
+    job_kind      = Column(String, default="scan_docs")     # mở đường cho loại khác sau
+    # Máy tắt đúng giờ hẹn thì làm gì. Phải tường minh — để ngầm định là bị bất ngờ
+    # sau sự cố đầu tiên.
+    misfire_policy    = Column(String, default="catchup_once")  # catchup_once / skip
+    # Worker chạy TUẦN TỰ tuyệt đối → mặc định không chất chồng.
+    concurrency_policy = Column(String, default="forbid")       # forbid / allow
+    # Quét thấy tài liệu đổi rồi thì làm gì.
+    on_change     = Column(String, default="notify")        # notify / run_pipeline / both
+    jitter_s      = Column(Integer, default=0)              # rải giờ khi nhiều lịch trùng mốc
+    next_run_at   = Column(DateTime, nullable=True, index=True)  # UTC
+    last_run_at   = Column(DateTime, nullable=True)              # UTC
+    last_status   = Column(String, nullable=True)   # fired/no_change/skipped/missed/error
+    last_detail   = Column(Text, nullable=True)     # câu giải thích cho lần gần nhất
+    version       = Column(Integer, default=0)      # optimistic concurrency (bảo hiểm)
+    created_at    = Column(DateTime, server_default=func.now())
+    updated_at    = Column(DateTime, nullable=True)
+
+
+class DocSnapshot(Base):
+    """Ảnh chụp tài liệu lần quét trước: sha256 theo từng file trong clients/{slug}/.
+
+    Có bảng này mới trả lời được câu "có gì đổi không" — và nhờ đó tick chỉ tạo
+    job khi tài liệu THỰC SỰ đổi, thay vì đánh thức pipeline mỗi ngày vô ích.
+    """
+    __tablename__ = "doc_snapshots"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    project_id = Column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False)
+    rel_path   = Column(String, nullable=False)     # đường dẫn tương đối trong clients/{slug}
+    sha256     = Column(String, nullable=False)
+    scanned_at = Column(DateTime, server_default=func.now())
+
+    __table_args__ = (
+        UniqueConstraint("project_id", "rel_path", name="uq_doc_snapshots_project_path"),
+    )

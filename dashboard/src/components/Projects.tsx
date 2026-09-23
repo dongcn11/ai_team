@@ -2,6 +2,7 @@ import React, { useState, useCallback, useEffect } from "react";
 import { useProjects } from "../hooks/useProjects";
 import { useProjectWorkflows } from "../hooks/useWorkflows";
 import ProjectWorkflows from "./ProjectWorkflows";
+import ProjectMcp from "./ProjectMcp";
 import AgentWorkspaces from "./AgentWorkspaces";
 import RunConsole from "./RunConsole";
 import { Project, AgentFS, RunSummary, TaskRunSummary } from "../types";
@@ -30,7 +31,7 @@ export default function ProjectsPage() {
   const { projects, loading, error, refetch } = useProjects();
   const [selected,    setSelected]    = useState<Project | null>(null);
   const [projRuns,    setProjRuns]    = useState<RunSummary[]>([]);
-  const [activeTab,   setActiveTab]   = useState<"features" | "workflows" | "agents" | "prd" | "runs" | "clientdocs" | "docs">("features");
+  const [activeTab,   setActiveTab]   = useState<"features" | "workflows" | "agents" | "prd" | "runs" | "clientdocs" | "docs" | "mcp">("features");
 
   // Danh sách workflow của RIÊNG project đang mở — dùng cho tab Workflows và
   // cho dropdown "Workflow" ở từng task bên tab Features.
@@ -1147,7 +1148,7 @@ export default function ProjectsPage() {
 
           {/* Tabs */}
           <div className="pd-tabs">
-            {(["features","workflows","agents","prd","runs","clientdocs","docs"] as const).map(tab => {
+            {(["features","workflows","agents","prd","runs","clientdocs","docs","mcp"] as const).map(tab => {
               const meta = {
                 features:  { label: "Features",  count: features.length as number | null },
                 workflows: { label: "Workflows", count: projectWorkflows.length as number | null },
@@ -1156,6 +1157,7 @@ export default function ProjectsPage() {
                 runs:      { label: "Runs",      count: projRuns.length as number | null },
                 clientdocs:{ label: "📎 Tài liệu KH", count: (clientDocs.length || null) as number | null },
                 docs:      { label: "Docs",      count: (docFiles.length || null) as number | null },
+                mcp:       { label: "🔌 MCP",    count: null as number | null },
               }[tab];
               return (
                 <button key={tab} className={"pd-tab" + (activeTab === tab ? " on" : "")}
@@ -1172,6 +1174,9 @@ export default function ProjectsPage() {
               );
             })}
           </div>
+
+          {/* MCP tab — nguồn ngoài riêng của dự án này */}
+          {activeTab === "mcp" && <ProjectMcp slug={selected.id} />}
 
           {/* Workflows tab — danh sách workflow của riêng project này */}
           {activeTab === "workflows" && (

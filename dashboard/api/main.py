@@ -6,7 +6,8 @@ from sqlalchemy import text
 
 from database import engine, Base
 from routers import (runs, tasks, issues, settings, projects, agents, project_tasks, system,
-                     run_jobs, workflows, workflow_jobs, slack_events, chat_bots, skills)
+                     run_jobs, workflows, workflow_jobs, slack_events, chat_bots, skills, mcp,
+                     schedules)
 from routers.workflows import poll_running_workflow_runs
 
 Base.metadata.create_all(bind=engine)
@@ -61,6 +62,10 @@ _COLUMN_MIGRATIONS = [
     ("workflow_step_jobs", "cost_usd",          "DOUBLE PRECISION"),
     ("workflow_step_jobs", "usage",             "JSON"),
     ("workflow_step_jobs", "duration_ms",       "INTEGER"),
+    # Job do lịch tự tạo, để truy vết run tự động về đúng lịch (xem models.Schedule).
+    ("run_jobs",           "source",            "VARCHAR DEFAULT 'manual'"),
+    ("run_jobs",           "schedule_id",       "INTEGER"),
+    ("run_jobs",           "fire_time",         "TIMESTAMP"),
 ]
 
 for _table, _column, _ddl in _COLUMN_MIGRATIONS:
@@ -68,6 +73,29 @@ for _table, _column, _ddl in _COLUMN_MIGRATIONS:
         _ensure_column(_table, _column, _ddl)
     except Exception as e:  # best-effort; log so failures are visible in container logs
         print(f"[migrate] {_table}.{_column} column ensure failed: {e}")
+
+
+def _ensure_scheduler_unique_index() -> None:
+    """UNIQUE (schedule_id, fire_time) trên run_jobs.
+
+    create_all() không thêm ràng buộc vào bảng đã tồn tại, mà đây KHÔNG phải thứ
+    tuỳ chọn: nó là cái duy nhất chặn lịch bắn trùng khi uvicorn --reload khởi
+    động lại tick loop, hoặc khi chạy bù sau lúc máy bật lại. Dùng UNIQUE INDEX
+    (thay vì constraint) vì cả PostgreSQL lẫn SQLite đều hiểu, và NULL không bị
+    coi là trùng nhau nên job bấm tay không ảnh hưởng.
+    """
+    with engine.connect() as conn:
+        conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_run_jobs_schedule_fire "
+            "ON run_jobs (schedule_id, fire_time)"
+        ))
+        conn.commit()
+
+
+try:
+    _ensure_scheduler_unique_index()
+except Exception as e:
+    print(f"[migrate] run_jobs unique index ensure failed: {e}")
 
 
 def _reconcile_workflow_tables() -> None:
@@ -165,6 +193,8 @@ app.include_router(workflow_jobs.router,   prefix="/api/workflow-jobs", tags=["w
 app.include_router(slack_events.router,    prefix="/api/slack",        tags=["slack"])
 app.include_router(chat_bots.router,       prefix="/api/chat-bots",    tags=["chat-bots"])
 app.include_router(skills.router,          prefix="/api/skills",       tags=["skills"])
+app.include_router(mcp.router,             prefix="/api/mcp",          tags=["mcp"])
+app.include_router(schedules.router,       prefix="/api/schedules",    tags=["schedules"])
 
 
 _POLL_INTERVAL_S = 5
@@ -181,9 +211,39 @@ async def _workflow_run_poll_loop():
             print(f"[workflow-poll] error: {e}")
 
 
+async def _schedule_tick_loop():
+    """Đồng hồ của các lịch chạy định kỳ (xem scheduler.py).
+
+    `scheduler.tick()` là hàm ĐỒNG BỘ và chậm (nó hash file tài liệu), nên phải
+    đẩy sang thread — chạy thẳng trong event loop là treo cả API, đúng lý do
+    slack_bot/telegram_bot bên dưới cũng phải nằm ở thread riêng.
+    """
+    import scheduler
+    # flush=True ở mọi dòng: container không đặt PYTHONUNBUFFERED nên print() bị
+    # đệm và `docker compose logs` không thấy gì. Cả kế hoạch chạy dry-run dựa
+    # vào việc đọc được log này, nên im lặng ở đây là hỏng tính năng.
+    if not scheduler.ENABLED:
+        print("[scheduler] tắt qua SCHEDULER_ENABLED=0", flush=True)
+        return
+    try:
+        await asyncio.to_thread(scheduler.backfill_next_run_at)
+    except Exception as e:
+        print(f"[scheduler] backfill lỗi: {e}", flush=True)
+    print(f"[scheduler] tick loop started (tick={scheduler.TICK_S}s, "
+          f"dry_run={int(scheduler.DRY_RUN)}, catchup={scheduler.CATCHUP_WINDOW_H}h)",
+          flush=True)
+    while True:
+        await asyncio.sleep(scheduler.TICK_S)
+        try:
+            await asyncio.to_thread(scheduler.tick)
+        except Exception as e:
+            print(f"[scheduler] tick error: {e}", flush=True)
+
+
 @app.on_event("startup")
 async def _start_background_poller():
     asyncio.create_task(_workflow_run_poll_loop())
+    asyncio.create_task(_schedule_tick_loop())
     # Bot Telegram: thread riêng chứ không phải task asyncio — long polling giữ
     # kết nối HTTP 25s bằng urllib (chặn), để trong event loop là treo cả API.
     # Chưa cắm token thì thread nằm im, cắm trên web là chạy, không cần restart.

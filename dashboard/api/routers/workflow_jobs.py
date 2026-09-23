@@ -77,7 +77,9 @@ def claim_job(payload: Optional[WorkflowStepJobClaim] = None, db: Session = Depe
     Body kèm snapshot tài khoản Claude của worker (xem worker_heartbeat)."""
     worker_heartbeat.touch(
         accounts=[a.model_dump() for a in payload.accounts]
-        if payload is not None and payload.accounts is not None else None)
+        if payload is not None and payload.accounts is not None else None,
+        mcp=[m.model_dump() for m in payload.mcp]
+        if payload is not None and payload.mcp is not None else None)
     cutoff = datetime.utcnow() - _STUCK_AFTER
     stuck = (db.query(WorkflowStepJob)
                .filter(WorkflowStepJob.status == "running",

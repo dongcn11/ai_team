@@ -155,9 +155,18 @@ class ClaudeAccountState(BaseModel):
     note: Optional[str] = Field(default=None, max_length=300)
 
 
+class McpRuntimeState(BaseModel):
+    """Kết quả nối MCP của lần chạy gần nhất. Không có trường bí mật."""
+    slug:   str
+    server: str
+    status: str
+    at:     Optional[str] = None
+
+
 class WorkflowStepJobClaim(BaseModel):
     """Body worker gửi khi hỏi việc. Worker cũ gửi `{}` → accounts None → giữ snapshot cũ."""
     accounts: Optional[List[ClaudeAccountState]] = Field(default=None, max_length=50)
+    mcp: Optional[List[McpRuntimeState]] = Field(default=None, max_length=200)
 
 
 class AgentQuestionOut(BaseModel):
@@ -571,3 +580,81 @@ class SkillDuplicate(BaseModel):
 class SkillResourceWrite(BaseModel):
     content: str = ""
 
+
+
+# ── MCP theo từng dự án ──────────────────────────────────────────────────────
+# Không schema nào ở đây có trường chứa giá trị credential. Cố ý.
+
+class McpProfileOut(BaseModel):
+    name: str
+    tools: List[str] = []
+
+
+class McpTemplateOut(BaseModel):
+    name: str
+    version: str = ""
+    needs_credential: bool = False
+    profiles: List[McpProfileOut] = []
+
+
+class McpServerIn(BaseModel):
+    name: str
+    template: str
+    profile: str = "read-only"
+    enabled: bool = True
+    declared_write_scope: dict = {}
+
+
+class McpServerOut(McpServerIn):
+    # Credential đã được KHAI trong settings.local.toml hay chưa. Không phải
+    # "dùng được" — API chạy trong container, không thấy đường dẫn trên host.
+    # Worker mới biết file có thật không, và nó báo qua heartbeat.
+    credential_declared: bool = False
+
+
+class McpConfigIn(BaseModel):
+    enabled: bool = True
+    servers: List[McpServerIn] = []
+
+
+class McpConfigOut(BaseModel):
+    slug: str
+    enabled: bool = True
+    servers: List[McpServerOut] = []
+    exists: bool = False
+    writable: bool = False
+    parse_error: Optional[str] = None
+
+
+# --- Lịch chạy định kỳ theo dự án (xem models.Schedule, scheduler.py) --------
+
+class ScheduleIn(BaseModel):
+    name: str
+    cron_expression: str                     # unix-cron 5 trường
+    timezone: str = "Asia/Ho_Chi_Minh"       # tên tz database
+    enabled: bool = True
+    job_kind: Literal["scan_docs"] = "scan_docs"
+    misfire_policy: Literal["catchup_once", "skip"] = "catchup_once"
+    concurrency_policy: Literal["forbid", "allow"] = "forbid"
+    on_change: Literal["notify", "run_pipeline", "both"] = "notify"
+    jitter_s: int = Field(default=0, ge=0, le=3600)
+
+
+class ScheduleOut(ScheduleIn):
+    id: int
+    project_id: int
+    next_run_at: Optional[datetime] = None   # UTC
+    last_run_at: Optional[datetime] = None   # UTC
+    last_status: Optional[str] = None
+    last_detail: Optional[str] = None
+
+    class Config:
+        from_attributes = True
+
+
+class SchedulePreviewOut(BaseModel):
+    """N mốc chạy kế tiếp theo GIỜ ĐỊA PHƯƠNG của lịch — để người dùng tự kiểm
+    chứng biểu thức cron trước khi lưu, thay vì đợi tới 6h sáng mới biết sai."""
+    cron_expression: str
+    timezone: str
+    next_runs: List[str] = []                # ISO-8601 có offset
