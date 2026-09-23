@@ -3,6 +3,7 @@ import { useProjects } from "../hooks/useProjects";
 import { useProjectWorkflows } from "../hooks/useWorkflows";
 import ProjectWorkflows from "./ProjectWorkflows";
 import ProjectMcp from "./ProjectMcp";
+import ProjectSchedules from "./ProjectSchedules";
 import AgentWorkspaces from "./AgentWorkspaces";
 import RunConsole from "./RunConsole";
 import { Project, AgentFS, RunSummary, TaskRunSummary } from "../types";
@@ -31,7 +32,7 @@ export default function ProjectsPage() {
   const { projects, loading, error, refetch } = useProjects();
   const [selected,    setSelected]    = useState<Project | null>(null);
   const [projRuns,    setProjRuns]    = useState<RunSummary[]>([]);
-  const [activeTab,   setActiveTab]   = useState<"features" | "workflows" | "agents" | "prd" | "runs" | "clientdocs" | "docs" | "mcp">("features");
+  const [activeTab,   setActiveTab]   = useState<"features" | "workflows" | "agents" | "prd" | "runs" | "clientdocs" | "docs" | "mcp" | "schedules">("features");
 
   // Danh sách workflow của RIÊNG project đang mở — dùng cho tab Workflows và
   // cho dropdown "Workflow" ở từng task bên tab Features.
@@ -1148,7 +1149,7 @@ export default function ProjectsPage() {
 
           {/* Tabs */}
           <div className="pd-tabs">
-            {(["features","workflows","agents","prd","runs","clientdocs","docs","mcp"] as const).map(tab => {
+            {(["features","workflows","agents","prd","runs","clientdocs","docs","mcp","schedules"] as const).map(tab => {
               const meta = {
                 features:  { label: "Features",  count: features.length as number | null },
                 workflows: { label: "Workflows", count: projectWorkflows.length as number | null },
@@ -1158,6 +1159,7 @@ export default function ProjectsPage() {
                 clientdocs:{ label: "📎 Tài liệu KH", count: (clientDocs.length || null) as number | null },
                 docs:      { label: "Docs",      count: (docFiles.length || null) as number | null },
                 mcp:       { label: "🔌 MCP",    count: null as number | null },
+                schedules: { label: "🗓️ Lịch chạy", count: null as number | null },
               }[tab];
               return (
                 <button key={tab} className={"pd-tab" + (activeTab === tab ? " on" : "")}
@@ -1177,6 +1179,9 @@ export default function ProjectsPage() {
 
           {/* MCP tab — nguồn ngoài riêng của dự án này */}
           {activeTab === "mcp" && <ProjectMcp slug={selected.id} />}
+
+          {/* Lịch chạy — cron theo dự án, quét thay đổi tài liệu (xem api/scheduler.py) */}
+          {activeTab === "schedules" && <ProjectSchedules slug={selected.id} />}
 
           {/* Workflows tab — danh sách workflow của riêng project này */}
           {activeTab === "workflows" && (
