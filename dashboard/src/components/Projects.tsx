@@ -1,4 +1,4 @@
-import React, { useState, useCallback, useEffect } from "react";
+import React, { useState, useCallback, useEffect, useMemo } from "react";
 import { useProjects } from "../hooks/useProjects";
 import { useProjectWorkflows } from "../hooks/useWorkflows";
 import ProjectWorkflows from "./ProjectWorkflows";
@@ -7,6 +7,17 @@ import ProjectSchedules from "./ProjectSchedules";
 import AgentWorkspaces from "./AgentWorkspaces";
 import RunConsole from "./RunConsole";
 import { Project, AgentFS, RunSummary, TaskRunSummary } from "../types";
+
+/** Số feature mỗi trang ở tab Features. */
+const FEATURE_PAGE_SIZE = 10;
+
+/** Backend trả UTC không hậu tố Z — thêm vào để trình duyệt không hiểu nhầm là giờ máy. */
+function fmtFeatureDate(iso: string): string {
+  const d = new Date(/[Zz+]|[+-]\d{2}:\d{2}$/.test(iso.slice(10)) ? iso : `${iso}Z`);
+  return isNaN(d.getTime()) ? "" : d.toLocaleString("vi-VN", {
+    day: "2-digit", month: "2-digit", year: "numeric", hour: "2-digit", minute: "2-digit",
+  });
+}
 
 const VALID_KEYS = ["pm","scrum","analyst","be1","be2","fe1","fe2","fs1","fs2","leader"];
 /** Đường dẫn tuyệt đối (C:\..., C:/..., /...) — dashboard trong Docker không đọc được. */
@@ -163,6 +174,37 @@ export default function ProjectsPage() {
   const [featureAgentKey,   setFeatureAgentKey]   = useState("");   // agent dev làm feature (be1/fe1/fs1…)
   const [runningFeatureId,  setRunningFeatureId]  = useState<number | null>(null);
   const [featureRunError,   setFeatureRunError]   = useState<Record<number, string>>({});
+  const [featurePage,       setFeaturePage]       = useState(1);
+
+  // Mới nhất lên đầu; cùng thời điểm thì id lớn hơn (tạo sau) đứng trước.
+  const sortedFeatures = useMemo(() => [...features].sort((a, b) => {
+    const t = (Date.parse(b.created_at) || 0) - (Date.parse(a.created_at) || 0);
+    return t !== 0 ? t : b.id - a.id;
+  }), [features]);
+  const featurePageCount = Math.max(1, Math.ceil(sortedFeatures.length / FEATURE_PAGE_SIZE));
+  // Xoá hết trang cuối thì lùi về trang còn dữ liệu, không để trang trống.
+  const curFeaturePage = Math.min(featurePage, featurePageCount);
+  const pagedFeatures = sortedFeatures.slice(
+    (curFeaturePage - 1) * FEATURE_PAGE_SIZE, curFeaturePage * FEATURE_PAGE_SIZE);
+
+  // Thanh phân trang — hiện cả trên và dưới danh sách: card cao, không bắt cuộn hết 10 card mới thấy.
+  const featurePager = featurePageCount > 1 ? (
+                    <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginTop: 6, fontSize: 12, color: "#9ca3af" }}>
+                      <span>
+                        {(curFeaturePage - 1) * FEATURE_PAGE_SIZE + 1}–{Math.min(curFeaturePage * FEATURE_PAGE_SIZE, sortedFeatures.length)} / {sortedFeatures.length}
+                      </span>
+                      <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+                        <button className="page-btn" disabled={curFeaturePage <= 1}
+                          onClick={() => setFeaturePage(curFeaturePage - 1)}>‹ Trước</button>
+                        {Array.from({ length: featurePageCount }, (_, i) => i + 1).map(n => (
+                          <button key={n} className={`page-btn${n === curFeaturePage ? " active" : ""}`}
+                            onClick={() => setFeaturePage(n)}>{n}</button>
+                        ))}
+                        <button className="page-btn" disabled={curFeaturePage >= featurePageCount}
+                          onClick={() => setFeaturePage(curFeaturePage + 1)}>Sau ›</button>
+                      </div>
+                    </div>
+  ) : null;
 
   // Docs
   const [docFiles,    setDocFiles]    = useState<{path: string; name: string; size: number}[]>([]);
@@ -181,6 +223,7 @@ export default function ProjectsPage() {
       setDocFiles([]); setSelectedDoc(null); setDocContent(null);
       setShowAddAgent(false);
       setFeatures([]); setFeaturesLoaded(false); setShowAddFeature(false);
+      setFeaturePage(1);
     }
   }, []);
 
@@ -370,6 +413,7 @@ export default function ProjectsPage() {
       }
     }
     setFeatures(prev => [...prev, { ...created, files: uploaded }]);
+    setFeaturePage(1);   // feature mới nằm đầu trang 1
     closeAddFeatureModal();
     setFeatureSaving(false);
   };
@@ -1202,13 +1246,15 @@ export default function ProjectsPage() {
                 </button>
               </div>
 
+              {featurePager && <div style={{ marginTop: 8 }}>{featurePager}</div>}
+
               {features.length === 0 ? (
                 <p style={{ color: "#6b7280", fontSize: 13, marginTop: 12 }}>
                   Chưa có feature nào. Bấm "+ Add Feature" để thêm ý tưởng.
                 </p>
               ) : (
                 <div style={{ marginTop: 12, display: "flex", flexDirection: "column", gap: 6 }}>
-                  {features.map(f => {
+                  {pagedFeatures.map(f => {
                     const statusColor = f.status === "done" ? "#14532d" : f.status === "in_progress" ? "#92400e" : f.status === "todo" ? "#1e293b" : "#7f1d1d";
                     const statusLabel = f.status === "done" ? "✅ done" : f.status === "in_progress" ? "⏳ running" : f.status === "todo" ? "📋 todo" : "❌ failed";
                     const priorityColor = f.priority === "high" ? "#ef4444" : f.priority === "medium" ? "#f59e0b" : "#6b7280";
@@ -1219,6 +1265,11 @@ export default function ProjectsPage() {
                             <span style={{ fontWeight: 600, fontSize: 13, color: "#f1f5f9" }}>{f.name}</span>
                             <span style={{ fontSize: 10, padding: "2px 7px", borderRadius: 99, background: statusColor, color: "#e2e8f0" }}>{statusLabel}</span>
                             <span style={{ fontSize: 10, color: priorityColor }}>{f.priority}</span>
+                            {f.created_at && (
+                              <span style={{ fontSize: 10, color: "#6b7280" }} title="Ngày tạo">
+                                {fmtFeatureDate(f.created_at)}
+                              </span>
+                            )}
                             {(f.files?.length ?? 0) > 0 && (
                               <span style={{ fontSize: 10, color: "#60a5fa" }} title="Số file đính kèm">
                                 📎 {f.files!.length}
@@ -1350,6 +1401,7 @@ export default function ProjectsPage() {
                       </div>
                     );
                   })}
+                  {featurePager}
                 </div>
               )}
 

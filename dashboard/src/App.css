@@ -1768,3 +1768,12 @@ body {
                              font-size: 13px; }
 .sched-form-actions button:hover:not(:disabled) { border-color: #475569; }
 .sched-form-actions button:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* Phân trang danh sách Features (Projects.tsx) */
+.page-btn {
+  background: #1e293b; border: 1px solid #334155; color: #cbd5e1;
+  font-size: 11px; padding: 3px 9px; border-radius: 4px; cursor: pointer; min-width: 28px;
+}
+.page-btn:hover:not(:disabled) { border-color: #3b82f6; color: #f1f5f9; }
+.page-btn.active { background: #1e3a8a; border-color: #3b82f6; color: #dbeafe; font-weight: 600; }
+.page-btn:disabled { opacity: 0.4; cursor: not-allowed; }
