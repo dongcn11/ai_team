@@ -299,6 +299,14 @@ class WorkflowRun(Base):
     chat_bot_id = Column(Integer, nullable=True)   # ChatBot.id
     chat_id     = Column(String, nullable=True)    # chat / kênh đã gửi lệnh
     chat_thread = Column(String, nullable=True)    # Slack thread_ts · Telegram message_id
+    # Run do lịch tự tạo (xem models.Schedule). Cùng cơ chế chống bắn trùng với
+    # run_jobs: một mốc lịch chỉ đẻ đúng 1 run; NULL không vi phạm UNIQUE.
+    schedule_id = Column(Integer, nullable=True)
+    fire_time   = Column(DateTime, nullable=True)   # mốc lịch (UTC)
+
+    __table_args__ = (
+        UniqueConstraint("schedule_id", "fire_time", name="uq_workflow_runs_schedule_fire"),
+    )
 
     workflow = relationship("Workflow", back_populates="runs")
     task     = relationship("ProjectTask", back_populates="workflow_runs")
@@ -411,7 +419,9 @@ class Schedule(Base):
     # Worker chạy TUẦN TỰ tuyệt đối → mặc định không chất chồng.
     concurrency_policy = Column(String, default="forbid")       # forbid / allow
     # Quét thấy tài liệu đổi rồi thì làm gì.
-    on_change     = Column(String, default="notify")        # notify / run_pipeline / both
+    on_change     = Column(String, default="notify")        # notify / run_workflow / both
+    # Workflow của dự án được chạy khi on_change là run_workflow/both.
+    workflow_id   = Column(Integer, ForeignKey("workflows.id", ondelete="SET NULL"), nullable=True)
     jitter_s      = Column(Integer, default=0)              # rải giờ khi nhiều lịch trùng mốc
     next_run_at   = Column(DateTime, nullable=True, index=True)  # UTC
     last_run_at   = Column(DateTime, nullable=True)              # UTC

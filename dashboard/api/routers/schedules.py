@@ -18,7 +18,7 @@ from sqlalchemy.orm import Session
 
 import scheduler
 from database import get_db
-from models import Project, RunJob, Schedule
+from models import Project, RunJob, Schedule, Workflow
 from schemas import ScheduleIn, ScheduleOut, SchedulePreviewOut
 
 router = APIRouter()
@@ -29,6 +29,19 @@ def _validate(body_cron: str, body_tz: str) -> None:
         scheduler.validate(body_cron, body_tz)
     except ValueError as e:
         raise HTTPException(status_code=422, detail=str(e))
+
+
+def _validate_workflow(db: Session, body: ScheduleIn, project_id: int) -> None:
+    """Chạy workflow thì phải chọn đúng một workflow CỦA dự án này — để tới giờ
+    mới phát hiện thiếu thì lịch chỉ ghi lỗi, không ai biết."""
+    if body.on_change == "notify":
+        body.workflow_id = None
+        return
+    if not body.workflow_id:
+        raise HTTPException(status_code=422, detail="Chọn workflow sẽ chạy khi tài liệu đổi")
+    wf = db.query(Workflow).filter(Workflow.id == body.workflow_id).first()
+    if not wf or wf.project_id != project_id:
+        raise HTTPException(status_code=422, detail="Workflow không thuộc dự án này")
 
 
 def _resolve_project(db: Session, project_id: Optional[int], slug: Optional[str]) -> Project:
@@ -79,6 +92,7 @@ def create_schedule(body: ScheduleIn, project_id: Optional[int] = None,
                     slug: Optional[str] = None, db: Session = Depends(get_db)):
     proj = _resolve_project(db, project_id, slug)
     _validate(body.cron_expression, body.timezone)
+    _validate_workflow(db, body, proj.id)
 
     sched = Schedule(project_id=proj.id, **body.model_dump())
     # Tính mốc đầu tiên ngay khi tạo — lịch không có next_run_at thì tick không thấy.
@@ -96,6 +110,7 @@ def update_schedule(schedule_id: int, body: ScheduleIn, db: Session = Depends(ge
     if not sched:
         raise HTTPException(status_code=404, detail="Lịch không tồn tại")
     _validate(body.cron_expression, body.timezone)
+    _validate_workflow(db, body, sched.project_id)
 
     cron_changed = (sched.cron_expression != body.cron_expression
                     or sched.timezone != body.timezone)

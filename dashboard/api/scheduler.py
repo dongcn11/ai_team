@@ -2,7 +2,7 @@
 Scheduler — "đồng hồ" còn thiếu
 ===============================
 Đọc bảng `schedules`, tới giờ thì quét tài liệu dự án, và CHỈ KHI tài liệu thực
-sự đổi mới chèn một dòng vào `run_jobs`.
+sự đổi mới báo chat và/hoặc tạo một lần chạy workflow (`workflow_runs`) của dự án.
 
 Vì sao không dùng APScheduler: `run_jobs` đã là hàng đợi và `worker.py` đã là
 executor. Một framework scheduler đầy đủ sẽ dựng SONG SONG một job store và một
@@ -35,7 +35,7 @@ from sqlalchemy.orm import Session
 
 import doc_scan
 from database import SessionLocal
-from models import ChatBot, DocSnapshot, Project, RunJob, Schedule
+from models import ChatBot, DocSnapshot, Project, RunJob, Schedule, Workflow, WorkflowRun
 
 # Tick chỉ truy vấn 1 câu có index → 60s là đủ dày mà không tốn gì.
 TICK_S          = int(os.getenv("SCHEDULER_TICK_S", "60"))
@@ -156,48 +156,74 @@ def _notify(client_folder: Optional[str], text: str) -> None:
 # --------------------------------------------------------------------------- #
 
 def _busy(db: Session, project_id: Optional[int]) -> bool:
-    """Project còn job đang chờ/đang chạy? Worker chạy TUẦN TỰ tuyệt đối
-    (run_jobs.py chặn claim khi có job running) nên chất chồng chỉ làm dồn ứ."""
+    """Project còn việc đang chờ/đang chạy — run_job pipeline hoặc workflow run?
+    Chất chồng chỉ làm dồn ứ, nên policy=forbid bỏ qua nhịp này."""
     if project_id is None:
         return False
-    return db.query(RunJob.id).filter(
+    if db.query(RunJob.id).filter(
         RunJob.project_id == project_id,
         RunJob.status.in_(_BUSY_STATUSES),
+    ).first() is not None:
+        return True
+    return db.query(WorkflowRun.id).join(Workflow, WorkflowRun.workflow_id == Workflow.id).filter(
+        Workflow.project_id == project_id,
+        WorkflowRun.status == "running",
     ).first() is not None
 
 
-def _insert_job(db: Session, proj: Project, sched: Schedule, fire: datetime) -> bool:
-    """Chèn job cho đúng một mốc lịch. Trả True nếu đã chèn, False nếu bị chặn trùng.
+def _insert_workflow_run(db: Session, wf: Workflow, sched: Schedule, fire: datetime,
+                         message: str) -> bool:
+    """Tạo workflow run cho đúng một mốc lịch. Trả True nếu đã tạo, False nếu bị chặn trùng.
 
     Chống trùng do DATABASE phân xử qua UNIQUE (schedule_id, fire_time). Kiểu
     "SELECT xem có chưa rồi mới INSERT" KHÔNG an toàn: hai tiến trình đều có thể
     thấy "chưa có" trước khi bên nào kịp ghi.
+
+    Chỉ chèn hàng `running` với mọi node `pending` — giống _create_run_row bên
+    routers/workflows.py. Vòng poll nền (poll_running_workflow_runs) sẽ tự tiến
+    run này, nên scheduler không phải import router workflows.
     """
+    nodes = (wf.definition or {}).get("nodes", []) or []
     values = dict(
-        client_folder=proj.client_folder or "",
-        project_id=proj.id,
-        status="queued",
-        source="schedule",
+        workflow_id=wf.id,
+        status="running",
+        node_status={n["id"]: "pending" for n in nodes},
+        log=[{"node_id": "", "message": message, "ts": _utcnow().isoformat()}],
         schedule_id=sched.id,
         fire_time=_naive(fire),
     )
 
     if db.bind is not None and db.bind.dialect.name == "postgresql":
         from sqlalchemy.dialects.postgresql import insert as pg_insert
-        stmt = (pg_insert(RunJob.__table__)
+        # index_elements chứ không phải constraint=: bảng cũ chỉ có UNIQUE INDEX
+        # (main.py tạo), không có constraint mang tên đó.
+        stmt = (pg_insert(WorkflowRun.__table__)
                 .values(**values)
-                .on_conflict_do_nothing(constraint="uq_run_jobs_schedule_fire"))
+                .on_conflict_do_nothing(index_elements=["schedule_id", "fire_time"]))
         res = db.execute(stmt)
         return (res.rowcount or 0) > 0
 
-    # sqlite/dev fallback — cùng tinh thần "fallback" của run_jobs.py:99.
-    # Savepoint để lần chèn hỏng không kéo đổ cả transaction của tick.
+    # sqlite/dev fallback. Savepoint để lần chèn hỏng không kéo đổ cả transaction của tick.
     try:
         with db.begin_nested():
-            db.execute(RunJob.__table__.insert().values(**values))
+            db.execute(WorkflowRun.__table__.insert().values(**values))
         return True
     except IntegrityError:
         return False
+
+
+def _schedule_workflow(db: Session, proj: Project, sched: Schedule) -> tuple[Optional[Workflow], str]:
+    """Workflow lịch sẽ chạy, hoặc (None, lý do) nếu không chạy được."""
+    if not sched.workflow_id:
+        return None, "chưa chọn workflow"
+    wf = db.query(Workflow).filter(Workflow.id == sched.workflow_id).first()
+    if not wf:
+        return None, f"workflow #{sched.workflow_id} không còn tồn tại"
+    if wf.project_id != proj.id:
+        return None, f"workflow '{wf.name}' không thuộc dự án này"
+    if not wf.is_active:
+        return None, f"workflow '{wf.name}' đang tắt"
+    return wf, ""
 
 
 def _advance(sched: Schedule, now: datetime) -> None:
@@ -279,17 +305,23 @@ def _process(db: Session, sched: Schedule, now: datetime) -> None:
 
     # --- Có thay đổi thật ---------------------------------------------------
     detail = f"mốc {fire.isoformat()} — {summary}"
-    if sched.on_change in ("run_pipeline", "both"):
-        if _insert_job(db, proj, sched, fire):
-            detail += " → đã tạo run_job"
+    status = "fired"
+    if sched.on_change in ("run_workflow", "both"):
+        wf, why = _schedule_workflow(db, proj, sched)
+        if not wf:
+            status = "error"
+            detail += f" → không chạy workflow: {why}"
+        elif _insert_workflow_run(db, wf, sched, fire,
+                                  f"⏰ Lịch '{sched.name}': tài liệu thay đổi — {summary}"):
+            detail += f" → đã chạy workflow '{wf.name}'"
         else:
-            detail += " → job cho mốc này đã tồn tại (UNIQUE chặn trùng)"
+            detail += " → run cho mốc này đã tồn tại (UNIQUE chặn trùng)"
     if sched.on_change in ("notify", "both"):
         _notify(proj.client_folder,
                 f"📄 [{proj.name}] tài liệu thay đổi ({sched.name}): {summary}")
         detail += " → đã báo chat"
 
-    _finish(sched, now, "fired", detail)
+    _finish(sched, now, status, detail)
 
 
 def _save_snapshot(db: Session, project_id: int, old: dict, new: dict) -> None:

@@ -15,7 +15,9 @@ export interface Schedule {
   misfire_policy: "catchup_once" | "skip";
   /** Worker chạy tuần tự — mặc định không chất chồng job. */
   concurrency_policy: "forbid" | "allow";
-  on_change: "notify" | "run_pipeline" | "both";
+  on_change: "notify" | "run_workflow" | "both";
+  /** Workflow của dự án được chạy khi on_change là run_workflow/both. */
+  workflow_id: number | null;
   jitter_s: number;
   /** UTC. Null nghĩa là chưa tính được mốc (cron hỏng). */
   next_run_at: string | null;
@@ -37,9 +39,10 @@ export const emptyDraft: ScheduleDraft = {
   job_kind: "scan_docs",
   misfire_policy: "catchup_once",
   concurrency_policy: "forbid",
-  // Mặc định chỉ BÁO, không tự chạy pipeline. Đổi sang run_pipeline là quyết
+  // Mặc định chỉ BÁO, không tự chạy workflow. Đổi sang run_workflow là quyết
   // định có chi phí (token + thời gian máy), nên phải do người dùng bấm.
   on_change: "notify",
+  workflow_id: null,
   jitter_s: 0,
 };
 

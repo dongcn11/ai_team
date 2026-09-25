@@ -59,7 +59,8 @@ def clients_dir(tmp_path, monkeypatch):
 def db(clients_dir):
     """Session sạch cho từng test."""
     s = database.SessionLocal()
-    for model in (models.DocSnapshot, models.RunJob, models.Schedule, models.Project):
+    for model in (models.DocSnapshot, models.RunJob, models.WorkflowRun, models.Schedule,
+                  models.Workflow, models.Project):
         s.query(model).delete()
     s.commit()
     yield s
@@ -75,12 +76,24 @@ def project(db):
     return p
 
 
+@pytest.fixture
+def workflow(db, project):
+    w = models.Workflow(project_id=project.id, name="Cập nhật theo tài liệu",
+                        definition={"nodes": [{"id": "n1", "type": "action.task"}], "edges": []})
+    db.add(w)
+    db.commit()
+    db.refresh(w)
+    return w
+
+
 def _mk_schedule(db, project, **kw):
+    wf = db.query(models.Workflow).filter(models.Workflow.project_id == project.id).first()
     defaults = dict(
         project_id=project.id, name="Quét tài liệu 6h",
         cron_expression="0 6 * * *", timezone=TZ, enabled=True,
         job_kind="scan_docs", misfire_policy="catchup_once",
-        concurrency_policy="forbid", on_change="run_pipeline", jitter_s=0,
+        concurrency_policy="forbid", on_change="run_workflow", jitter_s=0,
+        workflow_id=wf.id if wf else None,
     )
     defaults.update(kw)
     s = models.Schedule(**defaults)
@@ -99,9 +112,10 @@ def _seed_snapshot(db, project):
 
 
 def _jobs(db, schedule_id=None):
-    q = db.query(models.RunJob)
+    """Workflow run do lịch tạo ra (lịch chạy workflow, không còn đẻ run_job pipeline)."""
+    q = db.query(models.WorkflowRun)
     if schedule_id is not None:
-        q = q.filter(models.RunJob.schedule_id == schedule_id)
+        q = q.filter(models.WorkflowRun.schedule_id == schedule_id)
     return q.all()
 
 
@@ -145,7 +159,7 @@ def test_validate_rejects_bad_cron_and_timezone():
 # 2-3. Lỡ nhịp khi máy tắt
 # --------------------------------------------------------------------------- #
 
-def test_catchup_once_creates_exactly_one_job_after_three_days_off(db, project):
+def test_catchup_once_creates_exactly_one_job_after_three_days_off(db, project, workflow):
     """Máy tắt 3 ngày → tạo ĐÚNG 1 job, không phải 3."""
     sched = _mk_schedule(db, project, misfire_policy="catchup_once")
     sched.next_run_at = scheduler._naive(_utc(2026, 9, 22, 23, 0))   # 3 ngày trước
@@ -163,7 +177,7 @@ def test_catchup_once_creates_exactly_one_job_after_three_days_off(db, project):
     assert scheduler._aware(s.next_run_at) > now      # mốc đã tiến về tương lai
 
 
-def test_skip_policy_creates_no_job_but_still_advances(db, project):
+def test_skip_policy_creates_no_job_but_still_advances(db, project, workflow):
     sched = _mk_schedule(db, project, misfire_policy="skip")
     sched.next_run_at = scheduler._naive(_utc(2026, 9, 22, 23, 0))
     db.commit()
@@ -180,7 +194,7 @@ def test_skip_policy_creates_no_job_but_still_advances(db, project):
     assert scheduler._aware(s.next_run_at) > now
 
 
-def test_missed_beyond_catchup_window_is_not_run(db, project):
+def test_missed_beyond_catchup_window_is_not_run(db, project, workflow):
     """Lịch hằng tháng, máy tắt cả tháng → mốc lỡ nằm ngoài cửa sổ 24h → bỏ."""
     sched = _mk_schedule(db, project, cron_expression="0 6 1 * *")   # 6h sáng mùng 1
     sched.next_run_at = scheduler._naive(_utc(2026, 7, 31, 23, 0))
@@ -200,7 +214,7 @@ def test_missed_beyond_catchup_window_is_not_run(db, project):
 # 4. Chống bắn trùng
 # --------------------------------------------------------------------------- #
 
-def test_same_fire_time_twice_yields_one_job(db, project):
+def test_same_fire_time_twice_yields_one_job(db, project, workflow):
     """Mô phỏng uvicorn --reload chạy lại tick cho cùng một mốc.
 
     UNIQUE (schedule_id, fire_time) là thứ DUY NHẤT chặn trùng — không phải một
@@ -225,16 +239,50 @@ def test_same_fire_time_twice_yields_one_job(db, project):
     db.expire_all()
     jobs = _jobs(db, sched.id)
     assert len(jobs) == 1, f"phải đúng 1 job cho 1 mốc, đang có {len(jobs)}"
-    assert jobs[0].source == "schedule"
     assert jobs[0].schedule_id == sched.id
+    assert jobs[0].workflow_id == workflow.id
+    assert jobs[0].status == "running"
 
 
 # --------------------------------------------------------------------------- #
 # 5. Chống dồn ứ (worker chạy tuần tự)
 # --------------------------------------------------------------------------- #
 
+def test_forbid_skips_when_project_workflow_running(db, project, workflow):
+    """Workflow của dự án đang chạy dở cũng tính là bận."""
+    sched = _mk_schedule(db, project, concurrency_policy="forbid")
+    sched.next_run_at = scheduler._naive(_utc(2026, 9, 25, 23, 0))
+    db.add(models.WorkflowRun(workflow_id=workflow.id, status="running"))
+    db.commit()
+    _seed_snapshot(db, project)
+    (doc_scan.docs_path(SLUG) / "prd.md").write_text("# PRD\nĐÃ SỬA\n", encoding="utf-8")
+
+    scheduler.tick(now=_utc(2026, 9, 26, 0, 0))
+
+    db.expire_all()
+    assert _jobs(db, sched.id) == []
+    assert db.get(models.Schedule, sched.id).last_status == "skipped"
+
+
+def test_missing_workflow_is_error_not_run(db, project):
+    """Chọn chạy workflow mà workflow đã bị xoá → báo lỗi, không tạo gì."""
+    sched = _mk_schedule(db, project, workflow_id=None)
+    sched.next_run_at = scheduler._naive(_utc(2026, 9, 25, 23, 0))
+    db.commit()
+    _seed_snapshot(db, project)
+    (doc_scan.docs_path(SLUG) / "prd.md").write_text("# PRD\nĐÃ SỬA\n", encoding="utf-8")
+
+    scheduler.tick(now=_utc(2026, 9, 26, 0, 0))
+
+    db.expire_all()
+    assert _jobs(db) == []
+    s = db.get(models.Schedule, sched.id)
+    assert s.last_status == "error"
+    assert "chưa chọn workflow" in (s.last_detail or "")
+
+
 @pytest.mark.parametrize("busy_status", ["queued", "running"])
-def test_forbid_skips_when_project_already_busy(db, project, busy_status):
+def test_forbid_skips_when_project_already_busy(db, project, workflow, busy_status):
     sched = _mk_schedule(db, project, concurrency_policy="forbid")
     sched.next_run_at = scheduler._naive(_utc(2026, 9, 25, 23, 0))
     db.add(models.RunJob(client_folder=SLUG, project_id=project.id, status=busy_status))
@@ -257,7 +305,7 @@ def test_forbid_skips_when_project_already_busy(db, project, busy_status):
 # 6. Quét tài liệu
 # --------------------------------------------------------------------------- #
 
-def test_no_change_creates_no_job(db, project):
+def test_no_change_creates_no_job(db, project, workflow):
     """Tài liệu không đổi → KHÔNG đánh thức pipeline. Đây là chỗ tiết kiệm token."""
     sched = _mk_schedule(db, project)
     sched.next_run_at = scheduler._naive(_utc(2026, 9, 25, 23, 0))
@@ -271,7 +319,7 @@ def test_no_change_creates_no_job(db, project):
     assert db.get(models.Schedule, sched.id).last_status == "no_change"
 
 
-def test_first_scan_only_stores_baseline(db, project):
+def test_first_scan_only_stores_baseline(db, project, workflow):
     """Lần quét đầu chưa có gì để so — lưu ảnh chụp, đừng báo 'thêm N file'."""
     sched = _mk_schedule(db, project)
     sched.next_run_at = scheduler._naive(_utc(2026, 9, 25, 23, 0))
@@ -286,7 +334,7 @@ def test_first_scan_only_stores_baseline(db, project):
         models.DocSnapshot.project_id == project.id).count() == 1
 
 
-def test_notify_only_does_not_create_job(db, project):
+def test_notify_only_does_not_create_job(db, project, workflow):
     sched = _mk_schedule(db, project, on_change="notify")
     sched.next_run_at = scheduler._naive(_utc(2026, 9, 25, 23, 0))
     db.commit()
@@ -318,7 +366,7 @@ def test_missing_docs_dir_is_error_not_crash(db):
     assert scheduler._aware(s.next_run_at) > _utc(2026, 9, 26, 0, 0)
 
 
-def test_disabled_schedule_is_ignored(db, project):
+def test_disabled_schedule_is_ignored(db, project, workflow):
     sched = _mk_schedule(db, project, enabled=False)
     sched.next_run_at = scheduler._naive(_utc(2026, 9, 25, 23, 0))
     db.commit()

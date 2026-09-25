@@ -66,6 +66,10 @@ _COLUMN_MIGRATIONS = [
     ("run_jobs",           "source",            "VARCHAR DEFAULT 'manual'"),
     ("run_jobs",           "schedule_id",       "INTEGER"),
     ("run_jobs",           "fire_time",         "TIMESTAMP"),
+    # Lịch chạy workflow thay cho pipeline (xem models.Schedule.workflow_id).
+    ("schedules",          "workflow_id",       "INTEGER"),
+    ("workflow_runs",      "schedule_id",       "INTEGER"),
+    ("workflow_runs",      "fire_time",         "TIMESTAMP"),
 ]
 
 for _table, _column, _ddl in _COLUMN_MIGRATIONS:
@@ -88,6 +92,15 @@ def _ensure_scheduler_unique_index() -> None:
         conn.execute(text(
             "CREATE UNIQUE INDEX IF NOT EXISTS uq_run_jobs_schedule_fire "
             "ON run_jobs (schedule_id, fire_time)"
+        ))
+        conn.execute(text(
+            "CREATE UNIQUE INDEX IF NOT EXISTS uq_workflow_runs_schedule_fire "
+            "ON workflow_runs (schedule_id, fire_time)"
+        ))
+        # Lịch cũ còn 'run_pipeline' (trước khi chuyển sang workflow) chưa có
+        # workflow nào để chạy → hạ về chỉ báo, không thì API trả 500 khi liệt kê.
+        conn.execute(text(
+            "UPDATE schedules SET on_change = 'notify' WHERE on_change = 'run_pipeline'"
         ))
         conn.commit()
 

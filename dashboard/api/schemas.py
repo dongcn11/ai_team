@@ -636,7 +636,8 @@ class ScheduleIn(BaseModel):
     job_kind: Literal["scan_docs"] = "scan_docs"
     misfire_policy: Literal["catchup_once", "skip"] = "catchup_once"
     concurrency_policy: Literal["forbid", "allow"] = "forbid"
-    on_change: Literal["notify", "run_pipeline", "both"] = "notify"
+    on_change: Literal["notify", "run_workflow", "both"] = "notify"
+    workflow_id: Optional[int] = None        # bắt buộc khi on_change != notify
     jitter_s: int = Field(default=0, ge=0, le=3600)
 
 

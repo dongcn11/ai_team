@@ -2,6 +2,7 @@ import { useEffect, useState } from "react";
 import {
   Schedule, ScheduleDraft, emptyDraft, previewCron, useSchedules,
 } from "../hooks/useSchedules";
+import { useProjectWorkflows } from "../hooks/useWorkflows";
 
 /**
  * Tab "Lịch chạy" của một dự án.
@@ -37,6 +38,7 @@ function fmtLocal(iso: string | null): string {
 export default function ProjectSchedules({ slug }: { slug: string }) {
   const { items, saving, error, setError, create, update, remove, runNow } =
     useSchedules(slug);
+  const { workflows } = useProjectWorkflows(slug);
   const [editing, setEditing] = useState<number | "new" | null>(null);
   const [draft, setDraft] = useState<ScheduleDraft>(emptyDraft);
   const [runs, setRuns] = useState<string[]>([]);
@@ -60,7 +62,8 @@ export default function ProjectSchedules({ slug }: { slug: string }) {
     setDraft({
       name: s.name, cron_expression: s.cron_expression, timezone: s.timezone,
       enabled: s.enabled, job_kind: s.job_kind, misfire_policy: s.misfire_policy,
-      concurrency_policy: s.concurrency_policy, on_change: s.on_change, jitter_s: s.jitter_s,
+      concurrency_policy: s.concurrency_policy, on_change: s.on_change,
+      workflow_id: s.workflow_id, jitter_s: s.jitter_s,
     });
     setEditing(s.id);
     setError(null);
@@ -77,8 +80,8 @@ export default function ProjectSchedules({ slug }: { slug: string }) {
     <div className="sched-tab">
       <p className="sched-hint">
         Lịch quét tài liệu trong <code>clients/{slug}/</code> của dự án này. Chỉ khi tài liệu
-        <strong> thực sự đổi </strong> mới báo hoặc tạo lần chạy — không đổi thì không đánh
-        thức pipeline.
+        <strong> thực sự đổi </strong> mới báo hoặc chạy workflow — không đổi thì không đánh
+        thức gì cả.
       </p>
 
       {error && <div className="sched-hint warn">{error}</div>}
@@ -171,10 +174,30 @@ export default function ProjectSchedules({ slug }: { slug: string }) {
               onChange={e => patch({ on_change: e.target.value as ScheduleDraft["on_change"] })}
             >
               <option value="notify">Chỉ báo qua chat</option>
-              <option value="run_pipeline">Chạy pipeline</option>
-              <option value="both">Báo và chạy pipeline</option>
+              <option value="run_workflow">Chạy workflow</option>
+              <option value="both">Báo và chạy workflow</option>
             </select>
           </label>
+
+          {draft.on_change !== "notify" && (
+            <label>
+              Workflow sẽ chạy
+              <select
+                value={draft.workflow_id ?? ""}
+                onChange={e => patch({ workflow_id: e.target.value ? Number(e.target.value) : null })}
+              >
+                <option value="">— Chọn workflow —</option>
+                {workflows.map(w => (
+                  <option key={w.id} value={w.id} disabled={!w.is_active}>
+                    {w.name}{w.is_active ? "" : " (đang tắt)"}
+                  </option>
+                ))}
+              </select>
+              {workflows.length === 0 && (
+                <span className="sched-hint warn">Dự án chưa có workflow nào — tạo ở tab Workflows trước.</span>
+              )}
+            </label>
+          )}
 
           <label>
             Nếu dự án còn job đang chạy
@@ -197,7 +220,10 @@ export default function ProjectSchedules({ slug }: { slug: string }) {
           </label>
 
           <div className="sched-form-actions">
-            <button onClick={submit} disabled={saving || !!cronError}>
+            <button
+              onClick={submit}
+              disabled={saving || !!cronError || (draft.on_change !== "notify" && !draft.workflow_id)}
+            >
               {saving ? "Đang lưu…" : "Lưu"}
             </button>
             <button onClick={() => { setEditing(null); setError(null); }}>Huỷ</button>
