@@ -7,7 +7,7 @@ from sqlalchemy import text
 from database import engine, Base
 from routers import (runs, tasks, issues, settings, projects, agents, project_tasks, system,
                      run_jobs, workflows, workflow_jobs, slack_events, chat_bots, skills, mcp,
-                     schedules)
+                     schedules, assistant)
 from routers.workflows import poll_running_workflow_runs
 
 Base.metadata.create_all(bind=engine)
@@ -68,6 +68,17 @@ _COLUMN_MIGRATIONS = [
     ("run_jobs",           "fire_time",         "TIMESTAMP"),
     # Lịch chạy workflow thay cho pipeline (xem models.Schedule.workflow_id).
     ("schedules",          "workflow_id",       "INTEGER"),
+    # Khung trò chuyện dashboard: tin trợ lý chờ worker gọi Claude trả lời.
+    ("assistant_messages", "thread_id",         "INTEGER"),
+    ("assistant_threads",  "client_folder",     "VARCHAR"),
+    ("assistant_messages", "status",            "VARCHAR DEFAULT 'done'"),
+    ("assistant_messages", "kind",              "VARCHAR DEFAULT 'chat'"),
+    ("assistant_messages", "meta",              "JSON"),
+    ("assistant_messages", "error",             "TEXT"),
+    ("assistant_messages", "model_used",        "VARCHAR"),
+    ("assistant_messages", "cost_usd",          "DOUBLE PRECISION"),
+    ("assistant_messages", "started_at",        "TIMESTAMP"),
+    ("assistant_messages", "finished_at",       "TIMESTAMP"),
     ("workflow_runs",      "schedule_id",       "INTEGER"),
     ("workflow_runs",      "fire_time",         "TIMESTAMP"),
 ]
@@ -208,6 +219,7 @@ app.include_router(chat_bots.router,       prefix="/api/chat-bots",    tags=["ch
 app.include_router(skills.router,          prefix="/api/skills",       tags=["skills"])
 app.include_router(mcp.router,             prefix="/api/mcp",          tags=["mcp"])
 app.include_router(schedules.router,       prefix="/api/schedules",    tags=["schedules"])
+app.include_router(assistant.router,       prefix="/api/assistant",    tags=["assistant"])
 
 
 _POLL_INTERVAL_S = 5

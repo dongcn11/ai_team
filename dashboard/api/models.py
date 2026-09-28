@@ -449,3 +449,48 @@ class DocSnapshot(Base):
     __table_args__ = (
         UniqueConstraint("project_id", "rel_path", name="uq_doc_snapshots_project_path"),
     )
+
+
+class AssistantThread(Base):
+    """1 cuộc trò chuyện trong khung chat dashboard. Mỗi thread là 1 ngữ cảnh
+    riêng: Claude chỉ thấy lịch sử của đúng thread đang trả lời."""
+    __tablename__ = "assistant_threads"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    title      = Column(String, nullable=False, default="")   # trống = lấy từ tin đầu tiên
+    # Dự án gắn với thread (slug clients/<slug>). NULL = chat tự do. Có dự án thì
+    # Claude được ĐỌC tài liệu + code của dự án đó (Read/Grep/Glob, không sửa).
+    client_folder = Column(String, nullable=True)
+    created_at = Column(DateTime, server_default=func.now())
+    updated_at = Column(DateTime, server_default=func.now())   # tin mới nhất — để xếp danh sách
+
+
+class AssistantMessage(Base):
+    """1 tin trong khung "Trò chuyện" của dashboard — trò chuyện AI thông thường,
+    KHÔNG giao việc (không chạy workflow, không trả lời câu hỏi agent).
+
+    Tin của trợ lý được tạo ngay ở trạng thái `pending` rồi worker.py trên host
+    điền nội dung: API chạy trong container, không có CLI `claude` lẫn đăng nhập
+    của bạn, nên chỉ worker mới gọi được Claude — cùng lý do với WorkflowStepJob."""
+    __tablename__ = "assistant_messages"
+
+    id          = Column(Integer, primary_key=True, index=True)
+    # Thread chứa tin. NULL chỉ còn ở tin tạo trước khi có thread — lần đầu mở
+    # danh sách thread chúng được gom vào 1 thread "Cuộc trò chuyện cũ".
+    thread_id   = Column(Integer, ForeignKey("assistant_threads.id", ondelete="CASCADE"),
+                         nullable=True, index=True)
+    role        = Column(String, nullable=False)          # user | assistant
+    text        = Column(Text, nullable=False, default="")
+    # Chỉ có nghĩa với tin trợ lý: pending (chờ worker) / running / done / error
+    status      = Column(String, default="done")
+    # chat = câu trả lời thường · task_draft = Claude soạn nháp task từ cuộc trò
+    # chuyện; `meta` giữ nháp {name, description, acceptance_criteria, priority,
+    # project} và, sau khi bấm Tạo, {created: {client_folder, task_id, run_id}}.
+    kind        = Column(String, default="chat")
+    meta        = Column(JSON, nullable=True)
+    error       = Column(Text, nullable=True)
+    model_used  = Column(String, nullable=True)
+    cost_usd    = Column(Float, nullable=True)
+    created_at  = Column(DateTime, server_default=func.now())
+    started_at  = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)

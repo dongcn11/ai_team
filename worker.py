@@ -1469,6 +1469,105 @@ def _run_step_job(job: dict):
         return
 
 
+# ── Trò chuyện trên dashboard ───────────────────────────────────────────────
+# Khung "Trò chuyện" ở Dashboard là chat AI thường, không giao việc. API không có
+# CLI claude nên chỉ ghi tin chờ; thread này nhận và trả lời. Thread RIÊNG vì vòng
+# chính chạy tuần tự — một bước workflow 30 phút mà bắt chat xếp hàng sau thì
+# khung chat coi như chết.
+
+CHAT_POLL_S    = float(os.getenv("CHAT_POLL_S", "2"))
+CHAT_TIMEOUT_S = int(os.getenv("CHAT_TIMEOUT_S", "300"))
+# cwd trống: chạy trong repo thì Claude nạp CLAUDE.md/settings của repo vào mỗi câu chat.
+CHAT_CWD = Path(os.getenv("CHAT_CWD", str(Path(os.getenv("TEMP") or "/tmp") / "ai_team_chat")))
+
+
+def _chat_reply(job: dict) -> dict:
+    """1 câu trả lời. Trả body cho /complete. Không tool, không MCP, không lưu
+    session — chỉ nói chuyện; lịch sử đã nằm sẵn trong prompt."""
+    binary = _resolve_claude()
+    if not binary:
+        return {"status": "error", "error": f"Worker không tìm thấy CLI '{CLAUDE_BIN}' — đặt CLAUDE_BIN."}
+    CHAT_CWD.mkdir(parents=True, exist_ok=True)
+    # System prompt qua FILE: tham số có dấu ngoặc kép/ký tự lạ đi qua shim
+    # claude.CMD trên Windows là dễ vỡ quoting.
+    sys_file = CHAT_CWD / "system_prompt.txt"
+    sys_file.write_text(job.get("system") or "", encoding="utf-8")
+    # Thread gắn dự án → cho Claude ĐỌC tài liệu + code của dự án đó (không sửa,
+    # không chạy lệnh). Chat tự do → tắt hết tool.
+    project = job.get("project") or None
+    tools = "Read,Grep,Glob" if project else ""
+    cmd = [binary, "-p", "--output-format", "json", "--tools", tools,
+           "--strict-mcp-config", "--no-session-persistence",
+           "--system-prompt-file", str(sys_file)]
+    if project:
+        dirs = [project.get("docs_dir"), *(project.get("code_dirs") or [])]
+        for d in dict.fromkeys(x for x in dirs if x):
+            p = Path(d) if Path(d).is_absolute() else ROOT / d
+            if p.is_dir():               # thư mục chưa tạo thì --add-dir làm CLI báo lỗi
+                cmd += ["--add-dir", str(p)]
+    if job.get("model"):
+        cmd += ["--model", job["model"]]
+
+    account = ACCOUNTS.pick(job.get("claude_account"),
+                            strict=not job.get("claude_auto_switch", True))
+    if account is None and len(ACCOUNTS):
+        return {"status": "error",
+                "error": f"Không còn tài khoản Claude nào sẵn sàng{_reset_txt(ACCOUNTS.earliest_reset())}."}
+    env = {**os.environ, **(account.env() if account else {})}
+    try:
+        p = subprocess.run(cmd, input=job.get("prompt") or "", capture_output=True, text=True,
+                           encoding="utf-8", errors="replace", env=env, cwd=str(CHAT_CWD),
+                           timeout=CHAT_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "error": f"Quá {CHAT_TIMEOUT_S}s chưa trả lời xong."}
+    except OSError as e:
+        return {"status": "error", "error": f"Không chạy được '{binary}': {e}"}
+
+    try:
+        ev = json.loads((p.stdout or "").strip().splitlines()[-1])
+    except (ValueError, IndexError):
+        ev = {}
+    m = _metrics_from_result(ev) if ev else {}
+    text = ev.get("result") if isinstance(ev.get("result"), str) else ""
+    if p.returncode != 0 or ev.get("is_error") or not text.strip():
+        why = text or (p.stderr or "").strip() or f"claude exit code {p.returncode}"
+        low = why.lower()
+        if account and ("limit" in low or "quota" in low):
+            ACCOUNTS.cool(account.name, None)
+        return {"status": "error", "error": _redact(why)[:2000],
+                "model_used": m.get("model_used"), "cost_usd": m.get("cost_usd")}
+    return {"status": "done", "text": _redact(text),
+            "model_used": m.get("model_used"), "cost_usd": m.get("cost_usd")}
+
+
+def _chat_loop():
+    while True:
+        job = None
+        try:
+            job = _req("/api/assistant/claim", body={}, method="POST")
+        except urllib.error.HTTPError as e:
+            if e.code == 404:          # API bản cũ chưa có khung chat — im lặng chờ
+                time.sleep(30)
+                continue
+        except Exception:
+            pass                       # vòng chính đã báo "API chưa sẵn sàng"
+        if not job:
+            time.sleep(CHAT_POLL_S)
+            continue
+        proj = (job.get("project") or {}).get("slug")
+        print(f"[worker] 💬 Chat #{job['id']} — đang trả lời" + (f" (dự án {proj}, chỉ đọc)" if proj else ""))
+        try:
+            body = _chat_reply(job)
+        except Exception as e:         # đừng để tin kẹt 'running' vì worker vấp
+            body = {"status": "error", "error": str(e)}
+        try:
+            _req(f"/api/assistant/messages/{job['id']}/complete", body=body, method="POST")
+        except Exception as e:
+            print(f"[worker] ⚠️  Không gửi được câu trả lời chat #{job['id']}: {e}")
+        if body["status"] != "done":
+            print(f"[worker] ❌ Chat #{job['id']}: {body.get('error', '')[:200]}")
+
+
 def main():
     print(f"[worker] AI Team queue worker khởi động")
     print(f"[worker]   API  = {API}")
@@ -1490,6 +1589,8 @@ def main():
               f"(xem cảnh báo bên trên) → dùng đăng nhập trong ~/.claude")
     else:
         print(f"[worker]   claude accounts = (không có {CLAUDE_ACCOUNTS_FILE.name} → dùng đăng nhập trong ~/.claude)")
+    threading.Thread(target=_chat_loop, name="chat", daemon=True).start()
+    print(f"[worker]   chat = trả lời khung Trò chuyện ở Dashboard (thread riêng)")
     print(f"[worker] Đang chờ job... (Ctrl+C để dừng)\n")
 
     while True:

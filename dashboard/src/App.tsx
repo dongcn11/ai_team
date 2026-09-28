@@ -14,9 +14,10 @@ import LogsPage        from "./components/LogsPage";
 import WorkflowsPage   from "./components/Workflows";
 import BotsPage        from "./components/Bots";
 import RunConsole      from "./components/RunConsole";
+import AssistantHome   from "./components/AssistantHome";
 import "./App.css";
 
-type Tab = "dashboard" | "projects" | "agents" | "skills" | "workflows" | "runs" | "bots" | "logs" | "settings";
+type Tab = "dashboard" | "pipeline" | "projects" | "agents" | "skills" | "workflows" | "runs" | "bots" | "logs" | "settings";
 
 import { RunSummary } from "./types";
 
@@ -103,13 +104,17 @@ export default function App() {
   const { projects }            = useProjects();
 
   return (
-    <div className="app">
+    <div className={tab === "dashboard" ? "app app-fill" : "app"}>
       <header className="header">
         <div className="header-left">
           <h1>🤖 AI Team Dashboard</h1>
           <nav className="header-nav">
             <button className={`nav-tab ${tab === "dashboard" ? "active" : ""}`} onClick={() => setTab("dashboard")}>
               Dashboard
+            </button>
+            <button className={`nav-tab ${tab === "pipeline" ? "active" : ""}`} onClick={() => setTab("pipeline")}
+              title="Lần chạy pipeline main.py hiện tại + lịch sử">
+              Pipeline
             </button>
             <button className={`nav-tab ${tab === "projects" ? "active" : ""}`} onClick={() => setTab("projects")}>
               Projects
@@ -139,7 +144,7 @@ export default function App() {
               Settings
             </button>
           </nav>
-          {tab === "dashboard" && run && (
+          {tab === "pipeline" && run && (
             <div className="run-meta">
               <span className="badge">Run #{run.id}</span>
               {run.client  && <span className="badge muted">{run.client}</span>}
@@ -155,10 +160,12 @@ export default function App() {
         </div>
       </header>
 
-      <main className="main">
+      <main className={tab === "dashboard" ? "main-full" : "main"}>
         {/* Việc agent chờ dev chốt. Màn hình chạy có thẻ hỏi/đáp riêng ngay cạnh
             bước đang bị chặn nên không lặp lại banner ở đó. */}
         {tab !== "runs" && <AgentQuestions />}
+
+        {tab === "dashboard" && <AssistantHome onOpenProject={() => setTab("projects")} />}
 
         {tab === "projects"  && <ProjectsPage />}
         {tab === "agents"    && <AgentsPage />}
@@ -169,7 +176,7 @@ export default function App() {
         {tab === "logs"      && <LogsPage />}
         {tab === "settings"  && <Settings />}
 
-        {tab === "dashboard" && (
+        {tab === "pipeline" && (
           <>
             {loading && <div className="state">Connecting to API...</div>}
 
