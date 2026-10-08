@@ -100,6 +100,26 @@ Skill được dùng ở cả hai làn:
 > Sửa skill trên dashboard cần `skills/` ghi được: mount trong
 > `dashboard/docker-compose.yml` phải là `../skills:/skills` (không `:ro`).
 
+## API cho hệ thống ngoài (LLM gateway)
+
+Hệ thống khác (CRM, website, app...) dùng AI bên này để chat, viết kịch bản...
+qua `POST /v1/chat/completions` **chuẩn OpenAI** — SDK OpenAI nào cũng gọi được,
+chỉ đổi `base_url` + `api_key`. Quản lý ở tab **API** trên dashboard:
+
+| Mục | Ý nghĩa |
+|-----|---------|
+| Provider | Nơi gọi model thật, chỉ cần `base_url` + key: OpenRouter (Claude, Grok, GPT…), Ollama local, xAI, OpenAI, hay bất kỳ dịch vụ OpenAI-compatible |
+| Model | Alias tự đặt (vd. `viet-kich-ban`) → provider + model gốc + system prompt + tham số mặc định. Đổi model phía sau không phải sửa bên gọi |
+| API key | Cấp cho từng hệ thống (`sk-ait-…`, chỉ lưu hash), giới hạn alias được dùng, đổi/thu hồi được |
+| Sử dụng | Request, token, chi phí theo hệ thống × model. Không lưu nội dung hội thoại |
+
+Claude đi qua OpenRouter (key trả theo token) — **không** qua subscription Claude
+Code, đúng chính sách bên dưới. Code: `dashboard/api/llm_gateway.py`,
+`routers/llm_public.py` (`/v1`), `routers/llm_admin.py` (`/api/llm`).
+
+> Chỉ public đường `/v1` ra internet. `/api/*` của dashboard **không có đăng
+> nhập** — ai vào được là đọc/sửa được provider key và cấp key mới.
+
 ## ⚠️ Chính sách: pipeline không dùng Claude Code
 
 Pipeline này chạy nền qua `worker.py`, nhiều project trong hàng đợi, agent song

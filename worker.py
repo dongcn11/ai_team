@@ -1537,7 +1537,8 @@ def _chat_reply(job: dict) -> dict:
         return {"status": "error", "error": _redact(why)[:2000],
                 "model_used": m.get("model_used"), "cost_usd": m.get("cost_usd")}
     return {"status": "done", "text": _redact(text),
-            "model_used": m.get("model_used"), "cost_usd": m.get("cost_usd")}
+            "model_used": m.get("model_used"), "cost_usd": m.get("cost_usd"),
+            "usage": m.get("usage")}
 
 
 def _chat_loop():
@@ -1568,6 +1569,36 @@ def _chat_loop():
             print(f"[worker] ❌ Chat #{job['id']}: {body.get('error', '')[:200]}")
 
 
+def _llm_cli_loop():
+    """Request LLM gateway gửi tới provider kind=claude_cli (/v1 của dashboard).
+    Cùng cách trả lời với khung chat — không tool, không MCP — nhưng thread riêng
+    để request API ngoài không phải xếp sau tin chat và ngược lại. CHỈ ĐỂ TEST."""
+    while True:
+        job = None
+        try:
+            job = _req("/api/llm/cli-jobs/claim", body={}, method="POST")
+        except urllib.error.HTTPError as e:
+            if e.code == 404:          # API bản cũ chưa có gateway
+                time.sleep(30)
+                continue
+        except Exception:
+            pass
+        if not job:
+            time.sleep(CHAT_POLL_S)
+            continue
+        print(f"[worker] 🔌 API #{job['id']} — claude -p" + (f" --model {job['model']}" if job.get("model") else ""))
+        try:
+            body = _chat_reply(job)
+        except Exception as e:
+            body = {"status": "error", "error": str(e)}
+        try:
+            _req(f"/api/llm/cli-jobs/{job['id']}/complete", body=body, method="POST")
+        except Exception as e:
+            print(f"[worker] ⚠️  Không gửi được kết quả API #{job['id']}: {e}")
+        if body["status"] != "done":
+            print(f"[worker] ❌ API #{job['id']}: {body.get('error', '')[:200]}")
+
+
 def main():
     print(f"[worker] AI Team queue worker khởi động")
     print(f"[worker]   API  = {API}")
@@ -1590,6 +1621,7 @@ def main():
     else:
         print(f"[worker]   claude accounts = (không có {CLAUDE_ACCOUNTS_FILE.name} → dùng đăng nhập trong ~/.claude)")
     threading.Thread(target=_chat_loop, name="chat", daemon=True).start()
+    threading.Thread(target=_llm_cli_loop, name="llm-cli", daemon=True).start()
     print(f"[worker]   chat = trả lời khung Trò chuyện ở Dashboard (thread riêng)")
     print(f"[worker] Đang chờ job... (Ctrl+C để dừng)\n")
 

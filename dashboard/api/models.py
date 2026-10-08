@@ -494,3 +494,104 @@ class AssistantMessage(Base):
     created_at  = Column(DateTime, server_default=func.now())
     started_at  = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
+
+
+# ── LLM gateway: API cho hệ thống khác dùng AI bên này ─────────────────────
+# Hệ thống ngoài gọi /v1/chat/completions (chuẩn OpenAI) bằng API key riêng;
+# gateway tra `model` ra alias → provider thật (OpenRouter, Ollama, xAI...) rồi
+# chuyển tiếp. Xem llm_gateway.py. Mọi provider đều nói chuẩn OpenAI-compatible
+# nên chỉ cần base_url + key, không phải viết adapter riêng từng hãng.
+
+class LlmProvider(Base):
+    """1 nơi gọi model thật. Claude/Grok/GPT... đi qua OpenRouter; model local qua
+    Ollama (`http://host.docker.internal:11434/v1`). KHÔNG có lựa chọn Claude Code
+    subscription — xem chính sách trong README."""
+    __tablename__ = "llm_providers"
+
+    id             = Column(Integer, primary_key=True, index=True)
+    name           = Column(String, nullable=False, unique=True)   # "openrouter", "ollama"
+    base_url       = Column(String, nullable=False)                # .../v1
+    api_key        = Column(String, nullable=True)                 # Ollama không cần
+    extra_headers  = Column(JSON, nullable=True)                   # OpenRouter: HTTP-Referer, X-Title
+    timeout_s      = Column(Integer, default=120)
+    # Cho client gọi thẳng "<name>/<model gốc>" mà không cần khai alias — tiện với
+    # OpenRouter (hàng trăm model) nhưng mở ví tiền ra, nên mặc định tắt.
+    allow_passthrough = Column(Boolean, default=False)
+    enabled        = Column(Boolean, default=True)
+    # "openai"     — HTTP chuẩn OpenAI tới base_url (mặc định)
+    # "claude_cli" — xếp hàng LlmCliJob, worker.py trên host chạy `claude -p` bằng
+    #                đăng nhập Claude Code (như khung chat). CHỈ ĐỂ TEST lâu lâu:
+    #                subscription cá nhân không được làm backend cho hệ thống khác.
+    kind           = Column(String, default="openai")
+    created_at     = Column(DateTime, server_default=func.now())
+
+
+class LlmModel(Base):
+    """Model tự đặt tên ("custom model"): alias client gửi lên → model thật của
+    provider, kèm system prompt + tham số mặc định. Nhờ vậy "viet-kich-ban" có thể
+    là Claude hôm nay, Grok ngày mai mà hệ thống ngoài không phải sửa gì."""
+    __tablename__ = "llm_models"
+
+    id             = Column(Integer, primary_key=True, index=True)
+    alias          = Column(String, nullable=False, unique=True)
+    provider_id    = Column(Integer, ForeignKey("llm_providers.id", ondelete="CASCADE"), nullable=False)
+    upstream_model = Column(String, nullable=False)   # "anthropic/claude-sonnet-5-5", "qwen3:8b"
+    description    = Column(Text, nullable=True)
+    system_prompt  = Column(Text, nullable=True)
+    # Tham số mặc định (temperature, max_tokens...) — client gửi thì client thắng.
+    params         = Column(JSON, nullable=True)
+    enabled        = Column(Boolean, default=True)
+    created_at     = Column(DateTime, server_default=func.now())
+
+
+class ApiClient(Base):
+    """1 hệ thống ngoài được cấp key. Chỉ lưu hash — key thật hiện đúng 1 lần lúc tạo."""
+    __tablename__ = "api_clients"
+
+    id             = Column(Integer, primary_key=True, index=True)
+    name           = Column(String, nullable=False)
+    key_hash       = Column(String, nullable=False, unique=True, index=True)
+    key_prefix     = Column(String, nullable=False)    # vài ký tự đầu để nhận ra key
+    allowed_models = Column(JSON, nullable=True)       # [] / NULL = mọi alias đang bật
+    enabled        = Column(Boolean, default=True)
+    created_at     = Column(DateTime, server_default=func.now())
+    last_used_at   = Column(DateTime, nullable=True)
+
+
+class LlmUsage(Base):
+    """1 dòng / request. KHÔNG lưu nội dung hội thoại — chỉ số liệu để đối soát."""
+    __tablename__ = "llm_usage"
+
+    id                = Column(Integer, primary_key=True, index=True)
+    client_id         = Column(Integer, nullable=True, index=True)   # NULL = thử trên dashboard
+    model             = Column(String, nullable=True)                # alias client gửi
+    provider          = Column(String, nullable=True)
+    upstream_model    = Column(String, nullable=True)
+    prompt_tokens     = Column(Integer, nullable=True)
+    completion_tokens = Column(Integer, nullable=True)
+    cost_usd          = Column(Float, nullable=True)                 # OpenRouter trả usage.cost
+    latency_ms        = Column(Integer, nullable=True)
+    status            = Column(String, default="ok")                 # ok | error
+    error             = Column(Text, nullable=True)
+    created_at        = Column(DateTime, server_default=func.now(), index=True)
+
+
+class LlmCliJob(Base):
+    """1 request gateway chờ worker chạy `claude -p` (provider kind=claude_cli).
+    API trong container không có CLI lẫn đăng nhập Claude — cùng lý do khung chat
+    phải đi qua worker. Request HTTP của client giữ kết nối chờ job xong."""
+    __tablename__ = "llm_cli_jobs"
+
+    id          = Column(Integer, primary_key=True, index=True)
+    model       = Column(String, nullable=True)      # truyền --model; trống = mặc định CLI
+    system      = Column(Text, nullable=True)
+    prompt      = Column(Text, nullable=False)
+    status      = Column(String, default="pending", index=True)  # pending|running|done|error
+    result      = Column(Text, nullable=True)
+    error       = Column(Text, nullable=True)
+    model_used  = Column(String, nullable=True)
+    cost_usd    = Column(Float, nullable=True)
+    usage       = Column(JSON, nullable=True)
+    created_at  = Column(DateTime, server_default=func.now())
+    started_at  = Column(DateTime, nullable=True)
+    finished_at = Column(DateTime, nullable=True)

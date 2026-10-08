@@ -13,11 +13,12 @@ import SkillsPage      from "./components/Skills";
 import LogsPage        from "./components/LogsPage";
 import WorkflowsPage   from "./components/Workflows";
 import BotsPage        from "./components/Bots";
+import LlmGatewayPage  from "./components/LlmGateway";
 import RunConsole      from "./components/RunConsole";
 import AssistantHome   from "./components/AssistantHome";
 import "./App.css";
 
-type Tab = "dashboard" | "pipeline" | "projects" | "agents" | "skills" | "workflows" | "runs" | "bots" | "logs" | "settings";
+type Tab = "dashboard" | "pipeline" | "projects" | "agents" | "skills" | "workflows" | "runs" | "bots" | "api" | "logs" | "settings";
 
 import { RunSummary } from "./types";
 
@@ -137,6 +138,10 @@ export default function App() {
               title="Bot Telegram/Slack — nhận câu hỏi của agent và chạy workflow từ điện thoại">
               Bots
             </button>
+            <button className={`nav-tab ${tab === "api" ? "active" : ""}`} onClick={() => setTab("api")}
+              title="API chuẩn OpenAI cho hệ thống khác dùng AI bên này — Claude, Grok, Ollama…">
+              API
+            </button>
             <button className={`nav-tab ${tab === "logs" ? "active" : ""}`} onClick={() => setTab("logs")}>
               Logs
             </button>
@@ -173,6 +178,7 @@ export default function App() {
         {tab === "workflows" && <WorkflowsPage />}
         {tab === "runs"      && <RunConsole />}
         {tab === "bots"      && <BotsPage />}
+        {tab === "api"       && <LlmGatewayPage />}
         {tab === "logs"      && <LogsPage />}
         {tab === "settings"  && <Settings />}
 

@@ -51,6 +51,10 @@ services:
       # (xem api/skills_store.py). Để chỉ-đọc thì mọi nút Lưu đều báo lỗi.
       - ../skills:/skills
       - ../workflow_tasks:/workflow_tasks
+    # Provider Ollama chạy trên máy thật: base_url http://host.docker.internal:11434/v1.
+    # Docker Desktop tự có tên này; Linux thì cần dòng dưới.
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
     depends_on:
       db:
         condition: service_healthy

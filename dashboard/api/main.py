@@ -7,7 +7,7 @@ from sqlalchemy import text
 from database import engine, Base
 from routers import (runs, tasks, issues, settings, projects, agents, project_tasks, system,
                      run_jobs, workflows, workflow_jobs, slack_events, chat_bots, skills, mcp,
-                     schedules, assistant)
+                     schedules, assistant, llm_admin, llm_public)
 from routers.workflows import poll_running_workflow_runs
 
 Base.metadata.create_all(bind=engine)
@@ -81,6 +81,8 @@ _COLUMN_MIGRATIONS = [
     ("assistant_messages", "finished_at",       "TIMESTAMP"),
     ("workflow_runs",      "schedule_id",       "INTEGER"),
     ("workflow_runs",      "fire_time",         "TIMESTAMP"),
+    # LLM gateway: provider chạy qua `claude -p` trên worker (xem models.LlmProvider.kind).
+    ("llm_providers",      "kind",              "VARCHAR DEFAULT 'openai'"),
 ]
 
 for _table, _column, _ddl in _COLUMN_MIGRATIONS:
@@ -220,6 +222,9 @@ app.include_router(skills.router,          prefix="/api/skills",       tags=["sk
 app.include_router(mcp.router,             prefix="/api/mcp",          tags=["mcp"])
 app.include_router(schedules.router,       prefix="/api/schedules",    tags=["schedules"])
 app.include_router(assistant.router,       prefix="/api/assistant",    tags=["assistant"])
+app.include_router(llm_admin.router,       prefix="/api/llm",          tags=["llm-admin"])
+# API cho hệ thống ngoài (chuẩn OpenAI) — đường duy nhất nên public ra internet.
+app.include_router(llm_public.router,      prefix="/v1",               tags=["llm-public"])
 
 
 _POLL_INTERVAL_S = 5
