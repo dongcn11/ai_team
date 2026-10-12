@@ -25,6 +25,7 @@ def set_output_dir(output_dir: str | Path):
     TASKS_FILE        = base / "tasks.json"
     _CURRENT_RUN_FILE = base / "_dashboard_run.json"
 _API_URL          = os.getenv("DASHBOARD_API_URL", "http://localhost:8100")
+_WORKER_TOKEN     = os.getenv("WORKER_TOKEN", "").strip()   # xem dashboard/api/auth.py
 
 _run_id: int | None = None
 
@@ -68,7 +69,8 @@ def _api_request(path: str, body: dict, method: str = "POST") -> dict | None:
         req  = urllib.request.Request(
             f"{_API_URL}{path}",
             data=data,
-            headers={"Content-Type": "application/json"},
+            headers={"Content-Type": "application/json",
+                     **({"X-Worker-Token": _WORKER_TOKEN} if _WORKER_TOKEN else {})},
             method=method,
         )
         with urllib.request.urlopen(req, timeout=3) as resp:

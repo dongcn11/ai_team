@@ -1,4 +1,4 @@
-import React, { useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import { useCurrentRun, useRunHistory } from "./hooks/useTasks";
 import { useProjects } from "./hooks/useProjects";
 import AgentQuestions from "./components/AgentQuestions";
@@ -16,9 +16,17 @@ import BotsPage        from "./components/Bots";
 import LlmGatewayPage  from "./components/LlmGateway";
 import RunConsole      from "./components/RunConsole";
 import AssistantHome   from "./components/AssistantHome";
+import AccountsPage    from "./components/Accounts";
+import { UserMenu, useAuth } from "./auth";
+import { Tab, TAB_INFO } from "./tabs";
 import "./App.css";
 
-type Tab = "dashboard" | "pipeline" | "projects" | "agents" | "skills" | "workflows" | "runs" | "bots" | "api" | "logs" | "settings";
+// Tab nằm trên URL (#projects…): nút Back trên điện thoại quay lại tab trước,
+// và gửi/lưu link thẳng tới 1 tab được. Tab không có quyền → tab đầu tiên được vào.
+function tabFromHash(allowed: Tab[]): Tab {
+  const h = window.location.hash.slice(1) as Tab;
+  return allowed.includes(h) ? h : allowed[0] ?? "dashboard";
+}
 
 import { RunSummary } from "./types";
 
@@ -99,7 +107,23 @@ function HomeSummary({ history, projectCount, onGoProjects }: {
 }
 
 export default function App() {
-  const [tab, setTab] = useState<Tab>("dashboard");
+  const { user } = useAuth();
+  // Màn hình được vào: admin thấy hết + Tài khoản; còn lại theo quyền (mặc định Dashboard).
+  const allowed = useMemo(() => TAB_INFO.map(t => t.key).filter(k =>
+    k === "accounts" ? user.is_admin : user.is_admin || user.permissions.includes(k)), [user]);
+  const allowedKey = allowed.join(",");
+  const [tab, setTabState] = useState<Tab>(() => tabFromHash(allowed));
+  useEffect(() => {
+    const onHash = () => setTabState(tabFromHash(allowed));
+    onHash();                                  // quyền đổi (admin sửa) → kéo về tab hợp lệ
+    window.addEventListener("hashchange", onHash);
+    return () => window.removeEventListener("hashchange", onHash);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [allowedKey]);
+  const setTab = (t: Tab) => {
+    if (t !== tab) window.location.hash = t;
+    setTabState(t);
+  };
   const { run, error, loading } = useCurrentRun();
   const history                 = useRunHistory();
   const { projects }            = useProjects();
@@ -110,44 +134,12 @@ export default function App() {
         <div className="header-left">
           <h1>🤖 AI Team Dashboard</h1>
           <nav className="header-nav">
-            <button className={`nav-tab ${tab === "dashboard" ? "active" : ""}`} onClick={() => setTab("dashboard")}>
-              Dashboard
-            </button>
-            <button className={`nav-tab ${tab === "pipeline" ? "active" : ""}`} onClick={() => setTab("pipeline")}
-              title="Lần chạy pipeline main.py hiện tại + lịch sử">
-              Pipeline
-            </button>
-            <button className={`nav-tab ${tab === "projects" ? "active" : ""}`} onClick={() => setTab("projects")}>
-              Projects
-            </button>
-            <button className={`nav-tab ${tab === "agents" ? "active" : ""}`} onClick={() => setTab("agents")}>
-              Agents
-            </button>
-            <button className={`nav-tab ${tab === "skills" ? "active" : ""}`} onClick={() => setTab("skills")}
-              title="Kho skill (SKILL.md + frontmatter) — node workflow và pipeline cùng đọc">
-              Skills
-            </button>
-            <button className={`nav-tab ${tab === "workflows" ? "active" : ""}`} onClick={() => setTab("workflows")}>
-              Workflows
-            </button>
-            <button className={`nav-tab ${tab === "runs" ? "active" : ""}`} onClick={() => setTab("runs")}
-              title="Màn hình chạy — lệnh cần chạy, file task và tiến độ từng bước">
-              Lần chạy
-            </button>
-            <button className={`nav-tab ${tab === "bots" ? "active" : ""}`} onClick={() => setTab("bots")}
-              title="Bot Telegram/Slack — nhận câu hỏi của agent và chạy workflow từ điện thoại">
-              Bots
-            </button>
-            <button className={`nav-tab ${tab === "api" ? "active" : ""}`} onClick={() => setTab("api")}
-              title="API chuẩn OpenAI cho hệ thống khác dùng AI bên này — Claude, Grok, Ollama…">
-              API
-            </button>
-            <button className={`nav-tab ${tab === "logs" ? "active" : ""}`} onClick={() => setTab("logs")}>
-              Logs
-            </button>
-            <button className={`nav-tab ${tab === "settings" ? "active" : ""}`} onClick={() => setTab("settings")}>
-              Settings
-            </button>
+            {TAB_INFO.filter(t => allowed.includes(t.key)).map(t => (
+              <button key={t.key} className={`nav-tab ${tab === t.key ? "active" : ""}`}
+                onClick={() => setTab(t.key)} title={t.title}>
+                {t.label}
+              </button>
+            ))}
           </nav>
           {tab === "pipeline" && run && (
             <div className="run-meta">
@@ -162,13 +154,14 @@ export default function App() {
             {error ? error : run ? `${run.status}` : "no run"}
           </span>
           <div className={`dot ${error ? "error" : "ok"}`} title={error ?? "Connected"} />
+          <UserMenu />
         </div>
       </header>
 
       <main className={tab === "dashboard" ? "main-full" : "main"}>
         {/* Việc agent chờ dev chốt. Màn hình chạy có thẻ hỏi/đáp riêng ngay cạnh
             bước đang bị chặn nên không lặp lại banner ở đó. */}
-        {tab !== "runs" && <AgentQuestions />}
+        {tab !== "runs" && tab !== "accounts" && <AgentQuestions />}
 
         {tab === "dashboard" && <AssistantHome onOpenProject={() => setTab("projects")} />}
 
@@ -181,6 +174,7 @@ export default function App() {
         {tab === "api"       && <LlmGatewayPage />}
         {tab === "logs"      && <LogsPage />}
         {tab === "settings"  && <Settings />}
+        {tab === "accounts"  && <AccountsPage />}
 
         {tab === "pipeline" && (
           <>

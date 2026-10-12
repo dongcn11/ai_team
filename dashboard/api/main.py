@@ -8,6 +8,8 @@ from database import engine, Base
 from routers import (runs, tasks, issues, settings, projects, agents, project_tasks, system,
                      run_jobs, workflows, workflow_jobs, slack_events, chat_bots, skills, mcp,
                      schedules, assistant, llm_admin, llm_public)
+from routers import auth as auth_router
+import auth
 from routers.workflows import poll_running_workflow_runs
 
 Base.metadata.create_all(bind=engine)
@@ -71,6 +73,13 @@ _COLUMN_MIGRATIONS = [
     # Khung trò chuyện dashboard: tin trợ lý chờ worker gọi Claude trả lời.
     ("assistant_messages", "thread_id",         "INTEGER"),
     ("assistant_threads",  "client_folder",     "VARCHAR"),
+    # Chủ cuộc trò chuyện (xem models.AssistantThread.user_id).
+    ("assistant_threads",  "user_id",           "INTEGER"),
+    # Dự án được gán cho tài khoản (xem models.User.projects).
+    ("users",              "projects",          "JSON"),
+    # Model chat: được dùng (users) / đang chọn (thread) — xem chat_models.py.
+    ("users",              "models",            "JSON"),
+    ("assistant_threads",  "model",             "VARCHAR"),
     ("assistant_messages", "status",            "VARCHAR DEFAULT 'done'"),
     ("assistant_messages", "kind",              "VARCHAR DEFAULT 'chat'"),
     ("assistant_messages", "meta",              "JSON"),
@@ -83,6 +92,8 @@ _COLUMN_MIGRATIONS = [
     ("workflow_runs",      "fire_time",         "TIMESTAMP"),
     # LLM gateway: provider chạy qua `claude -p` trên worker (xem models.LlmProvider.kind).
     ("llm_providers",      "kind",              "VARCHAR DEFAULT 'openai'"),
+    ("llm_cli_jobs",       "cli",               "VARCHAR DEFAULT 'claude'"),
+    ("llm_cli_jobs",       "files",             "JSON"),
 ]
 
 for _table, _column, _ddl in _COLUMN_MIGRATIONS:
@@ -204,6 +215,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+# Đăng nhập: chặn /api/* khi chưa có phiên (xem auth.py).
+app.middleware("http")(auth.guard)
+
+app.include_router(auth_router.router, prefix="/api/auth", tags=["auth"])
 
 app.include_router(runs.router,   prefix="/api/runs",   tags=["runs"])
 app.include_router(tasks.router,  prefix="/api/tasks",  tags=["tasks"])

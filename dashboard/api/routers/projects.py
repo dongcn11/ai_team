@@ -1,4 +1,4 @@
-from fastapi import APIRouter, HTTPException, Depends, Query, UploadFile, File, Form
+from fastapi import APIRouter, HTTPException, Depends, Query, Request, UploadFile, File, Form
 from fastapi.responses import StreamingResponse, FileResponse
 from pydantic import BaseModel
 from typing import List, Optional
@@ -12,6 +12,8 @@ import tomllib
 import uuid
 import yaml
 import zipfile
+
+import auth
 from datetime import datetime
 from pathlib import Path
 
@@ -371,13 +373,15 @@ def list_profiles() -> List[dict]:
 
 
 @router.get("/")
-def list_projects() -> List[dict]:
+def list_projects(request: Request) -> List[dict]:
     if not CLIENTS_DIR.exists():
         return []
+    # Tài khoản thường chỉ thấy dự án được gán (auth.py); admin thấy hết.
+    allowed = auth.allowed_projects(request)
     return [
         _folder_to_project(f)
         for f in sorted(CLIENTS_DIR.iterdir())
-        if f.is_dir() and (f / "settings.toml").exists()
+        if f.is_dir() and (f / "settings.toml").exists() and (allowed is None or f.name in allowed)
     ]
 
 

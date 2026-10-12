@@ -166,6 +166,8 @@
   border: 1px solid transparent; border-radius: 999px; padding: 3px 8px; outline: none; max-width: 240px;
 }
 .ah-project.on { color: var(--ah-accent); background: #f7e6de; border-color: var(--ah-accent-soft); font-weight: 600; }
+.ah-model { color: var(--ah-ink); max-width: 200px; }
+.ah-model-none { font-size: 12px; color: #b04a3a; background: #fbecea; border-radius: 999px; padding: 3px 10px; }
 .ah-thread-meta { gap: 6px; }
 .ah-thread-proj {
   flex-shrink: 0; max-width: 45%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -252,6 +254,52 @@
   color: #fff; background: var(--ah-accent);
 }
 .ah-send:disabled { background: var(--ah-accent-soft); cursor: default; }
+.ah-compose-tip { flex: 1; min-width: 0; }
+.ah-compose.drag { border-color: var(--ah-accent); border-style: dashed; background: #fbf3ee; }
+.ah-attach-btn {
+  border: 1px solid var(--ah-line); background: var(--ah-card); border-radius: 999px;
+  width: 32px; height: 32px; font-size: 15px; line-height: 1; flex-shrink: 0;
+}
+.ah-attach-btn:hover:not(:disabled) { border-color: var(--ah-accent-soft); }
+.ah-attach-btn:disabled { opacity: .45; cursor: default; }
+
+/* File: chip trong ô soạn + trong tin đã gửi */
+.ah-attach { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 8px; }
+.ah-attach-chip, .ah-file {
+  display: inline-flex; align-items: center; gap: 6px; max-width: 260px; padding: 4px 6px 4px 10px;
+  border: 1px solid var(--ah-line); border-radius: 8px; background: #f7f3ec; font-size: 12px; color: var(--ah-ink);
+}
+.ah-attach-chip.busy { opacity: .6; }
+.ah-attach-chip.err { border-color: #e2a59a; background: #fbecea; }
+.ah-attach-chip.err .ah-file-size { color: #b04a3a; }
+.ah-attach-chip button { border: 0; background: transparent; font-size: 15px; line-height: 1; color: var(--ah-muted); padding: 0 2px; }
+.ah-attach-chip button:hover { color: var(--ah-ink); }
+.ah-file-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.ah-file-size { color: var(--ah-muted); flex-shrink: 0; }
+.ah-files { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 4px; justify-content: flex-end; max-width: 100%; }
+.ah-msg.assistant .ah-files { justify-content: flex-start; }
+.ah-file { text-decoration: none; padding-right: 10px; background: var(--ah-card); }
+.ah-file:hover { border-color: var(--ah-accent-soft); }
+.ah-file-img { display: block; border-radius: 10px; overflow: hidden; border: 1px solid var(--ah-line); background: var(--ah-card); }
+.ah-file-img img { display: block; max-width: 220px; max-height: 160px; object-fit: cover; }
+.ah-msg.assistant .ah-files { margin: 6px 0 0; }
+
+/* File model tạo qua sandbox */
+.ah-gen-run { display: inline-flex; align-items: center; gap: 8px; margin-top: 6px; font-size: 12px; color: var(--ah-muted); }
+.ah-gen-spin {
+  width: 12px; height: 12px; border-radius: 50%; border: 2px solid var(--ah-accent-soft);
+  border-top-color: var(--ah-accent); animation: ah-spin .8s linear infinite;
+}
+@keyframes ah-spin { to { transform: rotate(360deg); } }
+.ah-gen-err {
+  margin-top: 6px; max-width: 100%; padding: 8px 12px; border-radius: 10px; font-size: 12px;
+  background: #fbecea; border: 1px solid #e2a59a; color: #8a3a2e; white-space: pre-wrap; word-break: break-word;
+}
+.ah-gen-err code { display: block; margin-top: 4px; max-height: 120px; overflow: auto; font-size: 11px; }
+.ah-gen-hint { margin-top: 4px; color: var(--ah-muted); }
+.ah-gen-code { margin-top: 4px; font-size: 11px; color: var(--ah-muted); max-width: 100%; }
+.ah-gen-code summary { cursor: pointer; padding: 2px 4px; }
+.ah-gen-code pre { max-height: 300px; overflow: auto; font-size: 11px; }
 
 /* ── Công việc ── */
 .ah-jobs { display: flex; flex-direction: column; min-height: 0; background: var(--ah-panel); border-left: 1px solid var(--ah-line); }
@@ -317,10 +365,67 @@
   .ah-thread-select, .ah-new-sm { display: inline-block; }
   .ah-new-sm { padding: 2px 10px; }
 }
+/* Thanh chuyển Trò chuyện / Công việc — chỉ hiện trên điện thoại */
+.ah-mtabs { display: none; }
+
+/* Điện thoại: 1 khung chiếm trọn màn (không xếp chồng chat + công việc — chồng
+   nhau thì khung chat bị ép thấp, ô nhập tin bị danh sách công việc đè mất).
+   Ô nhập luôn ghim đáy; danh sách tin / công việc tự cuộn bên trong. */
 @media (max-width: 760px) {
-  .ah { height: auto; min-height: 100%; }
-  .ah-body { grid-template-columns: 1fr; }
-  .ah-chat { height: 70vh; padding: 14px 16px; }
-  .ah-jobs { border-left: 0; border-top: 1px solid var(--ah-line); }
-  .ah-chat-hint, .ah-brand-sub { display: none; }
+  .ah-top { flex-wrap: nowrap; padding: 8px 12px; }
+  .ah-logo { width: 28px; height: 28px; font-size: 12px; }
+  .ah-top-right { gap: 8px; font-size: 11px; white-space: nowrap; }
+  .ah-online { padding: 3px 8px; }
+
+  .ah-mtabs {
+    display: flex; gap: 4px; padding: 6px 12px; background: var(--ah-panel);
+    border-bottom: 1px solid var(--ah-line); flex-shrink: 0;
+  }
+  .ah-mtabs button {
+    flex: 1; display: inline-flex; align-items: center; justify-content: center; gap: 6px;
+    padding: 8px 10px; border: 1px solid var(--ah-line); border-radius: 999px;
+    background: var(--ah-card); color: var(--ah-muted); font-size: 13px; font-weight: 600;
+  }
+  .ah-mtabs button.on { background: var(--ah-accent); border-color: var(--ah-accent); color: #fff; }
+  .ah-mtabs button span { font-size: 11px; padding: 0 7px; border-radius: 999px; background: #ece6dc; color: var(--ah-muted); }
+  .ah-mtabs button.on span { background: rgba(255,255,255,.25); color: #fff; }
+  .ah-mtabs-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ah-blue); animation: ah-pulse 1.2s infinite; }
+
+  .ah-body { display: flex; flex-direction: column; }
+  .ah-body.pane-chat .ah-jobs, .ah-body.pane-jobs .ah-chat-area { display: none; }
+  .ah-chat-area, .ah-jobs { flex: 1; min-height: 0; }
+  .ah-chat-area { display: flex; flex-direction: column; }
+  .ah-chat { flex: 1; min-height: 0; padding: 8px 12px calc(8px + env(safe-area-inset-bottom)); }
+  .ah-jobs { border-left: 0; }
+
+  /* Đầu khung chat: bỏ tiêu đề (thanh tab đã ghi), các ô chọn xếp gọn */
+  .ah-chat-head { flex-wrap: wrap; gap: 6px; }
+  .ah-chat-head h2, .ah-chat-hint, .ah-brand-sub { display: none; }
+  .ah-thread-select { flex: 1 1 140px; min-width: 0; max-width: none; }
+  .ah-project { flex: 1 1 140px; min-width: 0; max-width: none; }
+  .ah-task-btn { margin-left: 0; }
+
+  .ah-msgs { padding: 12px 0; gap: 10px; }
+  .ah-msg, .ah-msg.wide { max-width: 92%; }
+  .ah-msg.user { align-self: flex-end; }
+  .ah-msg.assistant { align-self: flex-start; }
+  .ah-pre { overflow-x: auto; }
+
+  .ah-compose { padding: 8px 10px; border-radius: 12px; flex-shrink: 0; }
+  /* 16px: nhỏ hơn thì trình duyệt mobile tự zoom khi chạm vào ô nhập */
+  .ah-compose textarea { min-height: 40px; max-height: 30dvh; font-size: 16px; resize: none; }
+  .ah-compose-foot > span { display: none; }
+  .ah-compose-foot { justify-content: flex-end; }
+
+  /* Thanh tab đã ghi "Công việc N", danh sách tự tải lại mỗi 4s → bỏ hàng tiêu đề */
+  .ah-jobs-head { display: none; }
+  .ah-filters { flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; padding: 8px 12px; }
+  .ah-filters::-webkit-scrollbar { display: none; }
+  .ah-filter { flex-shrink: 0; }
+  .ah-job-list { padding: 10px 12px calc(10px + env(safe-area-inset-bottom)); }
+  .ah-job-trigger, .ah-job-meta { overflow-wrap: anywhere; }
+  .ah-job-meta { flex-wrap: wrap; }
+  .ah-job-meta > span:first-child { min-width: 0; }
+
+  .ah-overlay { padding: 12px; }
 }

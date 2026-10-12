@@ -36,9 +36,16 @@ services:
       # Đường dẫn repo trên MÁY THẬT (host) — dùng để sinh lệnh copy-paste chạy
       # được ngoài terminal. Sửa lại nếu bạn move/clone repo sang chỗ khác.
       HOST_PROJECT_ROOT: ${HOST_PROJECT_ROOT:-c:/www/ai_team_clean}
+      # Dashboard có đăng nhập; các đường worker.py / main.py gọi vào (claim,
+      # complete…) không có phiên. Đặt cùng 1 chuỗi bí mật ở đây (file .env cạnh
+      # compose) và ở env của worker thì các đường đó đòi header X-Worker-Token.
+      # Để trống = mở như trước. Xem api/auth.py.
+      WORKER_TOKEN: ${WORKER_TOKEN:-}
       # Thư mục chứa CODE các dự án trên máy thật. clients/<slug>/ chỉ giữ tài
       # liệu; project mới mặc định lấy thư mục code là <CODE_ROOT>/<slug>.
       CODE_ROOT: ${CODE_ROOT:-C:/www}
+      # Sandbox chạy script tạo file (Word/Excel/PDF/ảnh) cho khung chat.
+      SANDBOX_URL: http://sandbox:8000
     volumes:
       # Source mount: uvicorn chạy --reload nên sửa code API là container tự nạp lại,
       # không phải build lại image.
@@ -55,9 +62,31 @@ services:
     # Docker Desktop tự có tên này; Linux thì cần dòng dưới.
     extra_hosts:
       - "host.docker.internal:host-gateway"
+    networks:
+      - default
+      - sandbox
     depends_on:
       db:
         condition: service_healthy
+
+  # Chạy script Python model viết để tạo file cho khung chat (xem sandbox/server.py).
+  # Cô lập: chỉ nằm trong mạng `sandbox` (internal → không ra internet, chỉ API
+  # gọi được), không mount ổ đĩa, root fs chỉ đọc, user thường, bỏ mọi capability.
+  sandbox:
+    build:
+      context: ./sandbox
+    restart: unless-stopped
+    networks:
+      - sandbox
+    read_only: true
+    tmpfs:
+      - /tmp:size=256m,mode=1777
+    cap_drop: [ALL]
+    security_opt:
+      - no-new-privileges:true
+    mem_limit: 1536m
+    cpus: 1.5
+    pids_limit: 128
 
   web:
     build:
@@ -71,3 +100,8 @@ services:
 
 volumes:
   pgdata:
+
+networks:
+  default:
+  sandbox:
+    internal: true

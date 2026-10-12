@@ -35,6 +35,11 @@ Tuỳ biến lệnh headless bằng biến môi trường:
     PROGRESS_FLUSH_S  đẩy log sống lên dashboard mỗi bao nhiêu giây (mặc định 2)
     CLAUDE_ACCOUNTS_FILE  file tài khoản Claude (mặc định config/claude_accounts.local.toml)
     CLAUDE_COOLDOWN_S     hết quota mà không biết giờ reset thì nghỉ bao lâu (mặc định 1800)
+    GROK_BIN          CLI Grok Build cho provider API kind=grok_cli (mặc định "grok")
+    GROK_ARGS         cờ thêm cho `grok -p` (mặc định tắt web search/subagent/plan,
+                      chỉ tool list_dir, 4 lượt, effort low); đăng nhập bằng `grok`
+                      1 lần hoặc đặt XAI_API_KEY.
+                      Không có trong PATH thì tìm ~/.grok/bin (chỗ installer cài)
 
 Nhiều tài khoản Claude Pro: khai token từng tài khoản trong
 config/claude_accounts.local.toml (mẫu: claude_accounts.example.toml). Chọn tài
@@ -70,11 +75,23 @@ for _stream in (sys.stdout, sys.stderr):
         pass
 
 API   = os.getenv("DASHBOARD_API_URL", "http://localhost:8100")
+WORKER_TOKEN = os.getenv("WORKER_TOKEN", "").strip()
 ROOT  = Path(__file__).resolve().parent
 POLL  = int(os.getenv("WORKER_POLL_S", "3"))
 
 CLAUDE_BIN     = os.getenv("CLAUDE_BIN", "claude")
 OPENCODE_BIN   = os.getenv("OPENCODE_BIN", "opencode")
+GROK_BIN       = os.getenv("GROK_BIN", "grok")
+# API gateway chỉ cần câu trả lời: không web, không subagent, không plan.
+# - `--tools ""` KHÔNG tắt được tool (grok vẫn gọi read_file/search_tool) và với
+#   --max-turns 1 thì 1 lần gọi tool là chết "max turns reached" → cho đúng
+#   list_dir trong thư mục rỗng (không ghi được gì) + vài lượt dư.
+# - effort mặc định grok viết nháp TRỌN câu trả lời trong phần thinking rồi mới
+#   viết lại (trang HTML: >5 phút, tốn gấp đôi); low: ~1 phút.
+GROK_ARGS      = shlex.split(os.getenv("GROK_ARGS",
+    "--disable-web-search --no-subagents --no-plan --max-turns 4 --tools list_dir --effort low"))
+# Request có file đính kèm: grok cần thêm lượt để gọi tool đọc từng file.
+GROK_FILE_TURNS = int(os.getenv("GROK_FILE_TURNS", "10"))
 # Giống ai_team/runner.py: opencode chạy nền, không ai bấm duyệt.
 OPENCODE_ARGS  = shlex.split(os.getenv("OPENCODE_ARGS", "--dangerously-skip-permissions"))
 # acceptEdits: tự duyệt sửa file (bước nào cũng phải sửa file task) nhưng KHÔNG
@@ -93,7 +110,9 @@ def _req(path: str, body: dict | None = None, method: str = "GET"):
     req = urllib.request.Request(
         f"{API}{path}",
         data=data,
-        headers={"Content-Type": "application/json"},
+        headers={"Content-Type": "application/json",
+                 # API bật đăng nhập + đặt WORKER_TOKEN thì đường của worker đòi header này.
+                 **({"X-Worker-Token": WORKER_TOKEN} if WORKER_TOKEN else {})},
         method=method,
     )
     with urllib.request.urlopen(req, timeout=15) as resp:
@@ -1495,10 +1514,13 @@ def _chat_reply(job: dict) -> dict:
     # Thread gắn dự án → cho Claude ĐỌC tài liệu + code của dự án đó (không sửa,
     # không chạy lệnh). Chat tự do → tắt hết tool.
     project = job.get("project") or None
-    tools = "Read,Grep,Glob" if project else ""
+    files_dir = job.get("files_dir")     # file đính kèm của request API (_llm_cli_loop)
+    tools = "Read,Grep,Glob" if project else ("Read,Glob" if files_dir else "")
     cmd = [binary, "-p", "--output-format", "json", "--tools", tools,
            "--strict-mcp-config", "--no-session-persistence",
            "--system-prompt-file", str(sys_file)]
+    if files_dir:
+        cmd += ["--add-dir", files_dir]
     if project:
         dirs = [project.get("docs_dir"), *(project.get("code_dirs") or [])]
         for d in dict.fromkeys(x for x in dirs if x):
@@ -1541,6 +1563,149 @@ def _chat_reply(job: dict) -> dict:
             "usage": m.get("usage")}
 
 
+# ── File đính kèm của request API (gateway /v1) ─────────────────────────────
+
+def _office_text(path: Path) -> str | None:
+    """Word/PowerPoint/Excel → văn bản thuần. CLI đọc được PDF, ảnh, file chữ
+    nhưng không đọc được file Office (zip XML) — nên worker đổi sẵn ra .txt."""
+    import zipfile
+    from xml.etree import ElementTree as ET
+    ext = path.suffix.lower()
+    try:
+        if ext == ".xlsx":
+            import openpyxl          # có sẵn thì dùng; không có thì bỏ qua
+            wb = openpyxl.load_workbook(path, read_only=True, data_only=True)
+            out = []
+            for ws in wb.worksheets:
+                out.append(f"## Sheet: {ws.title}")
+                for row in ws.iter_rows(values_only=True):
+                    if any(v is not None for v in row):
+                        out.append("\t".join("" if v is None else str(v) for v in row))
+            return "\n".join(out)
+        if ext not in (".docx", ".pptx"):
+            return None
+        with zipfile.ZipFile(path) as z:
+            if ext == ".docx":
+                parts = ["word/document.xml"]
+            else:
+                parts = sorted((n for n in z.namelist() if re.fullmatch(r"ppt/slides/slide\d+\.xml", n)),
+                               key=lambda n: int(re.search(r"(\d+)\.xml$", n).group(1)))
+            out = []
+            for i, name in enumerate(parts, 1):
+                root = ET.fromstring(z.read(name))
+                if ext == ".pptx":
+                    out.append(f"## Slide {i}")
+                # Mỗi đoạn văn (w:p / a:p) 1 dòng, ghép các mẩu chữ (w:t / a:t) bên trong.
+                for para in root.iter():
+                    if para.tag.endswith("}p"):
+                        line = "".join(t.text or "" for t in para.iter() if t.tag.endswith("}t"))
+                        if line.strip():
+                            out.append(line)
+            return "\n".join(out)
+    except Exception as e:
+        return f"(Không trích được chữ từ {path.name}: {e})"
+
+
+def _write_api_files(job_id, files: list[dict]) -> Path:
+    """Ghi file đính kèm ra thư mục riêng của job — xoá ngay khi job xong."""
+    import base64
+    d = CHAT_CWD / "api-files" / str(job_id)
+    shutil.rmtree(d, ignore_errors=True)
+    d.mkdir(parents=True)
+    for f in files:
+        # Tên đã được gateway làm sạch; lấy .name lần nữa cho chắc không thoát ra ngoài.
+        p = d / Path(f["name"]).name
+        p.write_bytes(base64.b64decode(f["data"]))
+        text = _office_text(p)
+        if text is not None:
+            p.with_name(p.name + ".txt").write_text(text, encoding="utf-8")
+    return d
+
+
+def _files_note(d: Path) -> str:
+    names = sorted(p.name for p in d.iterdir())
+    return ("\n\n---\nFile đính kèm (các dấu [Đính kèm: …] ở trên) nằm trong thư mục "
+            f"{d}:\n" + "\n".join(f"- {d / n}" for n in names) +
+            "\nHãy đọc các file cần thiết bằng tool đọc file trước khi trả lời. File Word/"
+            "PowerPoint/Excel đã có bản chữ cùng tên đuôi .txt — đọc bản .txt đó.")
+
+
+def _grok_reply(job: dict) -> dict:
+    """1 câu trả lời bằng `grok -p --output-format json` (Grok Build CLI). Prompt +
+    system qua FILE cùng lý do với _chat_reply; grok không đọc prompt từ stdin."""
+    binary = _resolve_bin(GROK_BIN)
+    if not binary and GROK_BIN == "grok":
+        # Installer đặt grok ở ~/.grok/bin và chỉ thêm vào PATH user — worker mở
+        # trước lúc cài thì PATH của nó chưa có.
+        home_bin = Path.home() / ".grok" / "bin" / ("grok.exe" if os.name == "nt" else "grok")
+        binary = str(home_bin) if home_bin.exists() else None
+    if not binary:
+        return {"status": "error", "error": f"Worker không tìm thấy CLI '{GROK_BIN}' — cài Grok Build hoặc đặt GROK_BIN."}
+    home = CHAT_CWD / "grok"         # thư mục rỗng: không cho grok nhìn thấy code nào
+    home.mkdir(parents=True, exist_ok=True)
+    prompt_file = home / f"prompt-{job.get('id', 0)}.txt"
+    prompt_file.write_text(job.get("prompt") or "", encoding="utf-8")
+    args = list(GROK_ARGS)
+    files_dir = job.get("files_dir")
+    if files_dir:
+        # Có file đính kèm: grok đứng trong thư mục file của job, chỉ được liệt kê +
+        # đọc (đọc được cả PDF lẫn ảnh), và cần thêm lượt để gọi tool đọc.
+        for flag in ("--max-turns", "--tools"):
+            if flag in args:
+                i = args.index(flag)
+                del args[i:i + 2]
+        args += ["--max-turns", str(GROK_FILE_TURNS), "--tools", "read_file,list_dir"]
+    cwd = Path(files_dir) if files_dir else home
+    cmd = [binary, "--prompt-file", str(prompt_file), "--output-format", "streaming-json",
+           "--cwd", str(cwd), *args]
+    if (job.get("system") or "").strip():
+        # Thay hẳn system prompt agent code của grok — API gọi để trò chuyện/viết.
+        cmd += ["--system-prompt-override", job["system"]]
+    if job.get("model"):
+        cmd += ["--model", job["model"]]
+    try:
+        p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
+                           errors="replace", cwd=str(cwd), timeout=CHAT_TIMEOUT_S,
+                           stdin=subprocess.DEVNULL)
+    except subprocess.TimeoutExpired:
+        return {"status": "error", "error": f"Quá {CHAT_TIMEOUT_S}s chưa trả lời xong."}
+    except OSError as e:
+        return {"status": "error", "error": f"Không chạy được '{binary}': {e}"}
+    finally:
+        prompt_file.unlink(missing_ok=True)
+
+    # streaming-json: 1 sự kiện/dòng. `text` của --output-format json gộp chữ mọi
+    # lượt, kể cả câu dẫn "Tôi sẽ đọc file…" trước khi gọi tool — nên tự ghép delta
+    # và xoá phần đã viết mỗi khi có tool_call: còn lại đúng câu trả lời cuối.
+    ev, chunks = {}, []
+    for line in (p.stdout or "").splitlines():
+        try:
+            e = json.loads(line)
+        except ValueError:
+            continue
+        kind = e.get("type") if isinstance(e, dict) else None
+        if kind == "text":
+            chunks.append(e.get("data") or "")
+        elif kind == "tool_call":
+            chunks = []
+        elif kind in ("end", "error"):
+            ev = e
+    text = "".join(chunks).strip()
+    if p.returncode != 0 or ev.get("type") != "end" or not text:
+        why = ev.get("message") or (p.stderr or "").strip() or f"grok exit code {p.returncode}"
+        return {"status": "error", "error": _redact(str(why))[:2000]}
+    # usage của grok → cùng khoá _metrics_from_result để gateway cộng token như claude.
+    u = ev.get("usage") or {}
+    usage = {"input": u.get("input_tokens") or 0, "output": u.get("output_tokens") or 0,
+             "cache_read": u.get("cache_read_input_tokens") or 0,
+             "cache_write": u.get("cache_creation_input_tokens") or 0}
+    cost = ev.get("total_cost_usd")
+    return {"status": "done", "text": _redact(text),
+            "model_used": next(iter(ev.get("modelUsage") or {}), None) or job.get("model"),
+            "cost_usd": float(cost) if isinstance(cost, (int, float)) else None,
+            "usage": usage}
+
+
 def _chat_loop():
     while True:
         job = None
@@ -1556,11 +1721,26 @@ def _chat_loop():
             time.sleep(CHAT_POLL_S)
             continue
         proj = (job.get("project") or {}).get("slug")
-        print(f"[worker] 💬 Chat #{job['id']} — đang trả lời" + (f" (dự án {proj}, chỉ đọc)" if proj else ""))
+        files = job.get("files") or []
+        print(f"[worker] 💬 Chat #{job['id']} — {job.get('cli') or 'claude'}"
+              + (f" --model {job['model']}" if job.get("model") else "")
+              + (f" (dự án {proj}, chỉ đọc)" if proj else "")
+              + (f" · {len(files)} file" if files else ""))
+        files_dir = None
         try:
-            body = _chat_reply(job)
+            # File đính kèm của thread: cùng đường với gateway — ghi ra thư mục tạm,
+            # Claude được Read thư mục đó, xong thì xoá.
+            if files:
+                files_dir = _write_api_files(f"chat-{job['id']}", files)
+                job["files_dir"] = str(files_dir)
+                job["prompt"] = (job.get("prompt") or "") + _files_note(files_dir)
+            # Model chọn ở khung chat: Claude (mặc định) hoặc alias gateway chạy grok -p.
+            body = _grok_reply(job) if job.get("cli") == "grok" else _chat_reply(job)
         except Exception as e:         # đừng để tin kẹt 'running' vì worker vấp
             body = {"status": "error", "error": str(e)}
+        finally:
+            if files_dir:
+                shutil.rmtree(files_dir, ignore_errors=True)
         try:
             _req(f"/api/assistant/messages/{job['id']}/complete", body=body, method="POST")
         except Exception as e:
@@ -1570,7 +1750,7 @@ def _chat_loop():
 
 
 def _llm_cli_loop():
-    """Request LLM gateway gửi tới provider kind=claude_cli (/v1 của dashboard).
+    """Request LLM gateway gửi tới provider kind=claude_cli / grok_cli (/v1 của dashboard).
     Cùng cách trả lời với khung chat — không tool, không MCP — nhưng thread riêng
     để request API ngoài không phải xếp sau tin chat và ngược lại. CHỈ ĐỂ TEST."""
     while True:
@@ -1586,11 +1766,22 @@ def _llm_cli_loop():
         if not job:
             time.sleep(CHAT_POLL_S)
             continue
-        print(f"[worker] 🔌 API #{job['id']} — claude -p" + (f" --model {job['model']}" if job.get("model") else ""))
+        cli = job.get("cli") or "claude"
+        files = job.get("files") or []
+        print(f"[worker] 🔌 API #{job['id']} — {cli} -p" + (f" --model {job['model']}" if job.get("model") else "")
+              + (f" · {len(files)} file" if files else ""))
+        files_dir = None
         try:
-            body = _chat_reply(job)
+            if files:
+                files_dir = _write_api_files(job["id"], files)
+                job["files_dir"] = str(files_dir)
+                job["prompt"] = (job.get("prompt") or "") + _files_note(files_dir)
+            body = _grok_reply(job) if cli == "grok" else _chat_reply(job)
         except Exception as e:
             body = {"status": "error", "error": str(e)}
+        finally:
+            if files_dir:
+                shutil.rmtree(files_dir, ignore_errors=True)
         try:
             _req(f"/api/llm/cli-jobs/{job['id']}/complete", body=body, method="POST")
         except Exception as e:

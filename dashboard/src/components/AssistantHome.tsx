@@ -13,6 +13,7 @@ interface Thread {
   id: number;
   title: string;
   client_folder: string | null;
+  model: string | null;        // khoá model; null = mặc định (model đầu tiên được dùng)
   message_count: number;
   busy: boolean;
   preview: string;
@@ -20,13 +21,28 @@ interface Thread {
   updated_at: string | null;
 }
 
+interface FileRef { id: number; name: string; mime: string; size: number }
+
+// Model chat tài khoản được dùng (api/chat_models.py) — phần tử đầu là mặc định.
+export interface ChatModel {
+  key: string; label: string; description: string; group: string;
+  via: "cli" | "http"; files: boolean; project: boolean;
+}
+
+// File trong ô soạn tin: tải lên ngay khi chọn, gửi tin chỉ kèm id.
+interface Attachment { key: string; name: string; size: number; file?: FileRef; error?: string }
+
 interface ChatMsg {
   id: number;
   thread_id: number | null;
   role: "user" | "assistant";
   text: string;
   kind: "chat" | "task_draft";
-  meta: { draft?: Draft; created?: Created } | null;
+  meta: {
+    draft?: Draft; created?: Created; files?: FileRef[]; model?: string;
+    // Script tạo file chạy trong sandbox (api/routers/assistant._run_gen)
+    gen?: { status: "running" | "done" | "error"; code?: string; error?: string };
+  } | null;
   status: "pending" | "running" | "done" | "error";
   error: string | null;
   cost_usd: number | null;
@@ -66,6 +82,32 @@ const POLL_MS = 4000;
 // Đang chờ trợ lý trả lời thì hỏi dày hơn — câu trả lời thường về sau ~5s.
 const POLL_FAST_MS = 1200;
 const THREAD_KEY = "assistant.thread";
+
+const FILE_MAX = 15 * 1024 * 1024;           // khớp _FILE_MAX ở api/routers/assistant.py
+const FILES_PER_MSG = 10;
+
+const fmtSize = (n: number) =>
+  n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${Math.round(n / 1024)} KB` : `${(n / 1024 / 1024).toFixed(1)} MB`;
+
+const fileUrl = (id: number) => `/api/assistant/files/${id}`;
+
+function FileChips({ files }: { files: FileRef[] }) {
+  return (
+    <div className="ah-files">
+      {files.map(f => f.mime.startsWith("image/") && f.mime !== "image/svg+xml" ? (
+        <a key={f.id} className="ah-file-img" href={fileUrl(f.id)} target="_blank" rel="noreferrer" title={f.name}>
+          <img src={fileUrl(f.id)} alt={f.name} loading="lazy" />
+        </a>
+      ) : (
+        <a key={f.id} className="ah-file" href={fileUrl(f.id)} target="_blank" rel="noreferrer" title={f.name}>
+          <span className="ah-file-ico">📄</span>
+          <span className="ah-file-name">{f.name}</span>
+          <span className="ah-file-size">{fmtSize(f.size)}</span>
+        </a>
+      ))}
+    </div>
+  );
+}
 
 const readLS = (k: string) => { try { return localStorage.getItem(k); } catch { return null; } };
 const writeLS = (k: string, v: string) => { try { localStorage.setItem(k, v); } catch { /* bỏ qua */ } };
@@ -178,9 +220,15 @@ export default function AssistantHome({ onOpenProject }: { onOpenProject?: (slug
   const [apiErr, setApiErr] = useState<string | null>(null);
   const [draft, setDraft] = useState("");
   const [sending, setSending] = useState(false);
+  const [attach, setAttach] = useState<Attachment[]>([]);
+  const [models, setModels] = useState<ChatModel[]>([]);
+  const [dragOver, setDragOver] = useState(false);
+  const fileInputRef = useRef<HTMLInputElement>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [bubble, setBubble] = useState(true);
   const [openRun, setOpenRun] = useState<Job | null>(null);
+  // Điện thoại (≤760px) chỉ hiện 1 khung: chat hoặc danh sách công việc.
+  const [pane, setPane] = useState<"chat" | "jobs">("chat");
   const listRef = useRef<HTMLDivElement>(null);
   const lastIdRef = useRef(0);
   // Thread đang mở tại thời điểm response về — đổi thread giữa chừng thì bỏ kết
@@ -191,17 +239,20 @@ export default function AssistantHome({ onOpenProject }: { onOpenProject?: (slug
     threadRef.current = id;
     setThreadId(id);
     setMessages([]);
+    setAttach([]);                    // file trong ô soạn thuộc thread cũ
     lastIdRef.current = 0;
     writeLS(THREAD_KEY, id ? String(id) : "");
   }, []);
 
   const load = useCallback(async () => {
     try {
-      const [ts, o] = await Promise.all([
+      const [ts, o, ms] = await Promise.all([
         api<Thread[]>("/api/assistant/threads"),
         api<Overview>(`/api/assistant/overview?tz_offset=${new Date().getTimezoneOffset()}`),
+        api<ChatModel[]>("/api/assistant/models"),
       ]);
       setThreads(ts);
+      setModels(ms);
       setOv(o);
       let tid = threadRef.current;
       if (tid && !ts.some(t => t.id === tid)) tid = null;       // bị xoá ở tab khác
@@ -237,22 +288,74 @@ export default function AssistantHome({ onOpenProject }: { onOpenProject?: (slug
     }
   }, [messages]);
 
+  // Chưa có thread nào (lần đầu) → tạo luôn, người dùng không phải bấm "mới" trước.
+  const ensureThread = async () => {
+    if (threadRef.current) return threadRef.current;
+    const tid = (await api<Thread>("/api/assistant/threads", { method: "POST", body: "{}" })).id;
+    selectThread(tid);
+    return tid;
+  };
+
+  const addFiles = async (list: FileList | File[]) => {
+    const picked = Array.from(list);
+    if (!picked.length) return;
+    if (curModel?.files === false) {
+      setApiErr(`${curModel.label} không đọc được file — chọn model Claude để gửi file`);
+      return;
+    }
+    const room = FILES_PER_MSG - attach.length;
+    if (room <= 0) { setApiErr(`Tối đa ${FILES_PER_MSG} file mỗi tin`); return; }
+    let tid: number;
+    try {
+      tid = await ensureThread();
+    } catch (e) {
+      setApiErr(e instanceof Error ? e.message : "Không tạo được cuộc trò chuyện");
+      return;
+    }
+    const items = picked.slice(0, room).map(f => ({
+      src: f,
+      a: { key: `${Date.now()}-${Math.random()}`, name: f.name || "anh-dan.png", size: f.size,
+           error: f.size > FILE_MAX ? `quá ${FILE_MAX / 1024 / 1024} MB` : undefined } as Attachment,
+    }));
+    setAttach(prev => [...prev, ...items.map(i => i.a)]);
+    await Promise.all(items.filter(i => !i.a.error).map(async ({ src, a }) => {
+      const fd = new FormData();
+      fd.append("file", src, a.name);
+      let patch: Partial<Attachment>;
+      try {
+        const res = await fetch(`/api/assistant/threads/${tid}/files`, { method: "POST", body: fd });
+        const body = await res.json().catch(() => ({}));
+        patch = res.ok ? { file: body as FileRef, name: body.name }
+                       : { error: body.detail ?? `HTTP ${res.status}` };
+      } catch {
+        patch = { error: "tải lên không được" };
+      }
+      if (threadRef.current === tid)
+        setAttach(prev => prev.map(x => x.key === a.key ? { ...x, ...patch } : x));
+    }));
+  };
+
+  const removeAttach = (a: Attachment) => {
+    setAttach(prev => prev.filter(x => x.key !== a.key));
+    if (a.file) fetch(fileUrl(a.file.id), { method: "DELETE" }).catch(() => { /* bỏ qua */ });
+  };
+
+  const uploading = attach.some(a => !a.file && !a.error);
+  const readyFiles = attach.filter(a => a.file).map(a => a.file!);
+  const canSend = (!!draft.trim() || readyFiles.length > 0) && !sending && !waitingReply && !uploading;
+
   const send = async () => {
     const text = draft.trim();
-    if (!text || sending || waitingReply) return;
+    if (!canSend) return;
     setSending(true);
     try {
-      // Chưa có thread nào (lần đầu) → tạo luôn, người dùng không phải bấm "mới" trước.
-      let tid = threadId;
-      if (!tid) {
-        tid = (await api<Thread>("/api/assistant/threads", { method: "POST", body: "{}" })).id;
-        selectThread(tid);
-      }
+      const tid = await ensureThread();
       const fresh = await api<ChatMsg[]>(`/api/assistant/threads/${tid}/messages`,
-        { method: "POST", body: JSON.stringify({ text }) });
+        { method: "POST", body: JSON.stringify({ text, file_ids: readyFiles.map(f => f.id) }) });
       if (threadRef.current === tid)
         setMessages(prev => [...prev.filter(m => !fresh.some(f => f.id === m.id)), ...fresh]);
       setDraft("");
+      setAttach([]);
       setBubble(false);
       load();
     } catch (e) {
@@ -289,6 +392,30 @@ export default function AssistantHome({ onOpenProject }: { onOpenProject?: (slug
   };
 
   const curThread = threads.find(t => t.id === threadId) ?? null;
+  // Model trả lời câu tiếp theo — khớp _thread_model bên API.
+  const curModel = models.find(m => m.key === curThread?.model) ?? models[0] ?? null;
+  const modelLabel = (key?: string) => models.find(m => m.key === key)?.label ?? key?.replace(/^\w+:/, "");
+  const modelGroups = useMemo(() => {
+    const g: Record<string, ChatModel[]> = {};
+    for (const m of models) (g[m.group] ??= []).push(m);
+    return Object.entries(g);
+  }, [models]);
+
+  const changeModel = async (key: string) => {
+    try {
+      if (!threadId) {
+        const t = await api<Thread>("/api/assistant/threads", { method: "POST", body: JSON.stringify({ model: key }) });
+        setThreads(prev => [t, ...prev]);
+        selectThread(t.id);
+        return;
+      }
+      setThreads(prev => prev.map(t => t.id === threadId ? { ...t, model: key } : t));
+      await api(`/api/assistant/threads/${threadId}`, { method: "PATCH", body: JSON.stringify({ model: key }) });
+    } catch (e) {
+      setApiErr(e instanceof Error ? e.message : "Không đổi được model");
+    }
+    load();
+  };
   const projectName = (slug: string | null) =>
     slug ? (projects.find(p => p.id === slug)?.name ?? slug) : null;
 
@@ -386,7 +513,18 @@ export default function AssistantHome({ onOpenProject }: { onOpenProject?: (slug
         </div>
       </div>
 
-      <div className="ah-body">
+      {/* Điện thoại: thanh chuyển giữa Trò chuyện / Công việc (màn rộng ẩn đi) */}
+      <div className="ah-mtabs" role="tablist">
+        <button role="tab" aria-selected={pane === "chat"} className={pane === "chat" ? "on" : ""}
+          onClick={() => setPane("chat")}>💬 Trò chuyện</button>
+        <button role="tab" aria-selected={pane === "jobs"} className={pane === "jobs" ? "on" : ""}
+          onClick={() => setPane("jobs")}>
+          📋 Công việc <span>{jobs.length}</span>
+          {counts.running > 0 && <i className="ah-mtabs-dot" title={`${counts.running} đang chạy`} />}
+        </button>
+      </div>
+
+      <div className={`ah-body pane-${pane}`}>
         {/* ── Trợ lý ── */}
         <aside className="ah-left">
           <div className="ah-caption">Trợ lý</div>
@@ -474,6 +612,27 @@ export default function AssistantHome({ onOpenProject }: { onOpenProject?: (slug
               <option value="">💬 Chat tự do</option>
               {projects.map(p => <option key={p.id} value={p.id}>📁 {p.name}</option>)}
             </select>
+            {models.length > 0 && (
+              <select className="ah-project ah-model" value={curModel?.key ?? ""}
+                onChange={e => changeModel(e.target.value)} disabled={waitingReply}
+                title={curModel ? `${curModel.label}${curModel.description ? " — " + curModel.description : ""}`
+                  + (curModel.files ? "" : " · không đọc được file đính kèm")
+                  + (curThread?.client_folder && !curModel.project ? " · không đọc được tài liệu/code dự án" : "")
+                  : ""}>
+                {modelGroups.map(([group, ms]) => (
+                  <optgroup key={group} label={group}>
+                    {ms.map(m => (
+                      <option key={m.key} value={m.key}>
+                        ✨ {m.label}{m.files ? "" : " (chỉ chữ)"}
+                      </option>
+                    ))}
+                  </optgroup>
+                ))}
+              </select>
+            )}
+            {!models.length && ov && (
+              <span className="ah-model-none" title="Liên hệ quản trị viên để được cấp model">Chưa được cấp model</span>
+            )}
             <button className="ah-ghost ah-task-btn" onClick={requestDraft}
               disabled={!hasTalk || waitingReply}
               title={hasTalk ? "Claude đọc cuộc trò chuyện và soạn nháp task để bạn chọn dự án rồi tạo"
@@ -497,6 +656,14 @@ export default function AssistantHome({ onOpenProject }: { onOpenProject?: (slug
               </div>
             )}
             {messages.map(m => {
+              if (m.status === "running" && m.meta?.gen?.status === "running") {
+                return (
+                  <div key={m.id} className="ah-msg assistant">
+                    <div className="ah-msg-bubble"><RichText text={m.text} /></div>
+                    <div className="ah-gen-run"><i className="ah-gen-spin" />Đang tạo file…</div>
+                  </div>
+                );
+              }
               if (m.status === "pending" || m.status === "running") {
                 return (
                   <div key={m.id} className="ah-msg assistant">
@@ -527,20 +694,63 @@ export default function AssistantHome({ onOpenProject }: { onOpenProject?: (slug
                   </div>
                 );
               }
+              const mine = m.role === "user";
               return (
                 <div key={m.id} className={`ah-msg ${m.role}`}>
+                  {mine && !!m.meta?.files?.length && <FileChips files={m.meta.files} />}
                   <div className="ah-msg-bubble"><RichText text={m.text} /></div>
-                  <div className="ah-msg-time">{hhmm(m.created_at)}</div>
+                  {!mine && !!m.meta?.files?.length && <FileChips files={m.meta.files} />}
+                  {m.meta?.gen?.status === "error" && (
+                    <div className="ah-gen-err">⚠️ Không tạo được file: <code>{m.meta.gen.error}</code>
+                      <div className="ah-gen-hint">Nhắn lại để trợ lý sửa script, vd: “sửa lỗi trên rồi tạo lại file”.</div>
+                    </div>
+                  )}
+                  {m.meta?.gen?.code && (
+                    <details className="ah-gen-code">
+                      <summary>Xem script tạo file</summary>
+                      <pre className="ah-pre">{m.meta.gen.code}</pre>
+                    </details>
+                  )}
+                  <div className="ah-msg-time">
+                    {hhmm(m.created_at)}
+                    {m.role === "assistant" && m.meta?.model && <> · {modelLabel(m.meta.model)}</>}
+                  </div>
                 </div>
               );
             })}
           </div>
 
-          <div className="ah-compose">
+          <div className={`ah-compose ${dragOver ? "drag" : ""}`}
+            onDragOver={e => { if (e.dataTransfer.types.includes("Files")) { e.preventDefault(); setDragOver(true); } }}
+            onDragLeave={e => { if (!e.currentTarget.contains(e.relatedTarget as Node)) setDragOver(false); }}
+            onDrop={e => {
+              if (!e.dataTransfer.files.length) return;
+              e.preventDefault();
+              setDragOver(false);
+              addFiles(e.dataTransfer.files);
+            }}>
+            {attach.length > 0 && (
+              <div className="ah-attach">
+                {attach.map(a => (
+                  <span key={a.key} className={`ah-attach-chip ${a.error ? "err" : !a.file ? "busy" : ""}`}
+                    title={a.error ? `${a.name}: ${a.error}` : a.name}>
+                    <span className="ah-file-name">{a.name}</span>
+                    <span className="ah-file-size">{a.error ?? (a.file ? fmtSize(a.size) : "đang tải…")}</span>
+                    <button onClick={() => removeAttach(a)} aria-label={`Bỏ ${a.name}`}>×</button>
+                  </span>
+                ))}
+              </div>
+            )}
             <textarea
               value={draft}
-              placeholder="Nhắn cho trợ lý... (Enter để gửi, Shift+Enter xuống dòng)"
+              placeholder="Nhắn cho trợ lý... (Enter để gửi, Shift+Enter xuống dòng, kéo-thả hoặc dán file vào đây)"
               onChange={e => setDraft(e.target.value)}
+              onPaste={e => {
+                if (e.clipboardData.files.length) {
+                  e.preventDefault();
+                  addFiles(e.clipboardData.files);
+                }
+              }}
               onKeyDown={e => {
                 if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
                   e.preventDefault();
@@ -549,11 +759,20 @@ export default function AssistantHome({ onOpenProject }: { onOpenProject?: (slug
               }}
             />
             <div className="ah-compose-foot">
-              <span>
+              <input ref={fileInputRef} type="file" multiple hidden
+                onChange={e => { if (e.target.files) addFiles(e.target.files); e.target.value = ""; }} />
+              <button className="ah-attach-btn" onClick={() => fileInputRef.current?.click()}
+                disabled={attach.length >= FILES_PER_MSG || curModel?.files === false}
+                title={curModel?.files === false
+                  ? `${curModel.label} không đọc được file — chọn model Claude để gửi file`
+                  : "Đính kèm file (ảnh, PDF, Word, Excel, PowerPoint, file chữ…) — tối đa 15 MB/file"}>
+                📎
+              </button>
+              <span className="ah-compose-tip">
                 Hỏi đáp, bàn ý tưởng — chốt xong bấm <b>📋 Tạo task</b> để giao cho dự án
               </span>
-              <button className="ah-send" disabled={!draft.trim() || sending || waitingReply} onClick={send}>
-                {sending ? "Đang gửi…" : waitingReply ? "Đang trả lời…" : "Gửi"}
+              <button className="ah-send" disabled={!canSend} onClick={send}>
+                {sending ? "Đang gửi…" : waitingReply ? "Đang trả lời…" : uploading ? "Đang tải file…" : "Gửi"}
               </button>
             </div>
           </div>

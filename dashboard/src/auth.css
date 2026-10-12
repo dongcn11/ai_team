@@ -1,0 +1,90 @@
+/* ── Đăng nhập / tạo quản trị viên ── */
+.auth-page {
+  min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 24px 16px;
+  background: radial-gradient(ellipse at top, #13213d 0%, #0a0a0f 60%);
+}
+.auth-card {
+  width: 100%; max-width: 380px; background: #0f172a; border: 1px solid #1e293b; border-radius: 14px;
+  padding: 28px 28px 24px; display: flex; flex-direction: column; gap: 14px;
+  box-shadow: 0 20px 50px rgba(0, 0, 0, .35);
+}
+.auth-card h1 { font-size: 18px; font-weight: 700; }
+.auth-logo { font-size: 30px; line-height: 1; }
+.auth-sub { font-size: 13px; color: #94a3b8; line-height: 1.5; margin-top: -6px; }
+.auth-card label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; font-weight: 500; color: #cbd5e1; }
+.auth-card input:not([type="checkbox"]) {
+  background: #0a0f1e; border: 1px solid #1e293b; border-radius: 8px; padding: 9px 11px;
+  color: #f1f5f9; font: inherit; font-size: 14px; outline: none;
+}
+.auth-card input:not([type="checkbox"]):focus { border-color: #2563eb; }
+.auth-opt { color: #64748b; font-weight: 400; }
+.auth-submit { margin-top: 4px; padding: 10px; font-size: 14px; }
+.auth-card .settings-msg { margin: 0; }
+.auth-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 4px; }
+.auth-modal {
+  position: fixed; inset: 0; z-index: 100; background: rgba(2, 6, 23, .65);
+  display: flex; align-items: center; justify-content: center; padding: 16px; overflow-y: auto;
+}
+.auth-modal .auth-card { max-height: calc(100vh - 32px); overflow-y: auto; }
+
+/* ── Menu tài khoản trên header ── */
+.user-menu { position: relative; }
+.user-menu-btn {
+  display: flex; align-items: center; gap: 8px; background: transparent; border: 1px solid #1e293b;
+  border-radius: 999px; padding: 3px 10px 3px 3px; color: #e2e8f0; font: inherit; font-size: 12px; cursor: pointer;
+}
+.user-menu-btn:hover { border-color: #334155; background: #111c33; }
+.user-avatar {
+  width: 24px; height: 24px; border-radius: 50%; background: #1d4ed8; color: #fff;
+  display: inline-flex; align-items: center; justify-content: center; font-weight: 700; font-size: 11px;
+}
+.user-name { max-width: 140px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.user-role { font-size: 10px; padding: 1px 6px; border-radius: 999px; background: #1e3a5f; color: #93c5fd; }
+.user-pop {
+  position: absolute; right: 0; top: calc(100% + 6px); min-width: 200px; z-index: 50;
+  background: #0f172a; border: 1px solid #1e293b; border-radius: 10px; padding: 6px;
+  box-shadow: 0 12px 30px rgba(0, 0, 0, .4); display: flex; flex-direction: column;
+}
+.user-pop-head { padding: 8px 10px 10px; border-bottom: 1px solid #1e293b; margin-bottom: 4px; display: flex; flex-direction: column; gap: 2px; font-size: 13px; }
+.user-pop-head span { font-size: 11px; color: #64748b; }
+.user-pop button {
+  text-align: left; background: transparent; border: 0; color: #cbd5e1; font: inherit; font-size: 13px;
+  padding: 8px 10px; border-radius: 6px; cursor: pointer;
+}
+.user-pop button:hover { background: #1e293b; color: #f1f5f9; }
+
+/* ── Trang Tài khoản ── */
+.acc-page { max-width: 1000px; margin: 0 auto; padding-top: 8px; display: flex; flex-direction: column; gap: 16px; }
+.acc-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 16px; flex-wrap: wrap; }
+.acc-head .settings-sub { margin-bottom: 0; }
+.acc-table-wrap { overflow-x: auto; background: #0f172a; border: 1px solid #1e293b; border-radius: 12px; }
+.acc-table { width: 100%; border-collapse: collapse; font-size: 13px; }
+.acc-table th { text-align: left; font-size: 11px; font-weight: 600; color: #64748b; text-transform: uppercase; letter-spacing: .5px; padding: 12px 14px; border-bottom: 1px solid #1e293b; white-space: nowrap; }
+.acc-table td { padding: 12px 14px; border-bottom: 1px solid #1e293b; vertical-align: top; }
+.acc-table tr:last-child td { border-bottom: 0; }
+.acc-table tr.off td { opacity: .55; }
+.acc-muted { color: #64748b; font-size: 12px; }
+.acc-you { margin-left: 6px; font-size: 10px; padding: 1px 6px; border-radius: 999px; background: #14532d; color: #86efac; }
+.acc-pill { display: inline-block; font-size: 11px; padding: 2px 8px; border-radius: 999px; background: #1e293b; color: #cbd5e1; margin: 0 4px 4px 0; white-space: nowrap; }
+.acc-pill.admin { background: #1e3a5f; color: #93c5fd; }
+.acc-pill.locked { background: #450a0a; color: #fca5a5; }
+.acc-perms { display: flex; flex-wrap: wrap; gap: 4px; }
+.acc-chip { font-size: 11px; padding: 2px 8px; border-radius: 6px; border: 1px solid #1e293b; color: #cbd5e1; }
+.acc-actions { white-space: nowrap; text-align: right; }
+.acc-actions button + button { margin-left: 6px; }
+.acc-form { max-width: 460px; }
+.acc-checks { display: flex; flex-direction: column; gap: 8px; }
+.auth-card label.acc-check { flex-direction: row; align-items: center; gap: 8px; font-size: 13px; color: #e2e8f0; cursor: pointer; }
+.acc-check input { width: 15px; height: 15px; accent-color: #2563eb; }
+.acc-screens { border: 1px solid #1e293b; border-radius: 10px; padding: 10px 14px 12px; display: grid; grid-template-columns: 1fr 1fr; gap: 8px 12px; }
+.acc-screens legend { font-size: 12px; color: #94a3b8; padding: 0 6px; }
+.acc-span { grid-column: 1 / -1; }
+.acc-chip.proj { border-color: #1e3a5f; color: #93c5fd; }
+.acc-chip.model { border-color: #3b2f5e; color: #c4b5fd; }
+
+@media (max-width: 760px) {
+  .user-name, .user-role { display: none; }
+  .user-menu-btn { padding: 3px; }
+  .acc-table th:nth-child(6), .acc-table td:nth-child(6) { display: none; }
+  .acc-screens { grid-template-columns: 1fr; }
+}

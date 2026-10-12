@@ -1,5 +1,5 @@
 from sqlalchemy import (Column, Integer, String, DateTime, ForeignKey, Text, Table, Float,
-                        Boolean, JSON, UniqueConstraint)
+                        Boolean, JSON, UniqueConstraint, LargeBinary)
 from sqlalchemy.orm import relationship
 from sqlalchemy.sql import func
 from database import Base
@@ -461,6 +461,11 @@ class AssistantThread(Base):
     # Dự án gắn với thread (slug clients/<slug>). NULL = chat tự do. Có dự án thì
     # Claude được ĐỌC tài liệu + code của dự án đó (Read/Grep/Glob, không sửa).
     client_folder = Column(String, nullable=True)
+    # Tài khoản sở hữu — mỗi người chỉ thấy thread của mình. NULL = tạo trước khi
+    # có đăng nhập, chỉ admin thấy (xem routers/assistant._mine).
+    user_id    = Column(Integer, nullable=True, index=True)
+    # Model trả lời (khoá chat_models). NULL = model đầu tiên tài khoản được dùng.
+    model      = Column(String, nullable=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now())   # tin mới nhất — để xếp danh sách
 
@@ -522,6 +527,8 @@ class LlmProvider(Base):
     # "claude_cli" — xếp hàng LlmCliJob, worker.py trên host chạy `claude -p` bằng
     #                đăng nhập Claude Code (như khung chat). CHỈ ĐỂ TEST lâu lâu:
     #                subscription cá nhân không được làm backend cho hệ thống khác.
+    # "grok_cli"   — như claude_cli nhưng worker chạy `grok -p` (Grok Build CLI) bằng
+    #                đăng nhập grok trên host hoặc XAI_API_KEY của tiến trình worker.
     kind           = Column(String, default="openai")
     created_at     = Column(DateTime, server_default=func.now())
 
@@ -577,15 +584,18 @@ class LlmUsage(Base):
 
 
 class LlmCliJob(Base):
-    """1 request gateway chờ worker chạy `claude -p` (provider kind=claude_cli).
+    """1 request gateway chờ worker chạy `claude -p` / `grok -p` (provider kind=*_cli).
     API trong container không có CLI lẫn đăng nhập Claude — cùng lý do khung chat
     phải đi qua worker. Request HTTP của client giữ kết nối chờ job xong."""
     __tablename__ = "llm_cli_jobs"
 
     id          = Column(Integer, primary_key=True, index=True)
+    cli         = Column(String, default="claude")   # claude | grok — CLI worker chạy
     model       = Column(String, nullable=True)      # truyền --model; trống = mặc định CLI
     system      = Column(Text, nullable=True)
     prompt      = Column(Text, nullable=False)
+    # File đính kèm [{name, mime, data(base64)}] — xoá khi job xong, không giữ lại.
+    files       = Column(JSON, nullable=True)
     status      = Column(String, default="pending", index=True)  # pending|running|done|error
     result      = Column(Text, nullable=True)
     error       = Column(Text, nullable=True)
@@ -595,3 +605,69 @@ class LlmCliJob(Base):
     created_at  = Column(DateTime, server_default=func.now())
     started_at  = Column(DateTime, nullable=True)
     finished_at = Column(DateTime, nullable=True)
+
+
+class AssistantFile(Base):
+    """File người dùng đính kèm trong khung "Trò chuyện". Lưu thẳng trong DB như
+    llm_files: worker có thể chạy ở máy khác nên không dựa vào thư mục dùng chung.
+    message_id NULL = đã tải lên nhưng chưa gửi (đang nằm trong ô soạn tin)."""
+    __tablename__ = "assistant_files"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    thread_id  = Column(Integer, ForeignKey("assistant_threads.id", ondelete="CASCADE"),
+                        nullable=False, index=True)
+    message_id = Column(Integer, nullable=True, index=True)
+    name       = Column(String, nullable=False)
+    mime       = Column(String, nullable=False)
+    size       = Column(Integer, nullable=False)
+    data       = Column(LargeBinary, nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+
+
+class LlmFile(Base):
+    """File AI tạo ra qua gateway (`output: "html"`…) — tải bằng link bí mật
+    /v1/files/<token>, tự hết hạn. Lưu thẳng trong DB: file nhỏ, ít, sống ngắn."""
+    __tablename__ = "llm_files"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    token      = Column(String, nullable=False, unique=True, index=True)  # đoạn bí mật trong URL
+    client_id  = Column(Integer, nullable=True, index=True)               # NULL = thử trên dashboard
+    name       = Column(String, nullable=False)
+    mime       = Column(String, nullable=False)
+    data       = Column(LargeBinary, nullable=False)
+    created_at = Column(DateTime, server_default=func.now())
+    expires_at = Column(DateTime, nullable=False, index=True)
+
+
+class User(Base):
+    """Tài khoản đăng nhập dashboard. `permissions` = danh sách màn hình (khoá tab
+    trong App.tsx) được vào; admin vào được hết + quản lý tài khoản."""
+    __tablename__ = "users"
+
+    id            = Column(Integer, primary_key=True, index=True)
+    username      = Column(String, nullable=False, unique=True, index=True)   # luôn chữ thường
+    display_name  = Column(String, nullable=False, default="")
+    password_hash = Column(String, nullable=False)       # pbkdf2_sha256$<vòng>$<salt>$<hash>
+    is_admin      = Column(Boolean, nullable=False, default=False)
+    is_active     = Column(Boolean, nullable=False, default=True)
+    permissions   = Column(JSON, nullable=True)
+    # Dự án (slug clients/<slug>) được làm việc cùng: chỉ thấy các dự án này ở ô
+    # chọn dự án, tab Projects và cột Công việc. Admin bỏ qua — thấy hết.
+    projects      = Column(JSON, nullable=True)
+    # Model dùng được trong khung chat (khoá ở chat_models.py). NULL = mọi model,
+    # kể cả model thêm sau. Admin bỏ qua — dùng được hết.
+    models        = Column(JSON, nullable=True)
+    created_at    = Column(DateTime, server_default=func.now())
+    last_login_at = Column(DateTime, nullable=True)
+
+
+class UserSession(Base):
+    """Phiên đăng nhập — cookie giữ token, DB chỉ giữ sha256 của token nên lộ DB
+    cũng không đăng nhập ké được. Đăng xuất / khoá tài khoản = xoá dòng."""
+    __tablename__ = "user_sessions"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    token_hash = Column(String, nullable=False, unique=True, index=True)
+    user_id    = Column(Integer, ForeignKey("users.id", ondelete="CASCADE"), nullable=False, index=True)
+    created_at = Column(DateTime, server_default=func.now())
+    expires_at = Column(DateTime, nullable=False)

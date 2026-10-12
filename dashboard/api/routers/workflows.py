@@ -43,7 +43,9 @@ from datetime import datetime
 from pathlib import Path
 from typing import Dict, List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+
+import auth
 from sqlalchemy.orm import Session
 from sqlalchemy import desc
 
@@ -289,11 +291,15 @@ def list_claude_models() -> List[dict]:
 
 
 @router.get("/questions", response_model=List[AgentQuestionOut])
-def list_questions(status: str = "open", client_folder: Optional[str] = None,
+def list_questions(request: Request, status: str = "open", client_folder: Optional[str] = None,
                    run_id: Optional[int] = None, limit: int = 50,
                    db: Session = Depends(get_db)):
-    """Việc agent đang chờ dev chốt. Dashboard poll cái này để hiện banner."""
+    """Việc agent đang chờ dev chốt. Dashboard poll cái này để hiện banner.
+    Tài khoản thường chỉ thấy câu hỏi của dự án được gán (auth.py)."""
     q = db.query(AgentQuestion).order_by(desc(AgentQuestion.id))
+    allowed = auth.allowed_projects(request)
+    if allowed is not None:
+        q = q.filter(AgentQuestion.client_folder.in_(list(allowed) or [""]))
     if status:
         q = q.filter(AgentQuestion.status == status)
     if status == "open":
