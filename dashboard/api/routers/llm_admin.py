@@ -47,11 +47,11 @@ class ProviderIn(BaseModel):
     timeout_s: Optional[int] = None
     allow_passthrough: Optional[bool] = None
     enabled: Optional[bool] = None
-    kind: Optional[str] = None             # openai | claude_cli — chỉ đặt lúc tạo
+    kind: Optional[str] = None             # openai | claude_cli | grok_cli — chỉ đặt lúc tạo
 
 
-KINDS = ("openai", "claude_cli")
-CLI_BASE = "claude-cli://worker"          # claude_cli không gọi HTTP, base_url chỉ để hiển thị
+KINDS = ("openai", *gw.CLI_KINDS)
+# Provider *_cli không gọi HTTP — base_url chỉ để hiển thị, vd. "grok-cli://worker".
 
 
 def _provider_out(db: Session, p: LlmProvider) -> dict:
@@ -81,8 +81,9 @@ def create_provider(payload: ProviderIn, db: Session = Depends(get_db)):
     kind = payload.kind or "openai"
     if kind not in KINDS:
         raise HTTPException(400, f"kind phải là một trong {KINDS}")
-    if kind == "claude_cli":
-        payload.base_url, payload.api_key, payload.extra_headers = CLI_BASE, None, None
+    if kind in gw.CLI_KINDS:
+        payload.base_url = f"{gw.CLI_KINDS[kind][0]}-cli://worker"
+        payload.api_key, payload.extra_headers = None, None
         payload.timeout_s = payload.timeout_s or 300
     if not (payload.base_url or "").strip():
         raise HTTPException(400, "Chưa có base_url")
@@ -109,7 +110,7 @@ def update_provider(pid: int, payload: ProviderIn, db: Session = Depends(get_db)
         if db.query(LlmProvider).filter(LlmProvider.name == name).first():
             raise HTTPException(400, f"Đã có provider '{name}'")
         p.name = name
-    if payload.base_url is not None and payload.base_url.strip() and p.kind != "claude_cli":
+    if payload.base_url is not None and payload.base_url.strip() and p.kind not in gw.CLI_KINDS:
         p.base_url = payload.base_url.strip().rstrip("/")
     if payload.clear_api_key:
         p.api_key = None
@@ -375,7 +376,7 @@ def playground(payload: PlaygroundIn, db: Session = Depends(get_db)):
         raise _http(e)
 
 
-# ── Hàng đợi `claude -p` cho provider kind=claude_cli (worker.py gọi) ──────
+# ── Hàng đợi `claude -p` / `grok -p` cho provider kind=*_cli (worker.py gọi) ──
 
 class CliCompleteIn(BaseModel):
     status: str                      # done | error
@@ -399,7 +400,7 @@ def claim_cli_job(db: Session = Depends(get_db)) -> Optional[dict]:
     now = datetime.utcnow()
     for j in (db.query(LlmCliJob).filter(LlmCliJob.status == "running",
                                          LlmCliJob.started_at < now - _CLI_STALE).all()):
-        j.status, j.finished_at, j.error = "error", now, "Worker không trả lời kịp."
+        j.status, j.finished_at, j.error, j.files = "error", now, "Worker không trả lời kịp.", None
     db.commit()
 
     j = (db.query(LlmCliJob).filter(LlmCliJob.status == "pending")
@@ -410,7 +411,12 @@ def claim_cli_job(db: Session = Depends(get_db)) -> Optional[dict]:
     db.commit()
     # Tài khoản Claude theo Settings (dùng chung với khung chat); model theo alias.
     prefs = _claude_prefs(db)
-    return {"id": j.id, "system": j.system or "", "prompt": j.prompt,
+    # Tài khoản/model mặc định trong Settings là của Claude — job grok bỏ qua.
+    if (j.cli or "claude") != "claude":
+        return {"id": j.id, "cli": j.cli, "system": j.system or "", "prompt": j.prompt,
+                "model": j.model, "files": j.files or []}
+    return {"id": j.id, "cli": "claude", "system": j.system or "", "prompt": j.prompt,
+            "files": j.files or [],
             "claude_account": prefs["claude_account"],
             "claude_auto_switch": prefs["claude_auto_switch"],
             "model": j.model or prefs["model"]}
@@ -426,6 +432,7 @@ def complete_cli_job(jid: int, payload: CliCompleteIn, db: Session = Depends(get
     j.status = "done" if payload.status == "done" else "error"
     j.result, j.error = payload.text, payload.error
     j.model_used, j.cost_usd, j.usage = payload.model_used, payload.cost_usd, payload.usage
+    j.files = None                                  # nội dung file không giữ lại sau khi trả lời
     j.finished_at = datetime.utcnow()
     db.commit()
     return {"ok": True}

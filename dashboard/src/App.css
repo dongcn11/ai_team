@@ -92,7 +92,7 @@ body {
 /* ── Task grid ── */
 .task-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(290px, 100%), 1fr));
   gap: 14px;
 }
 
@@ -306,7 +306,7 @@ body {
 
 .np-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(230px, 100%), 1fr));
   gap: 16px;
 }
 
@@ -872,7 +872,7 @@ body {
 }
 .pd-config-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fit, minmax(230px, 1fr));
+  grid-template-columns: repeat(auto-fit, minmax(min(230px, 100%), 1fr));
   gap: 12px 14px;
   align-items: start;
 }
@@ -1080,7 +1080,7 @@ body {
 
 .project-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+  grid-template-columns: repeat(auto-fill, minmax(min(280px, 100%), 1fr));
   gap: 12px;
 }
 
@@ -1780,3 +1780,85 @@ body {
 .page-btn:hover:not(:disabled) { border-color: #3b82f6; color: #f1f5f9; }
 .page-btn.active { background: #1e3a8a; border-color: #3b82f6; color: #dbeafe; font-weight: 600; }
 .page-btn:disabled { opacity: 0.4; cursor: not-allowed; }
+
+/* ══ Điện thoại (≤768px — vd. Galaxy S24 Ultra rộng 384px CSS) ══════════════
+   Nhiều trang dùng inline style với bề rộng cố định (popup minWidth 420, panel
+   320px, lưới "1fr 1fr"…). Thay vì sửa từng chỗ, khối này bắt chúng bằng
+   selector [style*=…] — React ghi inline style thành "min-width: 420px;" nên
+   so chuỗi được. Canvas workflow (.react-flow) tự quản kích thước, loại ra. */
+@media (max-width: 768px) {
+  html, body { overflow-x: hidden; }
+  .app-fill { height: 100dvh; }
+
+  /* Header: tiêu đề + chấm trạng thái 1 dòng, thanh tab thành dải cuộn ngang */
+  .header { flex-wrap: wrap; padding: 8px 12px 0; gap: 6px 10px; }
+  .header-left { display: contents; }
+  .header h1 { font-size: 15px; white-space: nowrap; order: 0; }
+  .header-right { order: 1; margin-left: auto; }
+  .run-meta { order: 2; width: 100%; }
+  .header-nav {
+    order: 3; width: calc(100% + 24px); margin: 0 -12px; padding: 0 12px 8px;
+    overflow-x: auto; scrollbar-width: none; -webkit-overflow-scrolling: touch;
+  }
+  .header-nav::-webkit-scrollbar { display: none; }
+  .nav-tab { flex-shrink: 0; white-space: nowrap; }
+
+  .main { padding: 14px 12px; }
+  .page-header { flex-wrap: wrap; gap: 8px; }
+  .card { padding: 14px; }
+
+  /* Settings: nhãn trên, ô nhập dưới, full ngang */
+  .setting-row { flex-wrap: wrap; gap: 6px; }
+  .setting-label { min-width: 0; width: 100%; }
+  .setting-input-group { width: 100%; }
+  .settings-page { padding-top: 0; }
+  .settings-card { padding: 18px 14px; }
+  .setting-row .setting-input, .setting-row .setting-select { width: 100%; flex: 1; min-width: 0; }
+  .setting-password-wrap { width: auto; flex: 1; min-width: 0; }
+  .setting-password-wrap .setting-input { width: auto; }
+
+  .logs-stats-grid { grid-template-columns: repeat(2, 1fr); }
+  .logs-status-bar, .logs-status-left, .logs-status-right { flex-wrap: wrap; gap: 8px; }
+  .logs-status-left select { min-width: 0; max-width: 100%; }
+  .history-meta { min-width: 0; }
+  .pd-subtitle-path { max-width: 100%; }
+  .pd-tab { padding-left: 8px; padding-right: 8px; }
+
+  /* Nội dung dài (đường dẫn, log, code) xuống dòng / cuộn bên trong khối của nó */
+  .main pre { white-space: pre-wrap; overflow-wrap: anywhere; }
+  .main code { overflow-wrap: anywhere; }
+  .main table { display: block; overflow-x: auto; max-width: 100%; }
+
+  /* Popup (overlay fixed inset:0 căn giữa): hộp thoại vừa màn hình */
+  [style*="position: fixed"][style*="inset: 0px"][style*="justify-content: center"] { padding: 12px; }
+  [style*="position: fixed"][style*="inset: 0px"][style*="justify-content: center"] > div {
+    min-width: 0 !important; width: 100%; max-height: calc(100dvh - 24px); overflow-y: auto;
+    padding: 18px !important;
+  }
+  /* Toast góc phải dưới → trải ngang đáy màn */
+  [style*="position: fixed"][style*="bottom: 24px"][style*="right: 24px"] {
+    left: 12px; right: 12px !important; bottom: 12px !important; max-width: none !important;
+  }
+
+  /* Bề rộng cố định viết inline: không được rộng hơn khối cha */
+  .app [style*="width:"]:not(.react-flow *) { max-width: 100%; }
+  .app [style*="min-width: 250px"], .app [style*="min-width: 280px"],
+  .app [style*="min-width: 360px"], .app [style*="min-width: 420px"] { min-width: 0 !important; flex-basis: 100% !important; }
+  /* Cột danh sách cố định (vd. Skills 300px) → full ngang, phần chi tiết rớt xuống dưới */
+  .app [style*="width: 300px"][style*="flex-shrink: 0"] { width: 100% !important; }
+  /* Lưới 2 cột inline → 1 cột */
+  .app [style*="grid-template-columns: 1fr 1fr"],
+  .app [style*="grid-template-columns: minmax(0px, 1fr) 140px"],
+  .app [style*="grid-template-columns: minmax(0px, 180px) minmax(0px, 1fr) auto"] {
+    grid-template-columns: minmax(0, 1fr) !important;
+  }
+  /* Hàng flex inline (toolbar, dòng danh sách) xuống dòng thay vì tràn ngang */
+  .main [style*="display: flex"]:not([style*="flex-direction: column"]):not(.react-flow *) { flex-wrap: wrap; }
+
+  /* Workflow editor: panel cấu hình node 320px bên phải canvas → sheet trượt từ đáy */
+  [style*="width: 320px"][style*="border-left: 1px solid"] {
+    position: fixed; left: 0; right: 0; bottom: 0; z-index: 60;
+    width: 100% !important; max-height: 65dvh;
+    border-left: 0 !important; border-top: 1px solid #1e293b; border-radius: 12px 12px 0 0;
+  }
+}

@@ -309,7 +309,7 @@ export default function SkillsPage() {
         <div className={`settings-msg ${msg.kind}`} style={{ marginBottom: 12 }}>{msg.text}</div>
       )}
 
-      <div style={{ display: "flex", gap: 16, alignItems: "flex-start" }}>
+      <div style={{ display: "flex", flexWrap: "wrap", gap: 16, alignItems: "flex-start" }}>
         {/* ── Danh sách skill ───────────────────────────────────────── */}
         <div style={{ width: 300, flexShrink: 0 }}>
           <input className="setting-input" style={{ width: "100%", marginBottom: 8 }}
@@ -373,7 +373,8 @@ export default function SkillsPage() {
         </div>
 
         {/* ── Trình sửa ─────────────────────────────────────────────── */}
-        <div style={{ flex: 1, minWidth: 0 }}>
+        {/* basis 320px: màn hẹp (điện thoại) thì rớt xuống dưới danh sách thay vì bị bóp */}
+        <div style={{ flex: "1 1 320px", minWidth: 0 }}>
           {!draft && (
             <div className="card" style={{ color: "#6b7280", fontSize: 13, lineHeight: 1.7 }}>
               Chọn một skill bên trái để xem/sửa, hoặc bấm <b>+ Skill mới</b>.

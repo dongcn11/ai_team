@@ -1,0 +1,45 @@
+# systemd unit cho worker.py trên VPS Linux — chạy nền, tự khởi động lại khi
+# crash, tự chạy khi VPS reboot. Không phụ thuộc terminal/SSH còn mở hay không.
+#
+# Cài đặt (sửa User / WorkingDirectory / đường dẫn python cho đúng máy bạn):
+#
+#   sudo cp deploy/ai-team-worker.service /etc/systemd/system/
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now ai-team-worker
+#
+# Dùng hằng ngày:
+#
+#   systemctl status ai-team-worker        # đang chạy không
+#   journalctl -u ai-team-worker -f        # xem log sống (thay cho terminal)
+#   sudo systemctl restart ai-team-worker  # sau khi git pull code mới
+#   sudo systemctl stop ai-team-worker
+#
+# User phải là user đã `claude login` / cấu hình opencode — worker gọi CLI bằng
+# phiên đăng nhập trong $HOME của user đó, chạy bằng root sẽ không thấy.
+
+[Unit]
+Description=AI Team queue worker (worker.py)
+After=network-online.target docker.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/ai_team_clean
+ExecStart=/usr/bin/python3 worker.py
+# In log ra ngay, không bị buffer → journalctl thấy realtime.
+Environment=PYTHONUNBUFFERED=1
+Environment=DASHBOARD_API_URL=http://localhost:8100
+# systemd không đọc ~/.bashrc → PATH phải có thư mục chứa `claude`, `opencode`
+# (thường ~/.local/bin hoặc thư mục bin của nvm/npm global).
+Environment=PATH=/home/ubuntu/.local/bin:/usr/local/bin:/usr/bin:/bin
+# Biến khác (CLAUDE_ARGS, STEP_TIMEOUT_S, ...) có thể để trong file này:
+EnvironmentFile=-/home/ubuntu/ai_team_clean/config/worker.env
+Restart=always
+RestartSec=5
+# Dừng worker thì dừng luôn tiến trình con (claude -p / main.py) đang chạy.
+KillMode=control-group
+TimeoutStopSec=30
+
+[Install]
+WantedBy=multi-user.target

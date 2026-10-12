@@ -14,7 +14,7 @@ import React, { useCallback, useEffect, useState } from "react";
 type Provider = {
   id: number; name: string; base_url: string; key_hint: string; has_key: boolean;
   extra_headers: Record<string, string>; timeout_s: number; allow_passthrough: boolean;
-  enabled: boolean; model_count: number; kind: "openai" | "claude_cli";
+  enabled: boolean; model_count: number; kind: "openai" | CliKind;
 };
 type Model = {
   id: number; alias: string; provider_id: number; provider: string | null; upstream_model: string;
@@ -25,8 +25,13 @@ type Client = {
   created_at: string | null; last_used_at: string | null; api_key?: string;
 };
 
+// Provider chạy CLI trên host qua worker.py — không base_url, không key.
+type CliKind = "claude_cli" | "grok_cli";
+const CLI_NAME: Record<CliKind, string> = { claude_cli: "claude", grok_cli: "grok" };
+const isCli = (kind?: string): kind is CliKind => !!kind && kind in CLI_NAME;
+
 const PRESETS: { name: string; label: string; base_url: string; note: string;
-                 headers?: Record<string, string>; kind?: "claude_cli" }[] = [
+                 headers?: Record<string, string>; kind?: CliKind }[] = [
   { name: "openrouter", label: "OpenRouter", base_url: "https://openrouter.ai/api/v1",
     note: "Một key cho Claude, Grok, GPT, Gemini... Model gốc dạng anthropic/claude-sonnet-5-5, x-ai/grok-4.",
     headers: { "X-Title": "AI Team Gateway" } },
@@ -38,6 +43,11 @@ const PRESETS: { name: string; label: string; base_url: string; note: string;
     note: "worker.py trên máy này chạy `claude -p` bằng đăng nhập Claude Code — như khung chat. "
         + "CHỈ ĐỂ TEST lâu lâu: dùng subscription cá nhân làm backend cho hệ thống khác là trái "
         + "điều khoản Anthropic, có thể bị khoá tài khoản. Model gốc: sonnet / opus / haiku." },
+  { name: "grok-cli", label: "Grok CLI (test)", base_url: "", kind: "grok_cli",
+    note: "worker.py trên máy này chạy `grok -p` (Grok Build CLI) — cần cài grok và đăng nhập "
+        + "1 lần bằng lệnh `grok` (hoặc đặt XAI_API_KEY cho worker). Chạy tuần tự trên 1 máy nên "
+        + "CHỈ ĐỂ TEST; dùng thật thì khai provider xAI (HTTP). Model gốc: grok-4.7, grok-4.6... "
+        + "(`grok models` liệt kê đủ); để trống = mặc định của CLI." },
 ];
 
 const PARAM_KEYS = ["temperature", "top_p", "max_tokens"] as const;
@@ -136,7 +146,7 @@ function Providers({ providers, run }: { providers: Provider[]; run: Run }) {
           {PRESETS.map(p => (
             <button key={p.name} className="btn-muted" onClick={() => setDraft({
               id: null, name: p.name, base_url: p.base_url, api_key: "",
-              timeout_s: p.kind === "claude_cli" ? 300 : 120, kind: p.kind || "openai",
+              timeout_s: isCli(p.kind) ? 300 : 120, kind: p.kind || "openai",
               allow_passthrough: false, enabled: true, note: p.note,
               headers: Object.entries(p.headers || {}).map(([k, v]) => `${k}: ${v}`).join("\n"),
             })}>+ {p.label}</button>
@@ -151,13 +161,13 @@ function Providers({ providers, run }: { providers: Provider[]; run: Run }) {
       {draft && (
         <div className="card" style={{ marginBottom: 16 }}>
           <h3 style={{ fontSize: 15, marginBottom: 4 }}>{draft.id ? `Sửa provider ${draft.name}` : "Provider mới"}</h3>
-          {draft.note && <p style={{ ...hint, marginBottom: 12, color: draft.kind === "claude_cli" ? "#fbbf24" : hint.color }}>{draft.note}</p>}
+          {draft.note && <p style={{ ...hint, marginBottom: 12, color: isCli(draft.kind) ? "#fbbf24" : hint.color }}>{draft.note}</p>}
           <div className="np-grid">
             <Field label="Tên (dùng trong model passthrough)">
               <input className="setting-input" value={draft.name} placeholder="openrouter"
                 onChange={e => setDraft({ ...draft, name: e.target.value })} />
             </Field>
-            {draft.kind !== "claude_cli" && <>
+            {!isCli(draft.kind) && <>
             <Field label="Base URL">
               <input className="setting-input" value={draft.base_url} placeholder="https://…/v1"
                 onChange={e => setDraft({ ...draft, base_url: e.target.value })} />
@@ -172,7 +182,7 @@ function Providers({ providers, run }: { providers: Provider[]; run: Run }) {
               <input className="setting-input" type="number" value={draft.timeout_s}
                 onChange={e => setDraft({ ...draft, timeout_s: e.target.value })} />
             </Field>
-            {draft.kind !== "claude_cli" && (
+            {!isCli(draft.kind) && (
             <Field label="Header thêm (mỗi dòng Tên: giá trị)">
               <textarea className="setting-input" rows={2} value={draft.headers}
                 onChange={e => setDraft({ ...draft, headers: e.target.value })} />
@@ -187,7 +197,7 @@ function Providers({ providers, run }: { providers: Provider[]; run: Run }) {
             </span>
           </label>
           <div style={{ display: "flex", gap: 8, marginTop: 16 }}>
-            <button className="btn-primary" onClick={save} disabled={!draft.name || !draft.base_url}>Lưu</button>
+            <button className="btn-primary" onClick={save} disabled={!draft.name || (!isCli(draft.kind) && !draft.base_url)}>Lưu</button>
             <button className="btn-muted" onClick={() => setDraft(null)}>Huỷ</button>
           </div>
         </div>
@@ -205,10 +215,10 @@ function Providers({ providers, run }: { providers: Provider[]; run: Run }) {
           <div key={p.id} className="card" style={{ padding: 16, opacity: p.enabled ? 1 : 0.6 }}>
             <div style={{ display: "flex", alignItems: "center", gap: 10, flexWrap: "wrap" }}>
               <strong style={{ fontSize: 15 }}>{p.name}</strong>
-              {p.kind === "claude_cli"
-                ? <span className="pd-slug" style={{ color: "#fbbf24" }}>claude -p qua worker · chỉ để test</span>
+              {isCli(p.kind)
+                ? <span className="pd-slug" style={{ color: "#fbbf24" }}>{CLI_NAME[p.kind]} -p qua worker · chỉ để test</span>
                 : <span className="pd-slug">{p.base_url}</span>}
-              <span style={hint}>{p.model_count} model{p.kind !== "claude_cli" && <> · key {p.has_key ? <code>{p.key_hint}</code> : "không có"}</>}
+              <span style={hint}>{p.model_count} model{!isCli(p.kind) && <> · key {p.has_key ? <code>{p.key_hint}</code> : "không có"}</>}
                 {p.allow_passthrough && " · cho passthrough"}</span>
               <div style={{ flex: 1 }} />
               <button className="pd-ghost-btn" onClick={() => run(() => call(`/api/llm/providers/${p.id}`, "PUT", { enabled: !p.enabled }))}>
@@ -661,6 +671,81 @@ echo $res["choices"][0]["message"]["content"];` },
 }` },
         { t: "p", text: "Nội dung câu trả lời nằm ở `choices[0].message.content`." },
       ]},
+      { title: "Gửi kèm file", blocks: [
+        { t: "p", text: "**Cách 1 — form-data (dễ nhất, gọi bằng curl/HTTP thường):** upload file thẳng, không cần base64. Trường `model`, `prompt` (hoặc `messages` dạng chuỗi JSON), `system` tuỳ chọn, và `files` lặp lại cho mỗi file." },
+        { t: "code", lang: "bash", label: "curl — form-data", text:
+`curl ${v1}/chat/completions \\
+  -H "Authorization: Bearer $API_KEY" \\
+  --max-time 600 \\
+  -F model=${m} \\
+  -F prompt="Tóm tắt hợp đồng và đối chiếu với ảnh hoá đơn" \\
+  -F files=@hop-dong.pdf \\
+  -F files=@hoa-don.jpg` },
+        { t: "code", lang: "python", label: "Python — form-data (pip install requests)", text:
+`import requests
+
+r = requests.post("${v1}/chat/completions",
+    headers={"Authorization": "Bearer API_KEY"},
+    data={"model": "${m}", "prompt": "Tóm tắt các file"},
+    files=[("files", open("hop-dong.pdf", "rb")), ("files", open("hoa-don.jpg", "rb"))],
+    timeout=600)
+print(r.json()["choices"][0]["message"]["content"])` },
+        { t: "p", text: "**Cách 2 — JSON base64 (dùng thư viện OpenAI):** `content` là mảng gồm phần chữ và các phần file theo chuẩn OpenAI. Nội dung file mã hoá **base64** dạng `data:<mime>;base64,…` — không nhận link http hay `file_id`." },
+        { t: "table", head: ["Loại", "Phần gửi"], rows: [
+          ["Ảnh (png, jpg, webp, gif)", "`{\"type\": \"image_url\", \"image_url\": {\"url\": \"data:image/png;base64,…\"}}`"],
+          ["PDF, Word, Excel, PowerPoint, txt, md, csv, json…", "`{\"type\": \"file\", \"file\": {\"filename\": \"hop-dong.pdf\", \"file_data\": \"data:application/pdf;base64,…\"}}`"],
+        ]},
+        { t: "code", lang: "python", label: "Python — gửi nhiều file", text:
+`import base64, mimetypes
+from openai import OpenAI
+
+client = OpenAI(base_url="${v1}", api_key="API_KEY", timeout=600)
+
+def file_part(path):
+    mime = mimetypes.guess_type(path)[0] or "application/octet-stream"
+    data = base64.b64encode(open(path, "rb").read()).decode()
+    if mime.startswith("image/"):
+        return {"type": "image_url", "image_url": {"url": f"data:{mime};base64,{data}"}}
+    return {"type": "file", "file": {"filename": path.split("/")[-1],
+                                     "file_data": f"data:{mime};base64,{data}"}}
+
+r = client.chat.completions.create(
+    model="${m}",
+    messages=[{"role": "user", "content": [
+        {"type": "text", "text": "Tóm tắt hợp đồng và đối chiếu với ảnh hoá đơn"},
+        file_part("hop-dong.pdf"),
+        file_part("hoa-don.jpg"),
+        file_part("ke-hoach.docx"),
+    ]}],
+)
+print(r.choices[0].message.content)` },
+        { t: "code", lang: "javascript", label: "Node.js — gửi nhiều file", text:
+`import fs from "node:fs";
+import path from "node:path";
+
+const MIME = { ".pdf": "application/pdf", ".png": "image/png", ".jpg": "image/jpeg",
+  ".docx": "application/vnd.openxmlformats-officedocument.wordprocessingml.document" };
+const filePart = (p) => {
+  const mime = MIME[path.extname(p).toLowerCase()] || "application/octet-stream";
+  const url = \`data:\${mime};base64,\${fs.readFileSync(p).toString("base64")}\`;
+  return mime.startsWith("image/")
+    ? { type: "image_url", image_url: { url } }
+    : { type: "file", file: { filename: path.basename(p), file_data: url } };
+};
+
+const r = await client.chat.completions.create({
+  model: "${m}",
+  messages: [{ role: "user", content: [
+    { type: "text", text: "Tóm tắt hợp đồng và đối chiếu với ảnh hoá đơn" },
+    filePart("hop-dong.pdf"), filePart("hoa-don.jpg"),
+  ]}],
+});` },
+        { t: "list", items: [
+          "Tối đa **20 file** mỗi request, tổng dung lượng file **15 MB**.",
+          "File chỉ dùng cho lần gọi đó, đọc xong là xoá — muốn hỏi tiếp về file thì gửi lại file.",
+          "Có file thì AI phải đọc trước khi trả lời nên **chậm hơn** — đặt timeout tối thiểu **600 giây**.",
+        ]},
+      ]},
       { title: "Trò chuyện nhiều lượt", blocks: [
         { t: "p", text: "API không lưu lịch sử. Muốn hỏi tiếp, gửi lại toàn bộ hội thoại trước đó trong `messages` theo đúng thứ tự:" },
         { t: "code", lang: "json", text:
@@ -686,6 +771,8 @@ echo $res["choices"][0]["message"]["content"];` },
         { t: "p", text: "Lỗi trả về dạng `{\"error\": {\"message\": \"…\", \"type\": \"…\", \"code\": \"…\"}}`." },
         { t: "table", head: ["HTTP", "code", "Nguyên nhân / cách xử lý"], rows: [
           ["400", "`invalid_messages`, `invalid_json`, `stream_unsupported`", "Sai định dạng request — sửa request"],
+          ["400", "`invalid_file`, `unsupported_content`, `too_many_files`", "File sai định dạng (phải là data URL base64), loại phần không hỗ trợ, hoặc quá 20 file"],
+          ["413", "`files_too_large`", "Tổng file vượt 15 MB — gửi ít file hơn hoặc nén nhỏ lại"],
           ["401", "`missing_api_key`, `invalid_api_key`", "Thiếu hoặc sai API key"],
           ["403", "`key_disabled`, `model_not_allowed`", "Key bị tắt hoặc không được dùng model này"],
           ["404", "`model_not_found`", "Sai tên model — xem `GET /v1/models`"],
