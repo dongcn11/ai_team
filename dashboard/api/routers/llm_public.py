@@ -5,7 +5,8 @@ API công khai cho hệ thống ngoài — chuẩn OpenAI, mount ở /v1
     GET  /v1/models              alias được phép dùng với key này
     POST /v1/chat/completions    chat (stream=false) — body JSON chuẩn OpenAI, HOẶC
                                  multipart/form-data để upload file thẳng (curl -F);
-                                 thêm `output: "html"` → AI tạo file, trả link tải
+                                 thêm `output` (html, docx, xlsx, pptx, pdf, png, csv, file)
+                                 → AI tạo file, trả link tải (xem llm_gateway.py)
     GET  /v1/files/<token>/<tên> file AI tạo — link bí mật, không cần key, hết hạn sau 24h
 
 Lỗi trả đúng dạng OpenAI `{"error": {"message", "type", "code"}}` để SDK của

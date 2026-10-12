@@ -38,9 +38,11 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import PurePath
 from typing import Optional
+from urllib.parse import quote
 
 from sqlalchemy.orm import Session
 
+import sandbox_client
 from models import ApiClient, LlmCliJob, LlmFile, LlmModel, LlmProvider, LlmUsage
 
 KEY_PREFIX = "sk-ait-"
@@ -217,7 +219,7 @@ def chat(db: Session, client: Optional[ApiClient], body: dict, base_url: str = "
         raise GatewayError(400, "Chưa hỗ trợ stream=true — gửi stream=false", code="stream_unsupported")
     output = _output_spec(body)
     if output:
-        body = {**body, "messages": [{"role": "system", "content": OUTPUTS[output]["instruction"]},
+        body = {**body, "messages": [{"role": "system", "content": _output_instruction(output)},
                                      *(body.get("messages") or [])]}
 
     alias = str(body.get("model") or "")
@@ -229,10 +231,7 @@ def chat(db: Session, client: Optional[ApiClient], body: dict, base_url: str = "
             raise GatewayError(403, f"Key này không được dùng model '{alias}'",
                                "permission_error", "model_not_allowed")
         log.provider, log.upstream_model = target.provider.name, target.upstream_model
-        if target.provider.kind in CLI_KINDS:
-            resp = _run_cli(db, target, body)
-        else:
-            resp = _post(target.provider, "/chat/completions", build_payload(target, body))
+        resp = _call(db, target, body)
 
         usage = resp.get("usage") or {}
         log.prompt_tokens = usage.get("prompt_tokens")
@@ -241,7 +240,9 @@ def chat(db: Session, client: Optional[ApiClient], body: dict, base_url: str = "
             log.cost_usd = float(usage["cost"])
         # Trả lại đúng alias client gửi — đổi model gốc phía sau không lộ ra ngoài.
         resp["model"] = target.alias
-        if output:
+        if output in GEN_OUTPUTS:
+            _attach_generated(db, client, target, body, resp, body.get("output_name"), base_url)
+        elif output:
             _attach_output(db, client, resp, output, body.get("output_name"), base_url)
         return resp
     except GatewayError as e:
@@ -257,11 +258,14 @@ def chat(db: Session, client: Optional[ApiClient], body: dict, base_url: str = "
 
 # ── File đầu ra: AI viết nội dung, gateway cất thành file + trả link tải ─────
 #
-# Client gửi thêm `"output": "html"` (form: -F output=html). Gateway dặn AI trả
-# nguyên tài liệu trong 1 khối ```html```, tách khối đó ra cất vào llm_files rồi
-# trả `files: [{name, url, …}]` cạnh `choices`. AI không cần quyền ghi đĩa và
-# mọi provider (CLI lẫn HTTP) đều dùng được. PDF/ảnh sau này: worker render
-# chính HTML này.
+# Client gửi thêm `"output": "<loại>"` (form: -F output=docx). Kết quả cất vào
+# llm_files, trả `files: [{name, url, …}]` cạnh `choices`. AI không cần quyền ghi
+# đĩa nên mọi provider (CLI lẫn HTTP) đều dùng được.
+#   html        AI trả nguyên tài liệu trong 1 khối ```html``` → cất thẳng (nhanh).
+#   docx, xlsx, pptx, pdf, png, csv, file
+#               AI viết script ```python-file```, container `sandbox` chạy rồi trả
+#               file (sandbox_client.py — chung với khung chat). File client gửi
+#               kèm nằm trong in/. Script lỗi → đưa lỗi lại cho AI sửa 1 lần.
 
 OUTPUTS = {
     "html": {
@@ -274,6 +278,17 @@ OUTPUTS = {
             "1–2 câu mô tả file. Không hỏi lại, không chia nhiều khối."),
     },
 }
+# output → mô tả định dạng dặn AI (đi qua sandbox).
+GEN_OUTPUTS = {
+    "docx": "MỘT file Word .docx (python-docx)",
+    "xlsx": "MỘT file Excel .xlsx (openpyxl hoặc xlsxwriter; giữ công thức khi hợp lý)",
+    "pptx": "MỘT file PowerPoint .pptx (python-pptx)",
+    "pdf":  "MỘT file PDF (reportlab, nhớ font DejaVu Sans cho tiếng Việt)",
+    "png":  "ảnh PNG (biểu đồ / hình vẽ bằng matplotlib hoặc pillow)",
+    "csv":  "MỘT file CSV UTF-8 có BOM (utf-8-sig) để Excel mở đúng tiếng Việt",
+    "file": "file có định dạng phù hợp nhất với yêu cầu",
+}
+GEN_FIX_TRIES = 1
 FILE_TTL = timedelta(hours=float(os.getenv("LLM_FILE_TTL_H", "24")))
 
 
@@ -282,10 +297,17 @@ def _output_spec(body: dict) -> Optional[str]:
     if out in (None, "", "text"):
         return None
     out = str(out).strip().lower()
-    if out not in OUTPUTS:
-        raise GatewayError(400, f"`output` chưa hỗ trợ '{out}' — dùng: {', '.join(OUTPUTS)}",
-                           code="unsupported_output")
+    if out not in OUTPUTS and out not in GEN_OUTPUTS:
+        raise GatewayError(400, f"`output` chưa hỗ trợ '{out}' — dùng: "
+                                f"{', '.join([*OUTPUTS, *GEN_OUTPUTS])}", code="unsupported_output")
     return out
+
+
+def _output_instruction(kind: str) -> str:
+    if kind in OUTPUTS:
+        return OUTPUTS[kind]["instruction"]
+    return (f"Yêu cầu này cần kết quả là {GEN_OUTPUTS[kind]}. " + sandbox_client.GUIDE +
+            "\nLuôn trả khối python-file, không hỏi lại, không chia nhiều khối.")
 
 
 def _extract(kind: str, text: str) -> tuple[Optional[str], str]:
@@ -329,6 +351,89 @@ def _attach_output(db: Session, client: Optional[ApiClient], resp: dict, kind: s
                       "url": url, "download_url": url + "?download=1",
                       "expires_at": f.expires_at.isoformat() + "Z"}]
     msg["content"] = rest or f"Đã tạo file {f.name}."
+
+
+def _call(db: Session, target: Target, body: dict) -> dict:
+    if target.provider.kind in CLI_KINDS:
+        return _run_cli(db, target, body)
+    return _post(target.provider, "/chat/completions", build_payload(target, body))
+
+
+def _input_files(messages) -> list:
+    """File client gửi kèm (data URL trong messages) → [{name, data(base64)}] cho in/
+    của sandbox — cùng cách đặt tên với lúc gửi model, nên script gọi đúng tên."""
+    files, taken = [], set()
+    for m in messages or []:
+        if isinstance(m, dict) and m.get("role") not in ("system", "developer"):
+            _content(m.get("content"), files, taken)
+    return [{"name": f["name"], "data": base64.b64encode(f["_raw"]).decode()} for f in files]
+
+
+def _store_file(db: Session, client: Optional[ApiClient], name: str, mime: str, data: bytes,
+                base_url: str) -> dict:
+    now = datetime.utcnow()
+    f = LlmFile(token=secrets.token_urlsafe(24), client_id=client.id if client else None,
+                name=name, mime=mime, data=data, expires_at=now + FILE_TTL)
+    db.add(f)
+    db.commit()
+    url = f"{base_url.rstrip('/')}/v1/files/{f.token}/{quote(f.name)}"
+    return {"name": f.name, "mime": f.mime.split(";")[0], "size": len(f.data),
+            "url": url, "download_url": url + "?download=1",
+            "expires_at": f.expires_at.isoformat() + "Z"}
+
+
+def _attach_generated(db: Session, client: Optional[ApiClient], target: Target, body: dict,
+                      resp: dict, name, base_url: str) -> None:
+    """AI viết script → sandbox chạy → cất file. Script lỗi thì gửi lỗi lại cho AI
+    sửa (GEN_FIX_TRIES lần) — client gọi API không có cơ hội nhắn lại như khung chat."""
+    inputs = _input_files(body.get("messages"))
+    messages = list(body.get("messages") or [])
+    for attempt in range(GEN_FIX_TRIES + 1):
+        msg = ((resp.get("choices") or [{}])[0].get("message") or {})
+        code, rest = sandbox_client.split(msg.get("content") or "")
+        if not code:
+            raise GatewayError(502, "AI không trả về script tạo file — thử lại hoặc nói rõ hơn yêu cầu",
+                               "upstream_error", "no_output_file")
+        res = sandbox_client.run(code, inputs)
+        if res.get("ok") or attempt == GEN_FIX_TRIES:
+            break
+        messages += [{"role": "assistant", "content": msg.get("content") or ""},
+                     {"role": "user", "content": "Script trên chạy lỗi:\n" + str(res.get("error"))[-3000:] +
+                      "\nSửa lỗi và trả lại TOÀN BỘ script trong một khối python-file."}]
+        fixed = _call(db, target, {**body, "messages": messages})
+        # Cộng token của lần sửa vào usage trả client.
+        u0, u1 = resp.get("usage") or {}, fixed.get("usage") or {}
+        fixed["usage"] = {k: (u0.get(k) or 0) + (u1.get(k) or 0)
+                          for k in ("prompt_tokens", "completion_tokens", "total_tokens", "cost")
+                          if k in u0 or k in u1}
+        resp.clear()
+        resp.update(fixed)
+    if not res.get("files"):
+        raise GatewayError(502, f"Sandbox không tạo được file: {str(res.get('error'))[-1500:]}",
+                           "upstream_error", "sandbox_error")
+    db.query(LlmFile).filter(LlmFile.expires_at < datetime.utcnow()).delete()   # dọn file hết hạn
+    gen = res["files"]
+    out = []
+    for i, f in enumerate(gen):
+        fname = _gen_name(name, f.get("name") or "", len(gen), i)
+        out.append(_store_file(db, client, fname, f.get("mime") or "application/octet-stream",
+                               base64.b64decode(f.get("data") or ""), base_url))
+    resp["files"] = out
+    msg["content"] = rest or f"Đã tạo {len(out)} file."
+    resp.setdefault("choices", [{}])[0]["message"] = msg
+
+
+def _gen_name(wanted, got: str, count: int, i: int) -> str:
+    """`output_name` của client đặt cho file (giữ đuôi thật script ghi ra);
+    nhiều file thì thêm -2, -3…"""
+    got = PurePath(got).name or "ket-qua"
+    if not wanted:
+        return got
+    ext = PurePath(got).suffix
+    base = re.sub(r"[^\w.\- ]+", "_", PurePath(str(wanted).replace("\\", "/")).name).strip(" .") or "ket-qua"
+    if ext and base.lower().endswith(ext.lower()):
+        base = base[: -len(ext)]
+    return f"{base}{'' if i == 0 else f'-{i + 1}'}{ext}"
 
 
 # ── claude_cli / grok_cli: chạy `<cli> -p` qua worker ──────────────────────

@@ -22,11 +22,8 @@ người dùng hiểu được thay vì trạng thái kỹ thuật của từng 
 
 import base64
 import json
-import os
 import re
 import threading
-import urllib.error
-import urllib.request
 from datetime import datetime, timedelta
 from typing import List, Optional
 from urllib.parse import quote
@@ -39,6 +36,7 @@ from sqlalchemy.orm import Session
 
 import auth
 import chat_models
+import sandbox_client
 import llm_gateway as gw
 import worker_heartbeat
 from database import SessionLocal, get_db
@@ -60,18 +58,8 @@ SYSTEM_PROMPT = (
     "— bạn sẽ soạn nháp task từ cuộc trò chuyện để họ chọn dự án rồi tạo."
 ) + (
     "\n\nTẠO FILE: khi người dùng cần một file (Word, Excel, PowerPoint, PDF, CSV, ảnh, "
-    "biểu đồ…), hãy viết MỘT khối code bắt đầu bằng ```python-file chứa script Python 3.12 "
-    "hoàn chỉnh. Hệ thống chạy script đó trong sandbox rồi gửi file cho người dùng tải. Quy ước:\n"
-    "- Ghi file kết quả vào thư mục `out/` (đường dẫn tương đối, vd `out/bao-cao.docx`), "
-    "đặt tên file có nghĩa; tối đa 10 file, 25MB.\n"
-    "- File người dùng đã đính kèm trong cuộc trò chuyện nằm ở thư mục `in/` (cùng tên).\n"
-    "- Thư viện có sẵn: python-docx, openpyxl, xlsxwriter, python-pptx, reportlab, "
-    "matplotlib, pillow, pandas + thư viện chuẩn. KHÔNG có mạng, không cài thêm được gì.\n"
-    "- Chữ tiếng Việt trong PDF/ảnh/biểu đồ: dùng font DejaVu Sans tại "
-    "`/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf` (đậm: `DejaVuSans-Bold.ttf`) — "
-    "reportlab phải registerFont font này, matplotlib đặt rcParams['font.family']='DejaVu Sans'.\n"
-    "- Ngoài khối code chỉ viết 1–3 câu nói file có gì; đừng dán lại nội dung file. "
-    "Không có yêu cầu tạo file thì trả lời bình thường, không viết khối python-file."
+    "biểu đồ…). " + sandbox_client.GUIDE +
+    "\nKhông có yêu cầu tạo file thì trả lời bình thường, không viết khối python-file."
 )
 
 # Mỗi câu là 1 lần `claude -p` mới (không giữ session), nên lịch sử phải đi kèm
@@ -122,10 +110,6 @@ class CompleteIn(BaseModel):
     error: Optional[str] = None
     model_used: Optional[str] = None
     cost_usd: Optional[float] = None
-
-
-SANDBOX_URL = os.getenv("SANDBOX_URL", "http://sandbox:8000").rstrip("/")
-_GEN_BLOCK = re.compile(r"```python-file[^\n]*\n(.*?)```", re.S)
 
 
 def _file_out(f: AssistantFile) -> dict:
@@ -726,12 +710,12 @@ def complete_reply(msg_id: int, payload: CompleteIn, db: Session = Depends(get_d
             m.meta = {**(m.meta or {}), "draft": draft}
             # Chữ ngắn thay cho JSON: tin này vẫn nằm trong lịch sử gửi Claude.
             text = f"📋 Đã soạn nháp task: {draft['name']}"
-    gen = _GEN_BLOCK.search(text) if ok and (m.kind or "chat") == "chat" else None
-    if gen:
+    code, rest = sandbox_client.split(text) if ok and (m.kind or "chat") == "chat" else (None, text)
+    if code:
         # Có script tạo file: giữ tin ở "running" (khung chat còn chờ) tới khi
         # sandbox chạy xong — worker không phải đợi, request /complete về ngay.
-        text = (_GEN_BLOCK.sub("", text).strip() or "Đã tạo file theo yêu cầu.")
-        m.meta = {**(m.meta or {}), "gen": {"status": "running", "code": gen.group(1).strip()}}
+        text = rest or "Đã tạo file theo yêu cầu."
+        m.meta = {**(m.meta or {}), "gen": {"status": "running", "code": code}}
         m.text, m.error = text, None
         m.model_used, m.cost_usd = payload.model_used, payload.cost_usd
         db.commit()
@@ -751,18 +735,6 @@ def complete_reply(msg_id: int, payload: CompleteIn, db: Session = Depends(get_d
     return _msg_out(m)
 
 
-def _sandbox(code: str, files: list) -> dict:
-    req = urllib.request.Request(f"{SANDBOX_URL}/run", method="POST",
-                                 data=json.dumps({"code": code, "files": files}).encode(),
-                                 headers={"Content-Type": "application/json"})
-    try:
-        with urllib.request.urlopen(req, timeout=180) as r:
-            return json.loads(r.read())
-    except (urllib.error.URLError, OSError, ValueError) as e:
-        return {"ok": False, "files": [],
-                "error": f"Không gọi được sandbox tạo file ({e}) — container `sandbox` có đang chạy?"}
-
-
 def _run_gen(msg_id: int) -> None:
     """Chạy script của tin trợ lý trong sandbox, lưu file kết quả như file của
     thread (gắn vào chính tin này) → khung chat hiện nút tải; câu sau model
@@ -777,7 +749,7 @@ def _run_gen(msg_id: int) -> None:
                   for f in db.query(AssistantFile).filter(AssistantFile.thread_id == m.thread_id,
                                                           AssistantFile.message_id.isnot(None),
                                                           AssistantFile.message_id < m.id)]
-        res = _sandbox(gen.get("code") or "", inputs)
+        res = sandbox_client.run(gen.get("code") or "", inputs)
         taken = {n.lower() for (n,) in db.query(AssistantFile.name)
                                          .filter(AssistantFile.thread_id == m.thread_id).all()}
         made = []

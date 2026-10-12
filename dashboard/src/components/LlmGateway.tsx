@@ -746,6 +746,41 @@ const r = await client.chat.completions.create({
           "Có file thì AI phải đọc trước khi trả lời nên **chậm hơn** — đặt timeout tối thiểu **600 giây**.",
         ]},
       ]},
+      { title: "Nhận kết quả là file (Word, Excel, PDF…)", blocks: [
+        { t: "p", text: "Thêm trường `output` (form-data: `-F output=docx`) để AI trả về **file** thay vì chỉ chữ. Câu trả lời có thêm mảng `files` cạnh `choices`, mỗi phần tử có `name`, `mime`, `size`, `url` (mở trên trình duyệt), `download_url` (tải về), `expires_at`. Link bí mật, **không cần API key**, tự hết hạn sau 24 giờ. `output_name` (tuỳ chọn) đặt tên file." },
+        { t: "table", head: ["output", "Kết quả"], rows: [
+          ["`html`", "Trang HTML hoàn chỉnh (CSS/JS trong file) — nhanh nhất"],
+          ["`docx`", "Word"], ["`xlsx`", "Excel (giữ công thức khi hợp lý)"], ["`pptx`", "PowerPoint"],
+          ["`pdf`", "PDF, tiếng Việt có dấu"], ["`png`", "Ảnh biểu đồ / hình vẽ (không phải ảnh AI vẽ)"],
+          ["`csv`", "CSV UTF-8 mở đúng tiếng Việt trong Excel"],
+          ["`file`", "Để AI chọn định dạng hợp nhất — có thể ra nhiều file"],
+        ]},
+        { t: "code", lang: "bash", label: "curl — đọc file gửi kèm, xuất báo cáo Excel", text:
+`curl ${v1}/chat/completions \\
+  -H "Authorization: Bearer $API_KEY" \\
+  --max-time 600 \\
+  -F model=${m} \\
+  -F prompt="Tổng hợp doanh thu theo tháng từ file này, thêm cột tổng" \\
+  -F output=xlsx -F output_name=doanh-thu \\
+  -F files=@du-lieu.csv` },
+        { t: "code", lang: "json", label: "Kết quả", text:
+`{
+  "choices": [{ "message": { "role": "assistant", "content": "Đã tổng hợp 12 tháng, thêm cột Tổng." } }],
+  "files": [{
+    "name": "doanh-thu.xlsx",
+    "mime": "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    "size": 6528,
+    "url": "${v1}/files/<token>/doanh-thu.xlsx",
+    "download_url": "${v1}/files/<token>/doanh-thu.xlsx?download=1",
+    "expires_at": "…"
+  }]
+}` },
+        { t: "list", items: [
+          "Trừ `html`, AI viết script Python và hệ thống chạy trong **sandbox cô lập** (không mạng) để tạo file; file gửi kèm request dùng được làm dữ liệu đầu vào.",
+          "Script lỗi thì hệ thống tự nhờ AI sửa 1 lần; vẫn lỗi → `502 sandbox_error` kèm thông báo lỗi.",
+          "Tạo file mất thêm thời gian chạy script — đặt timeout tối thiểu **600 giây**.",
+        ]},
+      ]},
       { title: "Trò chuyện nhiều lượt", blocks: [
         { t: "p", text: "API không lưu lịch sử. Muốn hỏi tiếp, gửi lại toàn bộ hội thoại trước đó trong `messages` theo đúng thứ tự:" },
         { t: "code", lang: "json", text:
@@ -777,6 +812,7 @@ const r = await client.chat.completions.create({
           ["403", "`key_disabled`, `model_not_allowed`", "Key bị tắt hoặc không được dùng model này"],
           ["404", "`model_not_found`", "Sai tên model — xem `GET /v1/models`"],
           ["502", "`upstream_…`", "Phía AI tạm lỗi — thử lại sau vài giây"],
+          ["502", "`no_output_file`, `sandbox_error`", "Có `output` nhưng AI không tạo được file — nói rõ yêu cầu hơn rồi thử lại"],
           ["504", "`upstream_timeout`, `worker_offline`", "Quá thời gian chờ — thử lại sau"],
         ]},
       ]},
