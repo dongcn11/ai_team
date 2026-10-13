@@ -332,9 +332,25 @@ def delete_thread(thread_id: int, db: Session = Depends(get_db), u: User = Depen
 def list_messages(thread_id: int, limit: int = 300, db: Session = Depends(get_db),
                   u: User = Depends(me)) -> List[dict]:
     _thread_or_404(db, thread_id, u)
+    _expire_stale(db)
     rows = (db.query(AssistantMessage).filter(AssistantMessage.thread_id == thread_id)
               .order_by(desc(AssistantMessage.id)).limit(max(1, min(limit, 1000))).all())
     return [_msg_out(m) for m in reversed(rows)]
+
+
+def _expire_stale(db: Session) -> None:
+    """Tin "running" quá _STALE → lỗi, để khung chat thôi chờ và gửi tiếp được.
+    Gọi cả lúc UI đọc tin chứ không chỉ lúc worker claim: worker tắt hẳn hoặc gửi
+    kết quả hụt (API khởi động lại) thì vẫn không có ai claim để dọn."""
+    now = datetime.utcnow()
+    stale = (db.query(AssistantMessage)
+               .filter(AssistantMessage.status == "running",
+                       AssistantMessage.started_at < now - _STALE).all())
+    for m in stale:
+        m.status, m.finished_at = "error", now
+        m.error = "Worker không trả lời kịp (có thể đã bị tắt giữa chừng)."
+    if stale:
+        db.commit()
 
 
 def _busy(db: Session, thread_id: int) -> bool:
@@ -620,12 +636,7 @@ def claim_reply(db: Session = Depends(get_db)) -> Optional[dict]:
     prompt, đánh dấu `running`. null = không có gì để trả lời."""
     worker_heartbeat.touch()
     now = datetime.utcnow()
-    for m in (db.query(AssistantMessage)
-                .filter(AssistantMessage.status == "running",
-                        AssistantMessage.started_at < now - _STALE).all()):
-        m.status, m.finished_at = "error", now
-        m.error = "Worker không trả lời kịp (có thể đã bị tắt giữa chừng)."
-    db.commit()
+    _expire_stale(db)
 
     while True:
         m = (db.query(AssistantMessage)

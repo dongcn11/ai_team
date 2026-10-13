@@ -120,6 +120,21 @@ def _req(path: str, body: dict | None = None, method: str = "GET"):
         return json.loads(raw) if raw else None
 
 
+def _req_retry(path: str, body: dict, tries: int = 6, wait_s: float = 5):
+    """POST kết quả về API, thử lại khi API chậm/khởi động lại — gửi hụt 1 lần
+    là tin kẹt "running" tới khi server tự coi là quá hạn. 4xx thì không thử lại."""
+    for i in range(tries):
+        try:
+            return _req(path, body=body, method="POST")
+        except urllib.error.HTTPError as e:
+            if e.code < 500 or i == tries - 1:
+                raise
+        except Exception:
+            if i == tries - 1:
+                raise
+        time.sleep(wait_s * (i + 1))
+
+
 def _claim() -> dict | None:
     # Trả null khi rỗng hoặc đang có job chạy (server giữ tuần tự)
     return _req("/api/run-jobs/claim", body={}, method="POST")
@@ -1742,7 +1757,7 @@ def _chat_loop():
             if files_dir:
                 shutil.rmtree(files_dir, ignore_errors=True)
         try:
-            _req(f"/api/assistant/messages/{job['id']}/complete", body=body, method="POST")
+            _req_retry(f"/api/assistant/messages/{job['id']}/complete", body)
         except Exception as e:
             print(f"[worker] ⚠️  Không gửi được câu trả lời chat #{job['id']}: {e}")
         if body["status"] != "done":
@@ -1783,7 +1798,7 @@ def _llm_cli_loop():
             if files_dir:
                 shutil.rmtree(files_dir, ignore_errors=True)
         try:
-            _req(f"/api/llm/cli-jobs/{job['id']}/complete", body=body, method="POST")
+            _req_retry(f"/api/llm/cli-jobs/{job['id']}/complete", body)
         except Exception as e:
             print(f"[worker] ⚠️  Không gửi được kết quả API #{job['id']}: {e}")
         if body["status"] != "done":
