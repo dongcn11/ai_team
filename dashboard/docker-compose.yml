@@ -35,7 +35,7 @@ services:
       WORKFLOW_TASKS_DIR: /workflow_tasks
       # Đường dẫn repo trên MÁY THẬT (host) — dùng để sinh lệnh copy-paste chạy
       # được ngoài terminal. Sửa lại nếu bạn move/clone repo sang chỗ khác.
-      HOST_PROJECT_ROOT: ${HOST_PROJECT_ROOT:-c:/www/ai_team_clean}
+      HOST_PROJECT_ROOT: ${HOST_PROJECT_ROOT:-c:/www/ai_team}
       # Dashboard có đăng nhập; các đường worker.py / main.py gọi vào (claim,
       # complete…) không có phiên. Đặt cùng 1 chuỗi bí mật ở đây (file .env cạnh
       # compose) và ở env của worker thì các đường đó đòi header X-Worker-Token.

@@ -194,7 +194,7 @@ function StepJobStatus({ job, onChanged }: { job: WorkflowStepJob; onChanged: ()
       {job.status === "queued" && (
         <div style={{ fontSize: 11, color: "#64748b", marginTop: 4 }}>
           Job đã xếp hàng. Nó chỉ chạy khi trên máy bạn có 1 terminal đang mở:{" "}
-          <code style={{ color: "#93c5fd" }}>cd c:/www/ai_team_clean && python worker.py</code>
+          <code style={{ color: "#93c5fd" }}>cd c:/www/ai_team && python worker.py</code>
         </div>
       )}
       {running && !progress && (
