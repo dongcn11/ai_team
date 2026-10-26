@@ -94,10 +94,45 @@
     linear-gradient(180deg, #f7f1e8, #eadfcd);
   display: flex; align-items: flex-end; justify-content: center; overflow: hidden;
 }
-.ah-figure { height: min(78%, 420px); margin-bottom: 36px; }
-.ah-figure .ah-wave { transform-origin: 108px 126px; animation: ah-wave 3.2s ease-in-out infinite; }
-.ah-figure.busy .ah-wave { animation-duration: 1s; }
-.ah-figure .ah-eyes { animation: ah-blink 4.5s infinite; transform-origin: 80px 72px; }
+.ah-figure {
+  --bot-glow: #ff9d6e;
+  width: min(86%, 260px); max-height: 72%; margin-bottom: 40px; overflow: visible;
+}
+.ah-figure.busy { --bot-glow: #5fd08a; }
+.ah-figure * { transform-box: fill-box; }
+.ah-figure .ah-bot { animation: ah-float 4s ease-in-out infinite; }
+.ah-figure .ah-bot-shadow { transform-origin: center; animation: ah-shadow 4s ease-in-out infinite; }
+.ah-figure .ah-bot-eye,
+.ah-figure .ah-bot-ant,
+.ah-figure .ah-bot-core,
+.ah-figure .ah-bot-bars rect { fill: var(--bot-glow); filter: drop-shadow(0 0 4px var(--bot-glow)); transition: fill .4s; }
+.ah-figure .ah-bot-smile { stroke: var(--bot-glow); filter: drop-shadow(0 0 3px var(--bot-glow)); }
+.ah-figure .ah-bot-ant,
+.ah-figure .ah-bot-core { animation: ah-pulse 2.4s ease-in-out infinite; }
+.ah-figure .ah-eyes { transform-origin: center; animation: ah-blink 4.5s infinite; }
+.ah-figure .ah-look { animation: ah-look 8s ease-in-out infinite; }
+.ah-figure .ah-wave { transform-origin: 50% 10%; animation: ah-wave 3.6s ease-in-out infinite; }
+.ah-figure .ah-bot-bars { display: none; }
+.ah-figure.busy .ah-bot-smile { display: none; }
+.ah-figure.busy .ah-bot-bars { display: inline; }
+.ah-figure .ah-bot-bars rect { transform-origin: center; animation: ah-eq .9s ease-in-out infinite; }
+.ah-figure .ah-bot-bars rect:nth-child(2) { animation-delay: -.3s; }
+.ah-figure .ah-bot-bars rect:nth-child(3) { animation-delay: -.6s; }
+.ah-figure .ah-bot-bars rect:nth-child(4) { animation-delay: -.15s; }
+.ah-figure.busy .ah-look { animation: ah-scan 1.4s ease-in-out infinite; }
+.ah-figure.busy .ah-bot-ant,
+.ah-figure.busy .ah-bot-core { animation-duration: .7s; }
+.ah-figure.busy .ah-wave { animation-duration: 1.4s; }
+/* Live2D phủ cả khung; hiện dần khi model tải xong (lúc đó robot SVG được gỡ). */
+.ah-l2d { position: absolute; inset: 0; overflow: hidden; opacity: 0; transition: opacity .6s; }
+.ah-l2d.on { opacity: 1; }
+.ah-l2d-canvas { display: block; cursor: pointer; }
+.ah-char {
+  position: absolute; right: 12px; bottom: 10px; z-index: 1; font-family: inherit; font-size: 12px;
+  padding: 3px 8px; color: var(--ah-ink); background: var(--ah-card);
+  border: 1px solid var(--ah-line); border-radius: 999px; outline: none; cursor: pointer;
+}
+.ah-char:focus-visible { border-color: var(--ah-accent-soft); }
 .ah-bubble {
   position: absolute; top: 12px; left: 12px; right: 12px; z-index: 1;
   background: var(--ah-card); border-radius: 10px; padding: 12px 22px 12px 12px;
@@ -349,8 +384,13 @@
 .ah-overlay { padding: 20px 32px; }
 
 @keyframes ah-pulse { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
-@keyframes ah-wave { 0%, 70%, 100% { transform: rotate(0); } 80% { transform: rotate(-14deg); } 90% { transform: rotate(6deg); } }
+@keyframes ah-wave { 0%, 60%, 100% { transform: rotate(0); } 70% { transform: rotate(-38deg); } 78% { transform: rotate(-24deg); } 86% { transform: rotate(-38deg); } }
 @keyframes ah-blink { 0%, 94%, 100% { transform: scaleY(1); } 97% { transform: scaleY(.1); } }
+@keyframes ah-float { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-8px); } }
+@keyframes ah-shadow { 0%, 100% { transform: scaleX(1); opacity: 1; } 50% { transform: scaleX(.85); opacity: .7; } }
+@keyframes ah-look { 0%, 30%, 100% { transform: translateX(0); } 38%, 50% { transform: translateX(-7px); } 58%, 70% { transform: translateX(7px); } }
+@keyframes ah-scan { 0%, 100% { transform: translateX(-6px); } 50% { transform: translateX(6px); } }
+@keyframes ah-eq { 0%, 100% { transform: scaleY(.4); } 50% { transform: scaleY(1.3); } }
 @media (prefers-reduced-motion: reduce) { .ah * { animation: none !important; } }
 
 /* Màn hẹp: gộp về 1 cột, chat lên trước */

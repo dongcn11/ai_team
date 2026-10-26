@@ -1,6 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import RunConsole from "./RunConsole";
 import TaskDraftCard, { Created, Draft } from "./TaskDraftCard";
+import Live2DFigure, { CHARACTERS, DEFAULT_CHARACTER } from "./Live2DFigure";
 import { useProjects } from "../hooks/useProjects";
 import "./AssistantHome.css";
 
@@ -82,6 +83,7 @@ const POLL_MS = 4000;
 // Đang chờ trợ lý trả lời thì hỏi dày hơn — câu trả lời thường về sau ~5s.
 const POLL_FAST_MS = 1200;
 const THREAD_KEY = "assistant.thread";
+const CHARACTER_KEY = "assistant.character";
 
 const FILE_MAX = 15 * 1024 * 1024;           // khớp _FILE_MAX ở api/routers/assistant.py
 const FILES_PER_MSG = 10;
@@ -165,40 +167,61 @@ function RichText({ text }: { text: string }) {
   );
 }
 
-/* Nhân vật trợ lý — SVG vẽ tay, không kéo thêm runtime Live2D (~MB) chỉ để trang trí. */
+/* Nhân vật trợ lý — robot SVG vẽ tay, không kéo thêm runtime Live2D (~MB) chỉ để trang trí.
+   Màu phát sáng (mắt, ăng-ten, lõi ngực) lấy từ --bot-glow; .busy đổi màu + nhịp nhanh hơn. */
 function AssistantFigure({ busy }: { busy: boolean }) {
   return (
-    <svg className={`ah-figure ${busy ? "busy" : ""}`} viewBox="0 0 160 360" aria-hidden="true">
-      <ellipse cx="80" cy="352" rx="44" ry="6" fill="rgba(60,40,20,.12)" />
-      {/* chân */}
-      <path d="M62 250 L60 336 L70 336 L74 252 Z" fill="#3a3340" />
-      <path d="M98 250 L100 336 L90 336 L86 252 Z" fill="#3a3340" />
-      <path d="M56 334 h18 v8 h-20 z M86 334 h18 v8 h-20 z" fill="#1f1b24" />
-      {/* váy + áo */}
-      <path d="M52 200 L108 200 L116 262 L44 262 Z" fill="#2f3440" />
-      <path d="M50 118 Q80 104 110 118 L114 206 L46 206 Z" fill="#343a46" />
-      <path d="M72 116 L80 150 L88 116 Z" fill="#f4f1ec" />
-      <path d="M76 124 L80 138 L84 124 Z" fill="#6b9bd1" />
-      {/* tay */}
-      <path d="M50 122 Q36 160 44 200 L54 198 Q50 162 60 130 Z" fill="#343a46" />
-      <g className="ah-wave">
-        <path d="M110 122 Q126 140 122 156 L112 158 Q112 144 102 132 Z" fill="#343a46" />
-        <circle cx="118" cy="160" r="7" fill="#f6dcc8" />
+    <svg className={`ah-figure ${busy ? "busy" : ""}`} viewBox="0 0 200 300" aria-hidden="true">
+      <defs>
+        <linearGradient id="ah-bot-shell" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor="#fffdf9" />
+          <stop offset="1" stopColor="#e9e1d3" />
+        </linearGradient>
+        <linearGradient id="ah-bot-visor" x1="0" y1="0" x2="0" y2="1">
+          <stop offset="0" stopColor="#3a332d" />
+          <stop offset="1" stopColor="#221e1a" />
+        </linearGradient>
+      </defs>
+      <ellipse className="ah-bot-shadow" cx="100" cy="288" rx="48" ry="6" fill="rgba(60,40,20,.14)" />
+      <g className="ah-bot">
+        {/* tay */}
+        <rect x="34" y="184" width="18" height="54" rx="9" fill="url(#ah-bot-shell)" stroke="#ddd5c8" />
+        <g className="ah-wave">
+          <rect x="148" y="184" width="18" height="54" rx="9" fill="url(#ah-bot-shell)" stroke="#ddd5c8" />
+        </g>
+        {/* thân */}
+        <rect x="88" y="160" width="24" height="16" rx="4" fill="#d6cdbf" />
+        <rect x="50" y="172" width="100" height="84" rx="30" fill="url(#ah-bot-shell)" stroke="#ddd5c8" />
+        <circle cx="100" cy="210" r="15" fill="#2a2622" />
+        <circle className="ah-bot-core" cx="100" cy="210" r="7" />
+        <circle cx="72" cy="236" r="3" fill="#d6cdbf" />
+        <circle cx="128" cy="236" r="3" fill="#d6cdbf" />
+        {/* ăng-ten */}
+        <rect x="97" y="30" width="6" height="26" rx="3" fill="#cfc5b6" />
+        <circle className="ah-bot-ant" cx="100" cy="26" r="8" />
+        {/* tai */}
+        <rect x="20" y="88" width="18" height="44" rx="8" fill="#d6cdbf" />
+        <rect x="162" y="88" width="18" height="44" rx="8" fill="#d6cdbf" />
+        {/* đầu + màn hình mặt */}
+        <rect x="32" y="50" width="136" height="116" rx="40" fill="url(#ah-bot-shell)" stroke="#ddd5c8" />
+        <rect x="46" y="66" width="108" height="80" rx="28" fill="url(#ah-bot-visor)" />
+        <path d="M60 76 Q100 66 140 76" stroke="#fff" strokeOpacity=".09" strokeWidth="6" fill="none" strokeLinecap="round" />
+        <g className="ah-look">
+          <g className="ah-eyes">
+            <rect className="ah-bot-eye" x="70" y="90" width="16" height="24" rx="8" />
+            <rect className="ah-bot-eye" x="114" y="90" width="16" height="24" rx="8" />
+          </g>
+        </g>
+        <ellipse cx="62" cy="122" rx="7" ry="3.5" fill="#e8b6a4" opacity=".45" />
+        <ellipse cx="138" cy="122" rx="7" ry="3.5" fill="#e8b6a4" opacity=".45" />
+        <path className="ah-bot-smile" d="M90 126 Q100 134 110 126" strokeWidth="3.5" fill="none" strokeLinecap="round" />
+        <g className="ah-bot-bars">
+          <rect x="86" y="124" width="4" height="10" rx="2" />
+          <rect x="93" y="124" width="4" height="10" rx="2" />
+          <rect x="100" y="124" width="4" height="10" rx="2" />
+          <rect x="107" y="124" width="4" height="10" rx="2" />
+        </g>
       </g>
-      <circle cx="48" cy="204" r="6" fill="#f6dcc8" />
-      {/* cổ + đầu */}
-      <rect x="74" y="98" width="12" height="14" fill="#f6dcc8" />
-      <path d="M50 64 Q50 26 80 24 Q110 26 110 64 Q112 86 100 96 L60 96 Q48 86 50 64 Z" fill="#3b3346" />
-      <ellipse cx="80" cy="70" rx="24" ry="28" fill="#f6dcc8" />
-      <path d="M56 58 Q64 36 80 38 Q98 36 104 58 Q92 48 80 50 Q66 48 56 58 Z" fill="#3b3346" />
-      <path d="M52 60 Q44 84 54 104 L60 100 Q54 84 58 64 Z" fill="#3b3346" />
-      <g className="ah-eyes">
-        <ellipse cx="71" cy="72" rx="3.2" ry="4" fill="#2c3e66" />
-        <ellipse cx="89" cy="72" rx="3.2" ry="4" fill="#2c3e66" />
-      </g>
-      <path d="M75 86 Q80 90 85 86" stroke="#c46a5a" strokeWidth="2" fill="none" strokeLinecap="round" />
-      <ellipse cx="66" cy="81" rx="4" ry="2" fill="#f2b3a6" opacity=".6" />
-      <ellipse cx="94" cy="81" rx="4" ry="2" fill="#f2b3a6" opacity=".6" />
     </svg>
   );
 }
@@ -226,6 +249,9 @@ export default function AssistantHome({ onOpenProject }: { onOpenProject?: (slug
   const fileInputRef = useRef<HTMLInputElement>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [bubble, setBubble] = useState(true);
+  // Nhân vật trong khung Trợ lý — mỗi người tự chọn, nhớ trên trình duyệt đó.
+  const [charId, setCharId] = useState(() => readLS(CHARACTER_KEY) || DEFAULT_CHARACTER);
+  const character = CHARACTERS.find(c => c.id === charId) ?? CHARACTERS[0];
   const [openRun, setOpenRun] = useState<Job | null>(null);
   // Điện thoại (≤760px) chỉ hiện 1 khung: chat hoặc danh sách công việc.
   const [pane, setPane] = useState<"chat" | "jobs">("chat");
@@ -541,8 +567,15 @@ export default function AssistantHome({ onOpenProject }: { onOpenProject?: (slug
                 {greeting}
               </div>
             )}
-            <AssistantFigure busy={!!ov?.chat_busy} />
+            {character.model
+              ? <Live2DFigure busy={!!ov?.chat_busy} character={character}
+                  fallback={<AssistantFigure busy={!!ov?.chat_busy} />} />
+              : <AssistantFigure busy={!!ov?.chat_busy} />}
             <span className="ah-chip">{ov?.chat_busy ? "Đang suy nghĩ…" : "Sẵn sàng"}</span>
+            <select className="ah-char" value={character.id} title="Chọn nhân vật" aria-label="Chọn nhân vật"
+              onChange={e => { setCharId(e.target.value); writeLS(CHARACTER_KEY, e.target.value); }}>
+              {CHARACTERS.map(c => <option key={c.id} value={c.id}>{c.name}</option>)}
+            </select>
           </div>
           <div className="ah-stats">
             <div className="ah-stat">
