@@ -15,6 +15,7 @@ fe2_tool = "opencode"
 fe2_model = "opencode/qwen3.5-plus"
 leader_tool = "opencode"
 leader_model = "opencode/qwen3.5-plus"
+fe1_layout = "split"
 
 [output]
 directory = "./output"
