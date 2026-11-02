@@ -80,6 +80,8 @@ _COLUMN_MIGRATIONS = [
     # Model chat: được dùng (users) / đang chọn (thread) — xem chat_models.py.
     ("users",              "models",            "JSON"),
     ("assistant_threads",  "model",             "VARCHAR"),
+    ("assistant_threads",  "pinned_at",         "TIMESTAMP"),
+    ("assistant_threads",  "group_id",          "INTEGER"),
     ("assistant_messages", "status",            "VARCHAR DEFAULT 'done'"),
     ("assistant_messages", "kind",              "VARCHAR DEFAULT 'chat'"),
     ("assistant_messages", "meta",              "JSON"),

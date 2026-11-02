@@ -167,6 +167,9 @@
   border-radius: 10px; padding: 9px 10px; font-size: 13px; font-weight: 600; text-align: left;
 }
 .ah-new:hover { border-style: solid; }
+.ah-new-row { display: flex; gap: 6px; }
+.ah-new-row .ah-new:first-child { flex: 1; min-width: 0; }
+.ah-new-group { padding: 9px 11px; font-size: 14px; line-height: 1; }
 .ah-thread-list { flex: 1; min-height: 0; overflow-y: auto; display: flex; flex-direction: column; gap: 4px; }
 .ah-thread-empty { font-size: 12px; color: var(--ah-muted); padding: 8px 4px; }
 .ah-thread {
@@ -175,7 +178,8 @@
 }
 .ah-thread:hover { background: rgba(255,255,255,.55); }
 .ah-thread.active { background: var(--ah-card); border-color: var(--ah-line); }
-.ah-thread-title { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; padding-right: 36px; }
+.ah-thread-title { display: flex; align-items: center; gap: 6px; font-size: 13px; font-weight: 600; }
+.ah-thread:hover .ah-thread-title, .ah-thread.active .ah-thread-title { padding-right: 86px; }
 .ah-thread-title span, .ah-thread-meta span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .ah-thread-meta { display: flex; font-size: 11px; color: var(--ah-muted); margin-top: 2px; }
 .ah-thread-dot { flex-shrink: 0; width: 6px; height: 6px; border-radius: 50%; background: var(--ah-green); animation: ah-pulse 1.2s infinite; }
@@ -186,6 +190,58 @@
   color: var(--ah-muted); font-size: 13px; line-height: 1;
 }
 .ah-thread-actions button:hover { background: #ece6dc; color: var(--ah-ink); }
+/* 📌 là emoji màu: chưa ghim thì xám mờ, đã ghim thì giữ màu */
+.ah-thread-actions .ah-pin { font-size: 11px; filter: grayscale(1); opacity: .55; }
+.ah-thread-actions .ah-pin.on, .ah-thread-actions .ah-pin:hover { filter: none; opacity: 1; }
+/* 📁 chuyển nhóm: <select> trong suốt phủ lên nút — popup chọn của trình duyệt
+   không bị khung danh sách cuộn cắt mất */
+.ah-move {
+  position: relative; display: inline-flex; align-items: center; justify-content: center;
+  width: 20px; height: 20px; border-radius: 4px; font-size: 11px; filter: grayscale(1); opacity: .55;
+}
+.ah-move:hover { background: #ece6dc; filter: none; opacity: 1; }
+.ah-move select { position: absolute; inset: 0; width: 100%; opacity: 0; cursor: pointer; font-size: 13px; }
+.ah-thread.dragging { opacity: .4; }
+.ah-thread-group {
+  display: flex; align-items: center; gap: 6px; width: 100%; padding: 8px 6px 2px;
+  border: 0; background: none; font-family: inherit; font-size: 11px; font-weight: 700;
+  letter-spacing: .4px; text-transform: uppercase; color: #5c554b; text-align: left; cursor: pointer;
+}
+/* số thread: ô tròn nhỏ cho dễ thấy trên nền be */
+.ah-thread-group > span:not(.ah-grp-actions) {
+  padding: 1px 6px; border-radius: 999px; background: #ddd5c8; color: #4a443b;
+  font-size: 10px; font-weight: 600; letter-spacing: 0;
+}
+.ah-thread-group i { font-style: normal; font-size: 15px; line-height: 1; margin-left: auto; color: #6b6458; }
+.ah-thread-group:hover, .ah-thread-group:hover i { color: var(--ah-ink); }
+.ah-thread-group.static { cursor: default; }
+.ah-thread-group.static:hover { color: #5c554b; }
+/* Mục trong danh sách (ghim / nhóm / gần đây) — cũng là chỗ thả khi kéo */
+.ah-sec { position: relative; display: flex; flex-direction: column; gap: 4px; border-radius: 10px; }
+.ah-sec.drop { background: rgba(194, 89, 59, .07); box-shadow: inset 0 0 0 1px var(--ah-accent-soft); }
+.ah-sec.drop-before::before, .ah-sec.drop-after::after {
+  content: ""; position: absolute; left: 4px; right: 4px; height: 2px; border-radius: 2px; background: var(--ah-accent);
+}
+.ah-sec.drop-before::before { top: -3px; }
+.ah-sec.drop-after::after { bottom: -3px; }
+.ah-sec.dragging { opacity: .45; }
+.ah-sec-hint { padding: 4px 10px 8px; font-size: 11px; font-style: italic; color: var(--ah-soft); }
+.ah-grp { position: relative; box-sizing: border-box; cursor: grab; user-select: none; }
+.ah-grp:active { cursor: grabbing; }
+.ah-grp em {
+  flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-style: normal;
+}
+.ah-grp-grip { position: absolute; left: -4px; top: 8px; font-weight: 400; color: var(--ah-soft); visibility: hidden; }
+.ah-grp:hover .ah-grp-grip { visibility: visible; }
+.ah-grp-actions { display: none; gap: 2px; margin: -4px 0 -4px auto; }   /* hiện nút không làm tiêu đề cao lên */
+.ah-grp:hover .ah-grp-actions { display: flex; }
+.ah-grp:hover i { margin-left: 0; }
+.ah-grp-actions button {
+  width: 18px; height: 18px; border: 0; border-radius: 4px; background: transparent;
+  color: var(--ah-muted); font-size: 12px; line-height: 1; text-transform: none;
+}
+.ah-grp-actions button:hover { background: #ece6dc; color: var(--ah-ink); }
+.ah-grp-input { margin: 4px 0 2px; }
 .ah-thread-input {
   width: 100%; font-family: inherit; font-size: 13px; padding: 3px 6px; border-radius: 6px;
   border: 1px solid var(--ah-accent-soft); outline: none; background: #fff; color: var(--ah-ink);

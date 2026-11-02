@@ -41,8 +41,8 @@ import llm_gateway as gw
 import worker_heartbeat
 from database import SessionLocal, get_db
 from llm_gateway import _safe_name
-from models import (AgentQuestion, AssistantFile, AssistantMessage, AssistantThread, Project, Setting,
-                    User, Workflow, WorkflowRun, WorkflowStepJob)
+from models import (AgentQuestion, AssistantFile, AssistantMessage, AssistantThread, AssistantThreadGroup,
+                    Project, Setting, User, Workflow, WorkflowRun, WorkflowStepJob)
 
 router = APIRouter()
 
@@ -85,6 +85,16 @@ class ThreadIn(BaseModel):
     # Gửi kèm mới đổi; null/"" = bỏ gắn dự án (chat tự do). Xem model_fields_set.
     client_folder: Optional[str] = None
     model: Optional[str] = None      # khoá chat_models; null = mặc định
+    pinned: Optional[bool] = None    # ghim / bỏ ghim lên đầu danh sách
+    group_id: Optional[int] = None   # chuyển vào nhóm; null = bỏ khỏi nhóm
+
+
+class GroupIn(BaseModel):
+    name: str
+
+
+class GroupOrderIn(BaseModel):
+    ids: List[int]                   # id nhóm theo thứ tự mới, trên xuống
 
 
 class DraftIn(BaseModel):
@@ -194,6 +204,7 @@ def _project_name(db: Session, slug: Optional[str]) -> Optional[str]:
 def _thread_out(t: AssistantThread, last: Optional[AssistantMessage], count: int, busy: bool) -> dict:
     return {"id": t.id, "title": t.title or "Cuộc trò chuyện mới",
             "client_folder": t.client_folder, "model": t.model,
+            "pinned": t.pinned_at is not None, "group_id": t.group_id,
             "message_count": count, "busy": busy,
             "preview": _title_from(last.text) if last and last.text else "",
             "created_at": t.created_at.isoformat() if t.created_at else None,
@@ -274,7 +285,8 @@ def _http_reply(msg_id: int) -> None:
 @router.get("/threads")
 def list_threads(db: Session = Depends(get_db), u: User = Depends(me)) -> List[dict]:
     _adopt_orphans(db)
-    threads = db.query(AssistantThread).filter(_mine(u)).order_by(desc(AssistantThread.updated_at),
+    threads = db.query(AssistantThread).filter(_mine(u)).order_by(AssistantThread.pinned_at.desc().nullslast(),
+                                                                  desc(AssistantThread.updated_at),
                                                                   desc(AssistantThread.id)).all()
     counts = dict(db.query(AssistantMessage.thread_id, func.count(AssistantMessage.id))
                     .group_by(AssistantMessage.thread_id).all())
@@ -312,9 +324,17 @@ def rename_thread(thread_id: int, payload: ThreadIn, request: Request, db: Sessi
         t.client_folder = _valid_folder(payload.client_folder, request)
     if "model" in payload.model_fields_set:
         t.model = _valid_model(db, u, payload.model)
+    if "group_id" in payload.model_fields_set:
+        t.group_id = _group_or_404(db, payload.group_id, u).id if payload.group_id else None
+    if "pinned" in payload.model_fields_set:
+        # Ghim lại thread đã ghim thì giữ thời điểm cũ, không nhảy lên đầu.
+        if not payload.pinned:
+            t.pinned_at = None
+        elif t.pinned_at is None:
+            t.pinned_at = datetime.utcnow()
     db.commit()
     return {"id": t.id, "title": t.title or "Cuộc trò chuyện mới", "client_folder": t.client_folder,
-            "model": t.model}
+            "model": t.model, "pinned": t.pinned_at is not None, "group_id": t.group_id}
 
 
 @router.delete("/threads/{thread_id}")
@@ -326,6 +346,78 @@ def delete_thread(thread_id: int, db: Session = Depends(get_db), u: User = Depen
     db.delete(t)
     db.commit()
     return {"deleted": n}
+
+
+# ── Nhóm thread ────────────────────────────────────────────────────────────
+
+def _group_out(g: AssistantThreadGroup) -> dict:
+    return {"id": g.id, "name": g.name, "position": g.position}
+
+
+def _group_or_404(db: Session, group_id: int, u: User) -> AssistantThreadGroup:
+    g = db.query(AssistantThreadGroup).filter(AssistantThreadGroup.id == group_id,
+                                              AssistantThreadGroup.user_id == u.id).first()
+    if not g:
+        raise HTTPException(status_code=404, detail="Không có nhóm này")
+    return g
+
+
+def _group_name(name: str) -> str:
+    name = " ".join((name or "").split())[:60]
+    if not name:
+        raise HTTPException(status_code=400, detail="Tên nhóm trống")
+    return name
+
+
+@router.get("/groups")
+def list_groups(db: Session = Depends(get_db), u: User = Depends(me)) -> List[dict]:
+    return [_group_out(g) for g in db.query(AssistantThreadGroup)
+            .filter(AssistantThreadGroup.user_id == u.id)
+            .order_by(AssistantThreadGroup.position, AssistantThreadGroup.id).all()]
+
+
+@router.post("/groups")
+def create_group(payload: GroupIn, db: Session = Depends(get_db), u: User = Depends(me)) -> dict:
+    last = (db.query(func.max(AssistantThreadGroup.position))
+              .filter(AssistantThreadGroup.user_id == u.id).scalar())
+    g = AssistantThreadGroup(user_id=u.id, name=_group_name(payload.name),
+                             position=(last if last is not None else -1) + 1)   # nhóm mới xuống cuối
+    db.add(g)
+    db.commit()
+    db.refresh(g)
+    return _group_out(g)
+
+
+# Khai báo trước /groups/{group_id} để "order" không bị hiểu là id.
+@router.put("/groups/order")
+def reorder_groups(payload: GroupOrderIn, db: Session = Depends(get_db), u: User = Depends(me)) -> List[dict]:
+    groups = {g.id: g for g in db.query(AssistantThreadGroup).filter(AssistantThreadGroup.user_id == u.id)}
+    # Id lạ bỏ qua; nhóm không có trong danh sách (vừa tạo ở tab khác) xuống cuối.
+    ids = [i for i in dict.fromkeys(payload.ids) if i in groups]
+    ids += sorted((i for i in groups if i not in ids), key=lambda i: (groups[i].position, i))
+    for pos, i in enumerate(ids):
+        groups[i].position = pos
+    db.commit()
+    return [_group_out(groups[i]) for i in ids]
+
+
+@router.patch("/groups/{group_id}")
+def rename_group(group_id: int, payload: GroupIn, db: Session = Depends(get_db), u: User = Depends(me)) -> dict:
+    g = _group_or_404(db, group_id, u)
+    g.name = _group_name(payload.name)
+    db.commit()
+    return _group_out(g)
+
+
+@router.delete("/groups/{group_id}")
+def delete_group(group_id: int, db: Session = Depends(get_db), u: User = Depends(me)) -> dict:
+    """Xoá nhóm, không xoá cuộc trò chuyện — thread trong nhóm về "Gần đây"."""
+    g = _group_or_404(db, group_id, u)
+    n = (db.query(AssistantThread).filter(AssistantThread.group_id == g.id)
+           .update({AssistantThread.group_id: None}, synchronize_session=False))
+    db.delete(g)
+    db.commit()
+    return {"ungrouped": n}
 
 
 @router.get("/threads/{thread_id}/messages")

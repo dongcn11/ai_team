@@ -466,8 +466,23 @@ class AssistantThread(Base):
     user_id    = Column(Integer, nullable=True, index=True)
     # Model trả lời (khoá chat_models). NULL = model đầu tiên tài khoản được dùng.
     model      = Column(String, nullable=True)
+    # Lúc ghim; NULL = không ghim. Thread ghim nằm đầu danh sách, ghim sau đứng trước.
+    pinned_at  = Column(DateTime, nullable=True)
+    # Nhóm người dùng tự tạo (assistant_thread_groups.id). NULL = chưa xếp nhóm.
+    group_id   = Column(Integer, nullable=True, index=True)
     created_at = Column(DateTime, server_default=func.now())
     updated_at = Column(DateTime, server_default=func.now())   # tin mới nhất — để xếp danh sách
+
+
+class AssistantThreadGroup(Base):
+    """Nhóm thread trong danh sách chat — mỗi tài khoản tự tạo, kéo thả để xếp."""
+    __tablename__ = "assistant_thread_groups"
+
+    id         = Column(Integer, primary_key=True, index=True)
+    user_id    = Column(Integer, nullable=True, index=True)
+    name       = Column(String, nullable=False, default="")
+    position   = Column(Integer, nullable=False, default=0)   # nhỏ đứng trên
+    created_at = Column(DateTime, server_default=func.now())
 
 
 class AssistantMessage(Base):

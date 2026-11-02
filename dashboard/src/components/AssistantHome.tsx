@@ -15,12 +15,20 @@ interface Thread {
   title: string;
   client_folder: string | null;
   model: string | null;        // khoá model; null = mặc định (model đầu tiên được dùng)
+  pinned: boolean;             // ghim lên đầu danh sách (server đã xếp ghim trước)
+  group_id: number | null;     // nhóm người dùng tự tạo; null = mục "Gần đây"
   message_count: number;
   busy: boolean;
   preview: string;
   created_at: string | null;
   updated_at: string | null;
 }
+
+// Nhóm thread do người dùng tạo — server trả theo thứ tự đã kéo xếp.
+interface Group { id: number; name: string; position: number }
+// Chỗ thả khi kéo: thread vào 1 mục (ghim / nhóm / gần đây); nhóm chèn trước/sau nhóm khác.
+type Section = "pinned" | "recent" | number;
+interface DropAt { section: Section; edge?: "before" | "after" }
 
 interface FileRef { id: number; name: string; mime: string; size: number }
 
@@ -84,6 +92,8 @@ const POLL_MS = 4000;
 const POLL_FAST_MS = 1200;
 const THREAD_KEY = "assistant.thread";
 const CHARACTER_KEY = "assistant.character";
+const PINNED_OPEN_KEY = "assistant.pinnedOpen";
+const GROUPS_CLOSED_KEY = "assistant.groupsClosed";   // id các nhóm đang thu gọn
 
 const FILE_MAX = 15 * 1024 * 1024;           // khớp _FILE_MAX ở api/routers/assistant.py
 const FILES_PER_MSG = 10;
@@ -238,6 +248,16 @@ export default function AssistantHome({ onOpenProject }: { onOpenProject?: (slug
   const [threads, setThreads] = useState<Thread[]>([]);
   const [threadId, setThreadId] = useState<number | null>(() => Number(readLS(THREAD_KEY)) || null);
   const [renaming, setRenaming] = useState<{ id: number; title: string } | null>(null);
+  const [pinnedOpen, setPinnedOpen] = useState(() => readLS(PINNED_OPEN_KEY) !== "0");
+  const [groups, setGroups] = useState<Group[]>([]);
+  const [closedGroups, setClosedGroups] = useState<number[]>(() => {
+    try { return JSON.parse(readLS(GROUPS_CLOSED_KEY) || "[]"); } catch { return []; }
+  });
+  const [editGroup, setEditGroup] = useState<{ id: number | null; name: string } | null>(null);  // id null = nhóm mới
+  const [drag, setDrag] = useState<{ kind: "thread" | "group"; id: number } | null>(null);
+  const [dropAt, setDropAt] = useState<DropAt | null>(null);
+  const editGroupRef = useRef(editGroup);
+  editGroupRef.current = editGroup;
   const [messages, setMessages] = useState<ChatMsg[]>([]);
   const [ov, setOv] = useState<Overview | null>(null);
   const [apiErr, setApiErr] = useState<string | null>(null);
@@ -272,12 +292,14 @@ export default function AssistantHome({ onOpenProject }: { onOpenProject?: (slug
 
   const load = useCallback(async () => {
     try {
-      const [ts, o, ms] = await Promise.all([
+      const [ts, gs, o, ms] = await Promise.all([
         api<Thread[]>("/api/assistant/threads"),
+        api<Group[]>("/api/assistant/groups"),
         api<Overview>(`/api/assistant/overview?tz_offset=${new Date().getTimezoneOffset()}`),
         api<ChatModel[]>("/api/assistant/models"),
       ]);
       setThreads(ts);
+      setGroups(gs);
       setModels(ms);
       setOv(o);
       let tid = threadRef.current;
@@ -494,6 +516,197 @@ export default function AssistantHome({ onOpenProject }: { onOpenProject?: (slug
     load();
   };
 
+  const togglePin = async (t: Thread) => {
+    const pinned = !t.pinned;
+    setThreads(prev => prev.map(x => x.id === t.id ? { ...x, pinned } : x));
+    if (pinned && !pinnedOpen) { setPinnedOpen(true); writeLS(PINNED_OPEN_KEY, "1"); }
+    await api(`/api/assistant/threads/${t.id}`, { method: "PATCH", body: JSON.stringify({ pinned }) })
+      .catch(e => setApiErr(e.message));
+    load();                                   // lấy lại thứ tự ghim từ server
+  };
+
+  const toggleGroup = (id: number, open?: boolean) => {
+    const closed = closedGroups.includes(id);
+    if (open !== undefined && open !== closed) return;   // đã đúng trạng thái muốn
+    const next = closed ? closedGroups.filter(x => x !== id) : [...closedGroups, id];
+    setClosedGroups(next);
+    writeLS(GROUPS_CLOSED_KEY, JSON.stringify(next));
+  };
+
+  const saveGroup = async () => {
+    const cur = editGroupRef.current;
+    editGroupRef.current = null;          // Enter rồi blur lúc input bị gỡ — chỉ lưu 1 lần
+    if (!cur) return;
+    const { id, name } = cur;
+    setEditGroup(null);
+    if (!name.trim()) return;
+    try {
+      if (id) {
+        setGroups(prev => prev.map(g => g.id === id ? { ...g, name: name.trim() } : g));
+        await api(`/api/assistant/groups/${id}`, { method: "PATCH", body: JSON.stringify({ name }) });
+      } else {
+        await api("/api/assistant/groups", { method: "POST", body: JSON.stringify({ name }) });
+      }
+    } catch (e) {
+      setApiErr(e instanceof Error ? e.message : "Không lưu được nhóm");
+    }
+    load();
+  };
+
+  const deleteGroup = async (g: Group) => {
+    if (!confirm(`Xoá nhóm "${g.name}"? Các cuộc trò chuyện trong nhóm chuyển về "Gần đây".`)) return;
+    await api(`/api/assistant/groups/${g.id}`, { method: "DELETE" }).catch(e => setApiErr(e.message));
+    load();
+  };
+
+  // Đưa thread vào 1 mục. Vào nhóm / Gần đây thì bỏ ghim luôn — kéo tới đâu nằm
+  // đó; vào Đã ghim thì giữ nhóm cũ để bỏ ghim xong nó về lại nhóm.
+  const moveThread = async (t: Thread, section: Section) => {
+    const patch = section === "pinned" ? { pinned: true }
+      : { pinned: false, group_id: section === "recent" ? null : section };
+    if (t.pinned === patch.pinned && (section === "pinned" || t.group_id === patch.group_id)) return;
+    setThreads(prev => prev.map(x => x.id === t.id ? { ...x, ...patch } : x));
+    if (section === "pinned" && !pinnedOpen) { setPinnedOpen(true); writeLS(PINNED_OPEN_KEY, "1"); }
+    if (typeof section === "number") toggleGroup(section, true);   // mở nhóm để thấy thread vừa vào
+    await api(`/api/assistant/threads/${t.id}`, { method: "PATCH", body: JSON.stringify(patch) })
+      .catch(e => setApiErr(e.message));
+    load();
+  };
+
+  const moveToNewGroup = async (t: Thread) => {
+    const name = prompt("Tên nhóm mới")?.trim();
+    if (!name) return;
+    try {
+      const g = await api<Group>("/api/assistant/groups", { method: "POST", body: JSON.stringify({ name }) });
+      setGroups(prev => [...prev, g]);
+      await moveThread(t, g.id);
+    } catch (e) {
+      setApiErr(e instanceof Error ? e.message : "Không tạo được nhóm");
+    }
+  };
+
+  const reorderGroup = async (id: number, target: number, edge: "before" | "after") => {
+    const ids = groups.map(g => g.id).filter(x => x !== id);
+    ids.splice(ids.indexOf(target) + (edge === "after" ? 1 : 0), 0, id);
+    if (ids.every((x, i) => x === groups[i]?.id)) return;
+    setGroups(ids.map(i => groups.find(g => g.id === i)!));
+    await api("/api/assistant/groups/order", { method: "PUT", body: JSON.stringify({ ids }) })
+      .catch(e => setApiErr(e.message));
+    load();
+  };
+
+  // Kéo thả: thread thả vào mục nào cũng được; nhóm chỉ thả lên nhóm khác, nửa
+  // trên = chèn trước, nửa dưới = chèn sau. Kéo file vào ô soạn tin không qua đây.
+  const endDrag = () => { setDrag(null); setDropAt(null); };
+  const dropTarget = (e: React.DragEvent<HTMLElement>, section: Section): DropAt | null => {
+    if (!drag) return null;
+    if (drag.kind === "thread") return { section };
+    if (typeof section !== "number" || section === drag.id) return null;
+    const r = e.currentTarget.getBoundingClientRect();
+    return { section, edge: e.clientY < r.top + r.height / 2 ? "before" : "after" };
+  };
+  const dropProps = (section: Section) => ({
+    onDragOver: (e: React.DragEvent<HTMLElement>) => {
+      const at = dropTarget(e, section);
+      if (!at) return;
+      e.preventDefault();
+      e.dataTransfer.dropEffect = "move";
+      if (dropAt?.section !== at.section || dropAt?.edge !== at.edge) setDropAt(at);
+    },
+    onDragLeave: (e: React.DragEvent<HTMLElement>) => {
+      if (!e.currentTarget.contains(e.relatedTarget as Node) && dropAt?.section === section) setDropAt(null);
+    },
+    onDrop: (e: React.DragEvent<HTMLElement>) => {
+      const at = dropTarget(e, section);
+      const d = drag;
+      endDrag();
+      if (!at || !d) return;
+      e.preventDefault();
+      if (d.kind === "group") reorderGroup(d.id, section as number, at.edge!);
+      else {
+        const t = threads.find(x => x.id === d.id);
+        if (t) moveThread(t, section);
+      }
+    },
+  });
+  const secClass = (section: Section) =>
+    "ah-sec" + (dropAt?.section !== section ? "" : dropAt.edge ? ` drop-${dropAt.edge}` : " drop")
+    + (drag?.kind === "group" && drag.id === section ? " dragging" : "");
+
+  const groupIds = new Set(groups.map(g => g.id));
+  // Thread ghim chỉ hiện ở Đã ghim; group_id của nhóm vừa bị xoá coi như chưa nhóm.
+  const pinnedThreads = threads.filter(t => t.pinned);
+  const groupThreads = (id: number) => threads.filter(t => !t.pinned && t.group_id === id);
+  const recentThreads = threads.filter(t => !t.pinned && !(t.group_id && groupIds.has(t.group_id)));
+  const draggingThread = drag?.kind === "thread";
+  const sectioned = pinnedThreads.length > 0 || groups.length > 0 || editGroup !== null || draggingThread;
+  const groupInput = editGroup && (
+    <input className="ah-thread-input ah-grp-input" autoFocus placeholder="Tên nhóm" maxLength={60}
+      value={editGroup.name}
+      onChange={e => setEditGroup({ ...editGroup, name: e.target.value })}
+      onBlur={saveGroup}
+      onKeyDown={e => {
+        if (e.key === "Enter") saveGroup();
+        if (e.key === "Escape") { editGroupRef.current = null; setEditGroup(null); }
+      }} />
+  );
+  const renderThread = (t: Thread) => (
+    <div key={t.id} className={`ah-thread ${t.id === threadId ? "active" : ""} ${draggingThread && drag?.id === t.id ? "dragging" : ""}`}
+      draggable={renaming?.id !== t.id}
+      onDragStart={e => {
+        e.dataTransfer.effectAllowed = "move";
+        e.dataTransfer.setData("application/x-ah-thread", String(t.id));
+        setDrag({ kind: "thread", id: t.id });
+      }}
+      onDragEnd={endDrag}
+      onClick={() => t.id !== threadId && selectThread(t.id)}
+      onDoubleClick={() => setRenaming({ id: t.id, title: t.title })}
+      title="Bấm đúp để đổi tên">
+      {renaming?.id === t.id ? (
+        <input className="ah-thread-input" autoFocus value={renaming.title}
+          onChange={e => setRenaming({ id: t.id, title: e.target.value })}
+          onClick={e => e.stopPropagation()}
+          onBlur={saveRename}
+          onKeyDown={e => {
+            if (e.key === "Enter") saveRename();
+            if (e.key === "Escape") setRenaming(null);
+          }} />
+      ) : (
+        <>
+          <div className="ah-thread-title">
+            {t.busy && <i className="ah-thread-dot" />}
+            <span>{t.title}</span>
+          </div>
+          <div className="ah-thread-meta">
+            {t.client_folder && <b className="ah-thread-proj">{projectName(t.client_folder)}</b>}
+            <span>{t.preview || "Chưa có tin nhắn"}</span>
+          </div>
+          <div className="ah-thread-actions" onClick={e => e.stopPropagation()}>
+            <button title={t.pinned ? "Bỏ ghim" : "Ghim lên đầu"} className={`ah-pin ${t.pinned ? "on" : ""}`}
+              onClick={() => togglePin(t)}>📌</button>
+            <label className="ah-move" title="Chuyển vào nhóm">📁
+              <select value={t.pinned ? "pinned" : t.group_id && groupIds.has(t.group_id) ? t.group_id : ""}
+                onChange={e => {
+                  const v = e.target.value;
+                  if (v === "new") moveToNewGroup(t);
+                  else moveThread(t, v === "pinned" ? "pinned" : v ? Number(v) : "recent");
+                }}>
+                <option value="pinned">📌 Đã ghim</option>
+                {groups.map(g => <option key={g.id} value={g.id}>📁 {g.name}</option>)}
+                <option value="">Gần đây (không nhóm)</option>
+                <option value="new">＋ Nhóm mới…</option>
+              </select>
+            </label>
+            <button title="Đổi tên" onClick={() => setRenaming({ id: t.id, title: t.title })}>✎</button>
+            <button title="Xoá" onClick={() => deleteThread(t)}>×</button>
+          </div>
+        </>
+      )}
+    </div>
+  );
+
+  const threadOption = (t: Thread) => <option key={t.id} value={t.id}>{t.title}</option>;
+
   const jobs = ov?.jobs ?? [];
   const counts = useMemo(() => ({
     all: jobs.length,
@@ -592,41 +805,60 @@ export default function AssistantHome({ onOpenProject }: { onOpenProject?: (slug
         {/* ── Trò chuyện: danh sách thread + khung chat ── */}
         <section className="ah-chat-area">
         <nav className="ah-threads">
-          <button className="ah-new" onClick={newThread}>＋ Cuộc trò chuyện mới</button>
+          <div className="ah-new-row">
+            <button className="ah-new" onClick={newThread}>＋ Cuộc trò chuyện mới</button>
+            <button className="ah-new ah-new-group" title="Tạo nhóm mới" onClick={() => setEditGroup({ id: null, name: "" })}>📁</button>
+          </div>
           <div className="ah-thread-list">
             {threads.length === 0 && <div className="ah-thread-empty">Chưa có cuộc trò chuyện nào</div>}
-            {threads.map(t => (
-              <div key={t.id} className={`ah-thread ${t.id === threadId ? "active" : ""}`}
-                onClick={() => t.id !== threadId && selectThread(t.id)}
-                onDoubleClick={() => setRenaming({ id: t.id, title: t.title })}
-                title="Bấm đúp để đổi tên">
-                {renaming?.id === t.id ? (
-                  <input className="ah-thread-input" autoFocus value={renaming.title}
-                    onChange={e => setRenaming({ id: t.id, title: e.target.value })}
-                    onClick={e => e.stopPropagation()}
-                    onBlur={saveRename}
-                    onKeyDown={e => {
-                      if (e.key === "Enter") saveRename();
-                      if (e.key === "Escape") setRenaming(null);
-                    }} />
-                ) : (
-                  <>
-                    <div className="ah-thread-title">
-                      {t.busy && <i className="ah-thread-dot" />}
-                      <span>{t.title}</span>
-                    </div>
-                    <div className="ah-thread-meta">
-                      {t.client_folder && <b className="ah-thread-proj">{projectName(t.client_folder)}</b>}
-                      <span>{t.preview || "Chưa có tin nhắn"}</span>
-                    </div>
-                    <div className="ah-thread-actions" onClick={e => e.stopPropagation()}>
-                      <button title="Đổi tên" onClick={() => setRenaming({ id: t.id, title: t.title })}>✎</button>
-                      <button title="Xoá" onClick={() => deleteThread(t)}>×</button>
-                    </div>
-                  </>
-                )}
+            {(pinnedThreads.length > 0 || draggingThread) && (
+              <div className={secClass("pinned")} {...dropProps("pinned")}>
+                <button className="ah-thread-group" aria-expanded={pinnedOpen}
+                  onClick={() => { setPinnedOpen(!pinnedOpen); writeLS(PINNED_OPEN_KEY, pinnedOpen ? "0" : "1"); }}>
+                  Đã ghim <span>{pinnedThreads.length}</span><i>{pinnedOpen ? "▾" : "▸"}</i>
+                </button>
+                {pinnedOpen && pinnedThreads.map(renderThread)}
+                {pinnedThreads.length === 0 && <div className="ah-sec-hint">Thả vào đây để ghim</div>}
               </div>
-            ))}
+            )}
+            {groups.map(g => {
+              const items = groupThreads(g.id);
+              const open = !closedGroups.includes(g.id);
+              return (
+                <div key={g.id} className={secClass(g.id)} {...dropProps(g.id)}>
+                  {editGroup?.id === g.id ? groupInput : (
+                    <div className="ah-thread-group ah-grp" role="button" tabIndex={0} aria-expanded={open}
+                      title="Kéo để xếp lại · bấm để thu gọn · bấm đúp để đổi tên"
+                      draggable
+                      onDragStart={e => {
+                        e.dataTransfer.effectAllowed = "move";
+                        e.dataTransfer.setData("application/x-ah-group", String(g.id));
+                        setDrag({ kind: "group", id: g.id });
+                      }}
+                      onDragEnd={endDrag}
+                      onClick={() => toggleGroup(g.id)}
+                      onKeyDown={e => { if (e.key === "Enter" || e.key === " ") { e.preventDefault(); toggleGroup(g.id); } }}
+                      onDoubleClick={() => setEditGroup({ id: g.id, name: g.name })}>
+                      <b className="ah-grp-grip">⠿</b>
+                      <em>{g.name}</em><span>{items.length}</span>
+                      <span className="ah-grp-actions" onClick={e => e.stopPropagation()}>
+                        <button title="Đổi tên nhóm" onClick={() => setEditGroup({ id: g.id, name: g.name })}>✎</button>
+                        <button title="Xoá nhóm" onClick={() => deleteGroup(g)}>×</button>
+                      </span>
+                      <i>{open ? "▾" : "▸"}</i>
+                    </div>
+                  )}
+                  {open && items.map(renderThread)}
+                  {open && items.length === 0 && <div className="ah-sec-hint">Kéo cuộc trò chuyện vào đây</div>}
+                </div>
+              );
+            })}
+            {editGroup?.id === null && <div className="ah-sec">{groupInput}</div>}
+            <div className={secClass("recent")} {...dropProps("recent")}>
+              {sectioned && <div className="ah-thread-group static">Gần đây <span>{recentThreads.length}</span></div>}
+              {recentThreads.map(renderThread)}
+              {draggingThread && recentThreads.length === 0 && <div className="ah-sec-hint">Thả vào đây để bỏ khỏi nhóm</div>}
+            </div>
           </div>
         </nav>
 
@@ -635,7 +867,12 @@ export default function AssistantHome({ onOpenProject }: { onOpenProject?: (slug
             <h2>Trò chuyện</h2>
             <select className="ah-thread-select" value={threadId ?? ""}
               onChange={e => selectThread(Number(e.target.value) || null)}>
-              {threads.map(t => <option key={t.id} value={t.id}>{t.title}</option>)}
+              {pinnedThreads.length > 0 && <optgroup label="📌 Đã ghim">{pinnedThreads.map(threadOption)}</optgroup>}
+              {groups.map(g => groupThreads(g.id).length > 0 &&
+                <optgroup key={g.id} label={`📁 ${g.name}`}>{groupThreads(g.id).map(threadOption)}</optgroup>)}
+              {recentThreads.length < threads.length
+                ? recentThreads.length > 0 && <optgroup label="Gần đây">{recentThreads.map(threadOption)}</optgroup>
+                : recentThreads.map(threadOption)}
             </select>
             <button className="ah-ghost ah-new-sm" onClick={newThread} title="Cuộc trò chuyện mới">＋</button>
             <select className={`ah-project ${curThread?.client_folder ? "on" : ""}`}
