@@ -429,7 +429,8 @@ class _McpStartTimeout(Exception):
 
 def _run_streaming(cmd: list[str], env: dict, progress: _Progress, parse_json: bool,
                    timeout: int, watch: "_StepWatch | None" = None,
-                   init_timeout: int | None = None) -> tuple[int, str, str, dict]:
+                   init_timeout: int | None = None,
+                   cwd: Path | None = None) -> tuple[int, str, str, dict]:
     """Chạy CLI, đọc stdout từng dòng đẩy vào `progress`.
 
     Trả (exit code, kết quả cuối, stderr, số liệu). Với claude (parse_json) kết
@@ -437,7 +438,7 @@ def _run_streaming(cmd: list[str], env: dict, progress: _Progress, parse_json: b
     `watch` (nếu có) nhận từng sự kiện JSON — xem _StepWatch.
     stdout và stderr đọc bằng 2 thread riêng — đọc tuần tự 1 pipe thì pipe kia đầy
     là tiến trình con treo."""
-    proc = subprocess.Popen(cmd, cwd=str(ROOT), env=env,
+    proc = subprocess.Popen(cmd, cwd=str(cwd or ROOT), env=env,
                             stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                             text=True, encoding="utf-8", errors="replace", bufsize=1)
     result: list[str] = []
@@ -539,6 +540,40 @@ def _add_dirs(job: dict) -> list[str]:
         p = Path(d)
         out.append(str(p if p.is_absolute() else (ROOT / p)))
     return out
+
+
+def _step_cwd(dirs: list[str]) -> Path:
+    """cwd cho `claude -p` của 1 bước: thư mục code của project, không phải gốc repo.
+
+    Claude Code chỉ nạp `.claude/settings*.json` và CLAUDE.md của thư mục cwd.
+    `--add-dir` chỉ mở quyền đọc/ghi file, KHÔNG nạp quyền Bash của thư mục đó. Nếu
+    chạy từ gốc ai_team thì allow `git`/`php` (và deny `git push`) khai trong
+    <code>/.claude/settings.local.json bị bỏ qua hết, nên mọi lệnh shell của bước
+    đó bị chặn (headless không có ai bấm duyệt).
+
+    Chọn thư mục chứa được nhiều thư mục khác nhất (gốc dự án chứ không phải
+    backend/ hay frontend/). Hòa thì lấy đường ngắn hơn. Thư mục chưa tồn tại
+    thì không dùng làm cwd được, nên rơi về gốc repo như trước."""
+    paths = [Path(d) for d in dirs if Path(d).is_dir()]
+    if not paths:
+        return ROOT
+
+    def covers(p: Path) -> int:
+        return sum(1 for q in paths if q == p or p in q.parents)
+
+    return max(paths, key=lambda p: (covers(p), -len(str(p))))
+
+
+def _retarget_prompt(prompt: str, file_path: str | None) -> str:
+    """Đổi `@<đường dẫn tương đối repo>` trong prompt thành đường dẫn tuyệt đối.
+
+    Prompt do dashboard dựng với @mention tương đối so với gốc ai_team. Khi bước
+    chạy với cwd = thư mục code thì đường dẫn đó trỏ sai chỗ."""
+    if not file_path:
+        return prompt
+    rel = file_path.replace("\\", "/")
+    absolute = (ROOT / rel).as_posix()
+    return prompt.replace(f"@{rel}", f"@{absolute}", 1)
 
 
 def _project_git_env(slug: str | None, agent_key: str | None = None) -> dict:
@@ -749,10 +784,18 @@ class _McpConfig:
                 problems.append(f"Server '{s.name}' thiếu `credentials_path` trong "
                                 f"[mcp.{s.name}] của {where}.")
                 continue
-            if not Path(path).exists():
-                problems.append(f"Không thấy file credential của server '{s.name}': {path} "
+            # Đường dẫn tương đối tính từ gốc ai_team rồi đổi thành TUYỆT ĐỐI trước khi
+            # đưa cho MCP server: server chạy với cwd = thư mục code của dự án (xem
+            # _step_cwd), để tương đối thì nó tìm key nhầm chỗ (ENOENT) dù worker
+            # kiểm tra thấy file vẫn có.
+            p = Path(path)
+            if not p.is_absolute():
+                p = self.root / p
+            if not p.exists():
+                problems.append(f"Không thấy file credential của server '{s.name}': {p} "
                                 f"(khai trong [mcp.{s.name}] của {where}).")
                 continue
+            path = p.resolve().as_posix()
             out[s.name] = path
             self._seen_secrets.add(path)     # để _redact che, xem AR13
         return out, problems
@@ -820,6 +863,115 @@ class _McpTemplates:
 
 MCP = _McpConfig(ROOT)
 MCP_TEMPLATES = _McpTemplates(MCP_TEMPLATES_FILE)
+
+
+# ── Connector claude.ai của tài khoản, bật theo từng dự án ──────────────────
+# Connector là thứ bấm "Connect" trên claude.ai (Google Drive, Gmail…). Nó gắn với
+# TÀI KHOẢN Claude mà worker đăng nhập, không gắn với dự án. `claude -p` có nạp
+# chúng, nhưng headless không ai bấm duyệt nên tool bị chặn hết. Dự án tick
+# connector nào trong tab MCP (mcp.json → `account_connectors`) thì worker mở
+# đúng connector đó cho bước của dự án ấy — dự án khác không tick thì vẫn bị chặn.
+
+
+def _connector_rule(entry: str) -> str:
+    """'Google Drive' → 'mcp__claude_ai_Google_Drive' (mọi tool của connector).
+
+    CLI đặt tên server là 'claude.ai <Tên>' rồi thay ký tự ngoài [A-Za-z0-9_-]
+    bằng '_' khi ghép tên tool (đã kiểm chứng headless: không mở → bị từ chối,
+    mở bằng luật này → gọi được). Ghi sẵn tên tool đầy đủ (mcp__…) thì giữ nguyên."""
+    entry = entry.strip()
+    if entry.startswith("mcp__"):
+        return entry
+    return "mcp__" + re.sub(r"[^A-Za-z0-9_-]", "_", f"claude.ai {entry}")
+
+
+def _project_connectors(slug: str | None) -> list[str]:
+    """Tên connector dự án đã tick (`account_connectors` trong mcp.json).
+    Đọc lại mỗi bước — file nhỏ. Tắt MCP cả dự án thì tắt luôn connector."""
+    if not slug:
+        return []
+    path = MCP.path(slug)
+    if not path.exists():
+        return []
+    try:
+        raw = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return []                   # _McpConfig đã cảnh báo lỗi cú pháp, không báo trùng
+    if not isinstance(raw, dict) or raw.get("enabled") is False:
+        return []
+    names = raw.get("account_connectors")
+    if not isinstance(names, list):
+        return []
+    return [n.strip() for n in names if isinstance(n, str) and n.strip()]
+
+
+def _connector_rules(slug: str | None) -> list[str]:
+    return [_connector_rule(n) for n in _project_connectors(slug)]
+
+
+def _merge_connectors(cmd: list[str], rules: list[str]) -> list[str]:
+    """Gắn luật connector vào phần MCP của lệnh.
+
+    - Dự án có cả MCP riêng: bỏ --strict-mcp-config (cờ đó cắt hết connector) và
+      gộp vào CÙNG một --allowedTools. Không strict thì CLI nạp thêm server mức
+      user, nhưng tool của chúng không nằm trong danh sách nên vẫn bị chặn.
+    - Không có MCP riêng: thêm --allowedTools mới."""
+    if not rules:
+        return cmd
+    out = [c for c in cmd if c != "--strict-mcp-config"]
+    if "--allowedTools" in out:
+        i = out.index("--allowedTools") + 1
+        out[i] = ",".join([x for x in out[i].split(",") if x] + rules)
+        return out
+    return out + ["--allowedTools", ",".join(rules)]
+
+
+# Trạng thái connector của tài khoản, đọc bằng `claude mcp list` (không tốn token,
+# ~10s). Gửi kèm nhịp tim để tab MCP biết connector nào đã kết nối, cái nào chưa.
+CONNECTOR_CHECK_EVERY_S = int(os.getenv("CONNECTOR_CHECK_EVERY_S", "600"))
+_CONNECTOR_LINE = re.compile(r"^claude\.ai (.+?): \S+ - (.+)$")
+CONNECTORS_SEEN: list[dict] = []
+_connectors_checked_at = 0.0
+
+
+def _parse_connector_list(text: str) -> list[dict]:
+    """Dòng 'claude.ai Google Drive: https://… - ✔ Connected' → {name, status}.
+    status: connected | needs-auth | failed | unknown."""
+    out = []
+    for line in (text or "").splitlines():
+        m = _CONNECTOR_LINE.match(line.strip())
+        if not m:
+            continue
+        state = m.group(2).lower()
+        status = ("connected" if "connected" in state else
+                  "needs-auth" if "auth" in state else
+                  "failed" if ("fail" in state or "✗" in state) else "unknown")
+        out.append({"name": m.group(1).strip(), "status": status})
+    return out
+
+
+def _refresh_connectors(force: bool = False) -> None:
+    """Hỏi lại trạng thái connector nếu đã quá hạn. Chạy trong thread riêng để vòng
+    poll không phải chờ 10s. Lỗi thì giữ bản cũ — chỉ là chỉ báo trên dashboard."""
+    global _connectors_checked_at
+    if not force and time.time() - _connectors_checked_at < CONNECTOR_CHECK_EVERY_S:
+        return
+    _connectors_checked_at = time.time()
+
+    def work():
+        binary = _resolve_claude()
+        if not binary:
+            return
+        try:
+            r = subprocess.run([binary, "mcp", "list"], cwd=str(ROOT), capture_output=True,
+                               text=True, encoding="utf-8", errors="replace", timeout=90)
+            got = _parse_connector_list(r.stdout)
+            if got:
+                CONNECTORS_SEEN[:] = got
+        except Exception as e:
+            print(f"[worker] ⚠️  không đọc được trạng thái connector: {e}")
+
+    threading.Thread(target=work, daemon=True).start()
 
 
 MCP_MIN_CLI = (2, 1, 273)     # bản đầu tiên đã kiểm chứng có --mcp-config + --strict-mcp-config
@@ -927,6 +1079,15 @@ def _mcp_plan(slug: str | None) -> tuple[list[str], dict, list[str]]:
             if not path:
                 continue           # đã có lỗi từ MCP.secrets(), không báo trùng
             env[cred_env] = path
+
+        # Biến môi trường theo hồ sơ quyền — server Google chỉ xin scope GHI và mở
+        # tool tạo file khi GOOGLE_DRIVE_ALLOW_WRITE=true. Thiếu chỗ này thì hồ sơ
+        # read-create chỉ là danh sách tool, gọi tool tạo file nào cũng bị server
+        # từ chối "Write operations are disabled". Env đi chung cho tiến trình con
+        # nên chỉ BẬT, không bao giờ tắt — hàng rào thật vẫn là --allowedTools.
+        prof_env = (tpl.get("profile_env") or {}).get(s.profile) or {}
+        if isinstance(prof_env, dict):
+            env.update({str(k): str(v) for k, v in prof_env.items()})
 
         native[s.name] = {"command": str(tpl.get("command") or ""), "args": args}
         allowed += [f"mcp__{s.name}__{t}" for t in tools]
@@ -1308,7 +1469,8 @@ def _claim_step() -> dict | None:
     """Job bước workflow (chạy bằng Claude headless). Server giữ tuần tự.
     Gửi kèm trạng thái tài khoản Claude và trạng thái MCP — dashboard hiện lại."""
     return _req("/api/workflow-jobs/claim",
-                body={"accounts": ACCOUNTS.snapshot(), "mcp": _mcp_snapshot()},
+                body={"accounts": ACCOUNTS.snapshot(), "mcp": _mcp_snapshot(),
+                      "connectors": list(CONNECTORS_SEEN)},
                 method="POST")
 
 
@@ -1334,6 +1496,8 @@ def _run_step_job(job: dict):
     tool  = (job.get("tool") or "claude").lower()
     model = job.get("model")
     mcp_env: dict = {}          # opencode không có MCP ở đây; nhánh claude điền
+    mcp_cmd: list = []
+    connector_rules: list = []
 
     if tool == "opencode":
         # Node chon 1 agent cua pipeline -> chay dung tool/model cua agent do,
@@ -1351,6 +1515,7 @@ def _run_step_job(job: dict):
         cmd += [*OPENCODE_ARGS, "-f", job.get("file_path") or ""]
         # opencode nhận thư mục làm việc qua cwd chứ không có --add-dir; nó chạy với
         # cwd = gốc repo giống pipeline nên giữ nguyên.
+        step_cwd = ROOT
     else:
         binary = _resolve_claude()
         if not binary:
@@ -1360,7 +1525,19 @@ def _run_step_job(job: dict):
             print(f"[worker] X {msg}")
             _complete_step(job_id, "failed", error=msg)
             return
-        cmd = [binary, "-p", job["prompt"], *_strip_output_flags(CLAUDE_ARGS),
+        code_dirs = _add_dirs(job)
+        # Chạy từ thư mục code để CLI nạp .claude/settings*.json + CLAUDE.md của
+        # project đó (quyền git/php, deny push...). Xem _step_cwd.
+        step_cwd = _step_cwd(code_dirs)
+        prompt = job["prompt"]
+        extra_dirs: list[str] = []
+        if step_cwd != ROOT:
+            prompt = _retarget_prompt(prompt, job.get("file_path"))
+            # File task nằm trong ai_team (clients/<slug>/...), ngoài cwd mới: mở
+            # đúng thư mục chứa nó để Claude ghi được '## Kết quả' và status.
+            if job.get("file_path"):
+                extra_dirs.append(str((ROOT / job["file_path"]).parent))
+        cmd = [binary, "-p", prompt, *_strip_output_flags(CLAUDE_ARGS),
                "--output-format", "stream-json", "--verbose"]
         # Model chọn trên node (haiku/sonnet/opus). Bỏ trống -> theo mặc định của
         # CLI. Mỗi lần gọi phải nạp lại ~45K token tiền tố với giá gấp đôi input,
@@ -1371,7 +1548,7 @@ def _run_step_job(job: dict):
         # output.directory tuyệt đối). Worker chạy với cwd = gốc repo nên nếu không
         # mở quyền, Claude headless không đọc/ghi được chỗ đó và MỌI bước của
         # project ấy cùng chết một lỗi — không riêng bước đầu.
-        for d in _add_dirs(job):
+        for d in [*code_dirs, *extra_dirs]:
             cmd += ["--add-dir", d]
 
         # ── Cổng DUY NHẤT của MCP ────────────────────────────────────────────
@@ -1384,7 +1561,9 @@ def _run_step_job(job: dict):
             print(f"[worker] ❌ Step job #{job_id}: cấu hình MCP chưa chạy được — {msg}")
             _complete_step(job_id, "failed", error=msg)
             return
-        cmd += mcp_cmd
+        # Connector claude.ai (Google Drive…) mà dự án đã tick trong tab MCP.
+        connector_rules = _connector_rules(job.get("client_folder"))
+        cmd += _merge_connectors(mcp_cmd, connector_rules)
 
     print(f"\n[worker] 🤖 Step job #{job_id} — {label} (run #{job['run_id']})")
     git_env = _project_git_env(job.get("client_folder"), job.get("agent_key"))
@@ -1395,6 +1574,13 @@ def _run_step_job(job: dict):
         print(f"[worker]    git: token riêng ({'agent ' + job['agent_key'] if job.get('agent_key') else 'project'}) "
               "từ settings.local.toml")
     progress = _Progress(job_id)
+    if step_cwd != ROOT:
+        print(f"[worker]    cwd: {step_cwd}")
+        progress.add(f"📁 cwd: {step_cwd}")
+    if connector_rules:
+        names = ", ".join(r.removeprefix("mcp__claude_ai_").replace("_", " ") for r in connector_rules)
+        print(f"[worker]    connector: {names}")
+        progress.add(f"🔗 Connector tài khoản: {names}")
 
     # Tài khoản Claude: dashboard chọn tên, worker cầm token. Không có file tài
     # khoản (None) → env giữ nguyên, CLI dùng đăng nhập trong ~/.claude như cũ.
@@ -1424,7 +1610,8 @@ def _run_step_job(job: dict):
             code, out, err, metrics = _run_streaming(cmd, env, progress,
                                                      parse_json=(tool != "opencode"),
                                                      timeout=STEP_TIMEOUT_S, watch=watch,
-                                                     init_timeout=MCP_START_TIMEOUT_S if mcp_cmd else None)
+                                                     init_timeout=MCP_START_TIMEOUT_S if mcp_cmd else None,
+                                                     cwd=step_cwd)
         except _McpStartTimeout as e:
             _mcp_note(job.get("client_folder"),
                       [(s.name, "start-timeout") for s in MCP.servers(job.get("client_folder"))])
@@ -1833,6 +2020,7 @@ def main():
 
     while True:
         job = step = None
+        _refresh_connectors()        # tự giãn nhịp (CONNECTOR_CHECK_EVERY_S), chạy nền
         try:
             job = _claim()
             if not job:

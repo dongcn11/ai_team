@@ -33,6 +33,7 @@ TEMPLATES_FILE = Path(os.getenv("MCP_TEMPLATES_FILE", "/config/mcp_templates.tom
 
 # Giống hệt ràng buộc bên worker: tên server chui vào mcp__<server>__<tool>.
 NAME_RE = re.compile(r"^[a-z0-9_-]+$")
+CONNECTOR_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9 ._-]{0,59}$")
 
 
 class McpError(Exception):
@@ -140,10 +141,13 @@ def read(slug: str) -> dict:
             "declared_write_scope": row.get("declared_write_scope") or {},
             "credential_declared":  name in creds,
         })
+    conns = data.get("account_connectors")
     return {
         "slug":     slug,
         "enabled":  data.get("enabled") is not False,
         "servers":  sorted(out, key=lambda s: s["name"]),
+        # Connector claude.ai của tài khoản mà dự án này được dùng (xem worker.py).
+        "account_connectors": [c for c in conns if isinstance(c, str)] if isinstance(conns, list) else [],
         "exists":   path.exists(),
         "writable": writable(),
         # File hỏng cú pháp: nói thẳng cho UI. Worker vẫn đang chạy bằng bản cũ
@@ -197,6 +201,21 @@ def write(slug: str, payload: dict) -> dict:
             "declared_write_scope": scope if isinstance(scope, dict) else {},
         }
 
+    conns_in = payload.get("account_connectors") or []
+    if not isinstance(conns_in, list):
+        raise McpError("`account_connectors` phải là một mảng tên connector.")
+    conns: list[str] = []
+    for c in conns_in:
+        c = str(c or "").strip()
+        # Tên connector như trên claude.ai ("Google Drive", "monday.com"). Chặn ký
+        # tự lạ vì tên này chui vào --allowedTools của worker.
+        if not CONNECTOR_RE.match(c):
+            raise McpError(f"Tên connector không hợp lệ: {c!r}.")
+        if c not in conns:
+            conns.append(c)
+
     body = {"enabled": bool(payload.get("enabled", True)), "servers": servers}
+    if conns:
+        body["account_connectors"] = conns
     path.write_text(json.dumps(body, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
     return read(slug)

@@ -7,7 +7,7 @@ from sqlalchemy import text
 from database import engine, Base
 from routers import (runs, tasks, issues, settings, projects, agents, project_tasks, system,
                      run_jobs, workflows, workflow_jobs, slack_events, chat_bots, skills, mcp,
-                     schedules, assistant, llm_admin, llm_public)
+                     schedules, assistant, llm_admin, llm_public, google_oauth, figma_connect)
 from routers import auth as auth_router
 import auth
 from routers.workflows import poll_running_workflow_runs
@@ -59,6 +59,8 @@ _COLUMN_MIGRATIONS = [
     ("workflow_runs",      "chat_bot_id",       "INTEGER"),
     ("workflow_runs",      "chat_id",           "VARCHAR"),
     ("workflow_runs",      "chat_thread",       "VARCHAR"),
+    # Nội dung tin chat = yêu cầu của lần chạy (xem models.WorkflowRun.trigger_text).
+    ("workflow_runs",      "trigger_text",      "TEXT"),
     # Số liệu chạy của từng bước (model, token, tiền) — xem models.WorkflowStepJob.
     ("workflow_step_jobs", "model_used",        "VARCHAR"),
     ("workflow_step_jobs", "cost_usd",          "DOUBLE PRECISION"),
@@ -236,6 +238,9 @@ app.include_router(workflow_jobs.router,   prefix="/api/workflow-jobs", tags=["w
 app.include_router(slack_events.router,    prefix="/api/slack",        tags=["slack"])
 app.include_router(chat_bots.router,       prefix="/api/chat-bots",    tags=["chat-bots"])
 app.include_router(skills.router,          prefix="/api/skills",       tags=["skills"])
+# Khai TRƯỚC router mcp: /api/mcp/google/... không được rơi vào /api/mcp/{slug}.
+app.include_router(google_oauth.router,    prefix="/api/mcp/google",   tags=["mcp"])
+app.include_router(figma_connect.router,   prefix="/api/mcp/figma",    tags=["mcp"])
 app.include_router(mcp.router,             prefix="/api/mcp",          tags=["mcp"])
 app.include_router(schedules.router,       prefix="/api/schedules",    tags=["schedules"])
 app.include_router(assistant.router,       prefix="/api/assistant",    tags=["assistant"])

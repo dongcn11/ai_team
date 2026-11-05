@@ -24,6 +24,8 @@ export interface McpConfig {
   slug: string;
   enabled: boolean;
   servers: McpServer[];
+  /** Connector claude.ai của tài khoản worker mà dự án được dùng ("Google Drive"…) */
+  account_connectors: string[];
   exists: boolean;
   writable: boolean;
   parse_error: string | null;
@@ -32,10 +34,14 @@ export interface McpConfig {
 /** Trạng thái nối của lần chạy gần nhất, worker gửi kèm nhịp tim. */
 export interface McpRuntime { slug: string; server: string; status: string; at: string | null }
 
+/** 1 connector claude.ai của tài khoản worker đăng nhập — worker dò bằng `claude mcp list`. */
+export interface AccountConnector { name: string; status: "connected" | "needs-auth" | "failed" | "unknown" }
+
 export function useMcp(slug: string | null) {
   const [config,    setConfig]    = useState<McpConfig | null>(null);
   const [templates, setTemplates] = useState<McpTemplate[]>([]);
   const [runtime,   setRuntime]   = useState<McpRuntime[]>([]);
+  const [connectors, setConnectors] = useState<AccountConnector[]>([]);
   const [workerOn,  setWorkerOn]  = useState<boolean | null>(null);
   const [saving,    setSaving]    = useState(false);
   const [error,     setError]     = useState<string | null>(null);
@@ -63,6 +69,7 @@ export function useMcp(slug: string | null) {
       const d = await res.json();
       setWorkerOn(!!d.online);
       setRuntime((d.mcp || []) as McpRuntime[]);
+      setConnectors((d.connectors || []) as AccountConnector[]);
     } catch { /* im lặng: worker offline là chuyện bình thường */ }
   }, []);
 
@@ -82,6 +89,7 @@ export function useMcp(slug: string | null) {
             name: s.name, template: s.template, profile: s.profile,
             enabled: s.enabled, declared_write_scope: s.declared_write_scope,
           })),
+          account_connectors: next.account_connectors || [],
         }),
       });
       if (!res.ok) {
@@ -99,5 +107,5 @@ export function useMcp(slug: string | null) {
     }
   };
 
-  return { config, setConfig, templates, runtime, workerOn, saving, error, load, save };
+  return { config, setConfig, templates, runtime, connectors, workerOn, saving, error, load, save };
 }

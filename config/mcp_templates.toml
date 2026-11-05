@@ -108,3 +108,47 @@ read-create = [
 # read-write (sửa/xoá tài liệu đã tồn tại) CỐ Ý CHƯA KHAI — kiến trúc hoãn sang
 # Phase 2 vì cần bước xác nhận mà MVP chưa có. Khai bừa ở đây là mở đường cho
 # agent sửa tài liệu của khách trước khi có cơ chế lùi.
+
+# Server chỉ xin scope ghi + mở tool tạo khi có biến này (worker bơm theo hồ sơ).
+[template.google-workspace.profile_env]
+read-create = { GOOGLE_DRIVE_ALLOW_WRITE = "true" }
+
+
+# ── Google Drive: tải file lên / tải về / đọc Word-Excel ────────────────────
+# Mã của MÌNH (mcp_servers/gdrive_files/server.js, nằm trong repo), bù chỗ trống
+# của server trên: create-file chỉ nhận TEXT nên không tải lên được docx/xlsx/pdf/
+# ảnh, còn read-file đọc file Office ra chữ rác. Thư viện dùng lại bản đã ghim
+# trong vendor/mcp/google-drive-mcp — không cài thêm gói nào.
+#
+# Không có tool sửa/xoá/đổi quyền. upload-file luôn tạo file MỚI, download-file
+# không ghi đè, đường dẫn trên máy bị khoá trong thư mục làm việc của bước (roots).
+# Tìm file id thì dùng list-files/search-files của server google-workspace — nên
+# khai cả hai server cho dự án, cùng một file credential.
+[template.google-drive-files]
+command = "node"
+args    = ["mcp_servers/gdrive_files/server.js"]
+credential_env = "GOOGLE_SERVICE_ACCOUNT_KEY_PATH"
+version = "mcp_servers/gdrive_files 1.0.0 (trong repo) — deps của google-drive-mcp@1.15.8"
+
+[template.google-drive-files.profiles]
+read-only   = ["download-file", "read-office-file"]
+read-create = ["download-file", "read-office-file", "upload-file"]
+
+[template.google-drive-files.profile_env]
+read-create = { GOOGLE_DRIVE_ALLOW_WRITE = "true" }
+
+
+# ── Figma: đọc thiết kế, nối THẲNG Figma API bằng token của từng dự án ──────
+# Mã của mình (mcp_servers/figma/server.js), không đi qua connector của tài khoản
+# Claude. Dự án dán personal access token ở tab MCP → nút "Kết nối Figma" kiểm
+# token với Figma rồi lưu clients/<slug>/secrets/figma-<server>.json.
+# Chỉ ĐỌC phía Figma (không có tool sửa file thiết kế). figma-render-image ghi ảnh
+# xuống thư mục làm việc của bước — đó là ghi trên máy, không đụng tới Figma.
+[template.figma]
+command = "node"
+args    = ["mcp_servers/figma/server.js"]
+credential_env = "FIGMA_TOKEN_PATH"
+version = "mcp_servers/figma 1.0.0 (trong repo) — Figma REST API v1"
+
+[template.figma.profiles]
+read-only = ["figma-get-file", "figma-get-node", "figma-render-image", "figma-get-comments"]

@@ -163,10 +163,18 @@ class McpRuntimeState(BaseModel):
     at:     Optional[str] = None
 
 
+class ConnectorState(BaseModel):
+    """1 connector claude.ai của tài khoản worker đăng nhập (`claude mcp list`)."""
+    name:   str = Field(max_length=100)
+    status: Literal["connected", "needs-auth", "failed", "unknown"]
+
+
 class WorkflowStepJobClaim(BaseModel):
     """Body worker gửi khi hỏi việc. Worker cũ gửi `{}` → accounts None → giữ snapshot cũ."""
     accounts: Optional[List[ClaudeAccountState]] = Field(default=None, max_length=50)
     mcp: Optional[List[McpRuntimeState]] = Field(default=None, max_length=200)
+    # Rỗng nghĩa là worker chưa dò xong lần đầu — None/[] đều giữ bản cũ.
+    connectors: Optional[List[ConnectorState]] = Field(default=None, max_length=100)
 
 
 class AgentQuestionOut(BaseModel):
@@ -615,12 +623,15 @@ class McpServerOut(McpServerIn):
 class McpConfigIn(BaseModel):
     enabled: bool = True
     servers: List[McpServerIn] = []
+    # Connector claude.ai của tài khoản worker mà dự án được dùng ("Google Drive"…)
+    account_connectors: List[str] = Field(default=[], max_length=50)
 
 
 class McpConfigOut(BaseModel):
     slug: str
     enabled: bool = True
     servers: List[McpServerOut] = []
+    account_connectors: List[str] = []
     exists: bool = False
     writable: bool = False
     parse_error: Optional[str] = None
