@@ -79,7 +79,9 @@ def claim_job(payload: Optional[WorkflowStepJobClaim] = None, db: Session = Depe
         accounts=[a.model_dump() for a in payload.accounts]
         if payload is not None and payload.accounts is not None else None,
         mcp=[m.model_dump() for m in payload.mcp]
-        if payload is not None and payload.mcp is not None else None)
+        if payload is not None and payload.mcp is not None else None,
+        connectors=[c.model_dump() for c in payload.connectors]
+        if payload is not None and payload.connectors else None)
     cutoff = datetime.utcnow() - _STUCK_AFTER
     stuck = (db.query(WorkflowStepJob)
                .filter(WorkflowStepJob.status == "running",

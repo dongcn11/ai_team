@@ -70,8 +70,8 @@ AGENT_SKILL_DIRS = {
     "be2":     ["be"],
     "fe1":     ["fe"],
     "fe2":     ["fe"],
-    "fs1":     ["be", "fe"],
-    "fs2":     ["be", "fe"],
+    "fs1":     ["be", "fe", "fs"],
+    "fs2":     ["be", "fe", "fs"],
     "leader":  ["leader"],
 }
 

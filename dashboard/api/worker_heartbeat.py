@@ -37,19 +37,25 @@ _accounts: list[dict] = []
 # [{slug, server, status, at}]. Worker gửi kèm cùng nhịp tim — API chạy trong
 # container nên tự nó không thể biết server trên host có lên được không.
 _mcp: list[dict] = []
+# Connector claude.ai của tài khoản worker đăng nhập: [{name, status}]. Tab MCP
+# dựng ô tick từ đây — API trong container không tự hỏi claude.ai được.
+_connectors: list[dict] = []
 
 
-def touch(accounts: Optional[list[dict]] = None, mcp: Optional[list[dict]] = None) -> None:
+def touch(accounts: Optional[list[dict]] = None, mcp: Optional[list[dict]] = None,
+          connectors: Optional[list[dict]] = None) -> None:
     """Worker vừa hỏi việc. `accounts` = snapshot tài khoản Claude nếu worker gửi
     (chỉ /workflow-jobs/claim gửi; /run-jobs/claim thì không → giữ bản cũ).
     `mcp` cũng vậy: None nghĩa là không có tin mới, giữ bản cũ."""
-    global _last_seen, _accounts, _mcp
+    global _last_seen, _accounts, _mcp, _connectors
     with _lock:
         _last_seen = datetime.utcnow()
         if accounts is not None:
             _accounts = accounts
         if mcp is not None:
             _mcp = mcp
+        if connectors:
+            _connectors = connectors
 
 
 def status() -> dict:
@@ -57,9 +63,10 @@ def status() -> dict:
         seen = _last_seen
         accounts = list(_accounts)
         mcp = list(_mcp)
+        connectors = list(_connectors)
     if seen is None:
         return {"online": False, "last_seen": None, "silent_s": None,
-                "accounts": accounts, "mcp": mcp}
+                "accounts": accounts, "mcp": mcp, "connectors": connectors}
     silent = (datetime.utcnow() - seen).total_seconds()
     return {
         "online": silent < _ONLINE_WINDOW.total_seconds(),
@@ -67,4 +74,5 @@ def status() -> dict:
         "silent_s": int(silent),
         "accounts": accounts,
         "mcp": mcp,
+        "connectors": connectors,
     }

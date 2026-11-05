@@ -1701,7 +1701,7 @@ body {
 .mcp-row-body select { background: #1e293b; color: #e2e8f0; border: 1px solid #334155;
                        border-radius: 5px; padding: 3px 6px; }
 .mcp-tools { font-size: 12px; color: #64748b; cursor: help; text-decoration: underline dotted; }
-.mcp-add { display: flex; gap: 8px; align-items: center; margin: 10px 0; }
+.mcp-add { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin: 10px 0; }
 .mcp-add input, .mcp-add select { background: #1e293b; color: #e2e8f0; border: 1px solid #334155;
                                   border-radius: 5px; padding: 5px 8px; }
 .mcp-add-btn { background: none; border: 1px dashed #334155; color: #94a3b8; border-radius: 6px;
@@ -1862,3 +1862,24 @@ body {
     border-left: 0 !important; border-top: 1px solid #1e293b; border-radius: 12px 12px 0 0;
   }
 }
+
+/* Connector claude.ai của tài khoản, bật theo dự án (ProjectMcp.tsx) */
+.mcp-section { font-size: 12px; color: #9ca3af; text-transform: uppercase; letter-spacing: 1px;
+               margin: 18px 0 8px; font-weight: 600; }
+.mcp-section em { text-transform: none; letter-spacing: 0; font-style: normal; color: #64748b; font-weight: 400; }
+.mcp-conn-list { display: flex; flex-wrap: wrap; gap: 8px; }
+.mcp-conn { display: flex; align-items: center; gap: 8px; padding: 6px 10px; border: 1px solid #1e293b;
+            border-radius: 6px; font-size: 13px; color: #cbd5e1; cursor: pointer; }
+.mcp-conn.on { border-color: #2563eb; background: #0b1a33; }
+.mcp-conn input:disabled + span { color: #64748b; }
+
+/* Kết nối Google (OAuth) cho server google-drive-files (ProjectMcp.tsx) */
+.mcp-google { flex-basis: 100%; margin-top: 8px; font-size: 13px; color: #cbd5e1; }
+.mcp-google.setup { border: 1px dashed #334155; border-radius: 6px; padding: 10px 12px; }
+.mcp-google.setup ol { margin: 6px 0 8px 18px; padding: 0; line-height: 1.7; }
+.mcp-google textarea { width: 100%; box-sizing: border-box; background: #0b1220; color: #e2e8f0;
+                       border: 1px solid #334155; border-radius: 5px; padding: 6px 8px; font-family: monospace; font-size: 12px; }
+.mcp-google-row { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; margin-top: 6px; }
+.mcp-google code.copy { cursor: copy; background: #1e293b; padding: 2px 6px; border-radius: 4px; word-break: break-all; }
+.mcp-google input[type=password] { background: #0b1220; color: #e2e8f0; border: 1px solid #334155;
+                                   border-radius: 5px; padding: 5px 8px; font-family: monospace; }

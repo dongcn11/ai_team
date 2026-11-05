@@ -221,15 +221,23 @@ export default function ProjectsPage() {
       loadFeatures(proj.id);
       setPrdContent(null); setPrdEditing(false);
       setDocFiles([]); setSelectedDoc(null); setDocContent(null);
-      setShowAddAgent(false);
+      // Xoá agent của project trước — không thì request settings-agents lỗi là
+      // tab Agents hiện số của project cũ.
+      setShowAddAgent(false); setSettingsAgents([]);
       setFeatures([]); setFeaturesLoaded(false); setShowAddFeature(false);
       setFeaturePage(1);
     }
   }, []);
 
   const loadSettingsAgents = useCallback(async (id: string) => {
-    const res = await fetch(`/api/projects/${id}/settings-agents`);
-    if (res.ok) setSettingsAgents(await res.json());
+    // Thử lại 1 lần: mở project bắn ~10 request cùng lúc qua tunnel, thỉnh thoảng
+    // rớt đúng cái này → tab Agents báo 0 trong khi khung cấu hình có đủ agent.
+    for (let i = 0; i < 2; i++) {
+      try {
+        const res = await fetch(`/api/projects/${id}/settings-agents`);
+        if (res.ok) { setSettingsAgents(await res.json()); return; }
+      } catch { /* lỗi mạng — thử lại */ }
+    }
   }, []);
 
   useEffect(() => {
@@ -1213,6 +1221,9 @@ export default function ProjectsPage() {
                     if (tab === "docs" && docFiles.length === 0) loadDocs(selected.id);
                     if (tab === "clientdocs") loadClientDocs(selected.id);
                     if (tab === "features" && !featuresLoaded) loadFeatures(selected.id);
+                    // Tải lại mỗi lần mở: request lúc mở project có thể rớt (đi qua tunnel),
+                    // và fetch lỗi thì im lặng → số agent kẹt ở 0 dù settings.toml có đủ.
+                    if (tab === "agents") loadSettingsAgents(selected.id);
                   }}>
                   {meta.label}
                   {meta.count !== null && <span className="pd-tab-count">{meta.count}</span>}

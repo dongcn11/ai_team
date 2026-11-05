@@ -755,3 +755,113 @@ def test_co_init_thi_khong_bo_cuoc():
     rc, _, _, _ = worker._run_streaming(cmd, dict(os.environ), _FakeProgress(), parse_json=True,
                                         timeout=60, watch=w, init_timeout=1)
     assert rc == 0 and w.saw_init is True
+
+
+# ═══ Google Drive: profile_env bật quyền ghi theo hồ sơ ═════════════════════
+
+def _gdrive(profile: str) -> dict:
+    return {"enabled": True, "servers": {
+        "gfiles": {"template": "google-drive-files", "enabled": True, "profile": profile}}}
+
+
+def test_read_create_bat_quyen_ghi_cua_server_google(plan, tmp_path):
+    """Thiếu GOOGLE_DRIVE_ALLOW_WRITE thì server Google từ chối mọi tool tạo file —
+    hồ sơ read-create chỉ còn là cái tên."""
+    _, root = plan
+    key = _keyfile(tmp_path)
+    _write(_path(root, "udom"), _gdrive("read-create"))
+    _toml(root, "udom", f'[mcp.gfiles]\ncredentials_path = "{key.as_posix()}"\n')
+    cmd, env, problems = worker._mcp_plan("udom")
+    assert problems == []
+    assert env.get("GOOGLE_DRIVE_ALLOW_WRITE") == "true"
+    assert env.get("GOOGLE_SERVICE_ACCOUNT_KEY_PATH") == key.as_posix()
+    allowed = cmd[cmd.index("--allowedTools") + 1].split(",")
+    assert "mcp__gfiles__upload-file" in allowed
+
+
+def test_read_only_khong_bat_quyen_ghi(plan, tmp_path):
+    _, root = plan
+    key = _keyfile(tmp_path)
+    _write(_path(root, "udom"), _gdrive("read-only"))
+    _toml(root, "udom", f'[mcp.gfiles]\ncredentials_path = "{key.as_posix()}"\n')
+    cmd, env, problems = worker._mcp_plan("udom")
+    assert problems == []
+    assert "GOOGLE_DRIVE_ALLOW_WRITE" not in env
+    allowed = cmd[cmd.index("--allowedTools") + 1].split(",")
+    assert "mcp__gfiles__upload-file" not in allowed
+    assert "mcp__gfiles__read-office-file" in allowed
+
+
+# ═══ Connector claude.ai của tài khoản, bật theo dự án (mcp.json) ═════════════
+
+def test_ten_connector_thanh_luat_allowed_tools():
+    assert worker._connector_rule("Google Drive") == "mcp__claude_ai_Google_Drive"
+    assert worker._connector_rule("monday.com") == "mcp__claude_ai_monday_com"
+    assert worker._connector_rule("mcp__claude_ai_Gmail__search") == "mcp__claude_ai_Gmail__search"
+
+
+def test_connector_theo_du_an(plan):
+    _, root = plan
+    assert worker._connector_rules("udom") == []                       # chưa có mcp.json
+    _write(_path(root, "udom"), {"enabled": True, "servers": {},
+                                 "account_connectors": ["Google Drive", " ", 3]})
+    assert worker._connector_rules("udom") == ["mcp__claude_ai_Google_Drive"]
+    assert worker._connector_rules("khac") == [], "dự án khác không tick thì không có"
+    _write(_path(root, "udom"), {"enabled": False, "account_connectors": ["Google Drive"]})
+    assert worker._connector_rules("udom") == [], "tắt MCP cả dự án thì tắt luôn connector"
+
+
+def test_gop_connector_vao_lenh():
+    assert worker._merge_connectors([], []) == []
+    assert worker._merge_connectors([], ["mcp__claude_ai_Gmail"]) == ["--allowedTools", "mcp__claude_ai_Gmail"]
+    cmd = ["--mcp-config", "{}", "--strict-mcp-config", "--allowedTools", "mcp__fs__read"]
+    out = worker._merge_connectors(cmd, ["mcp__claude_ai_Gmail"])
+    assert "--strict-mcp-config" not in out, "strict cắt hết connector"
+    assert out.count("--allowedTools") == 1
+    assert out[out.index("--allowedTools") + 1] == "mcp__fs__read,mcp__claude_ai_Gmail"
+    assert worker._merge_connectors(cmd, []) == cmd, "không tick connector thì giữ strict"
+
+
+def test_doc_ket_qua_claude_mcp_list():
+    text = """Checking MCP server health…
+
+claude.ai Google Drive: https://drivemcp.googleapis.com/mcp/v1 - ✔ Connected
+claude.ai Slack: https://mcp.slack.com/mcp - ! Needs authentication
+claude.ai monday.com: https://mcp.monday.com/mcp - ! Needs authentication
+plugin:postman:postman: https://mcp.postman.com/mcp (HTTP) - ! Needs authentication
+myserver: node x.js - ✗ Failed to connect"""
+    assert worker._parse_connector_list(text) == [
+        {"name": "Google Drive", "status": "connected"},
+        {"name": "Slack", "status": "needs-auth"},
+        {"name": "monday.com", "status": "needs-auth"},
+    ]
+
+
+def test_credential_tuong_doi_thanh_tuyet_doi(cfg):
+    """MCP server chạy với cwd = thư mục code của dự án, không phải gốc ai_team.
+    Đường dẫn tương đối phải được đổi thành tuyệt đối, không thì server báo ENOENT."""
+    c, root = cfg
+    key = root / "clients" / "udom" / "secrets" / "sa.json"
+    key.parent.mkdir(parents=True, exist_ok=True)
+    key.write_text("{}", encoding="utf-8")
+    _write(_path(root, "udom"), {"enabled": True, "servers": {
+        "gdrive": {"template": "google-workspace", "enabled": True}}})
+    _toml(root, "udom", '[mcp.gdrive]\ncredentials_path = "clients/udom/secrets/sa.json"\n')
+    paths, problems = c.secrets("udom", c.servers("udom"))
+    assert problems == []
+    assert Path(paths["gdrive"]).is_absolute()
+    assert Path(paths["gdrive"]) == key.resolve()
+
+
+def test_mau_figma_dua_duong_dan_token_qua_env(plan, tmp_path):
+    """Server figma đọc token từ FIGMA_TOKEN_PATH; mọi tool đều chỉ đọc phía Figma."""
+    _, root = plan
+    key = _keyfile(tmp_path, "figma.json")
+    _write(_path(root, "udom"), {"enabled": True, "servers": {
+        "figma": {"template": "figma", "enabled": True, "profile": "read-only"}}})
+    _toml(root, "udom", f'[mcp.figma]\ncredentials_path = "{key.as_posix()}"\n')
+    cmd, env, problems = worker._mcp_plan("udom")
+    assert problems == []
+    assert env.get("FIGMA_TOKEN_PATH") == key.resolve().as_posix()
+    allowed = cmd[cmd.index("--allowedTools") + 1].split(",")
+    assert "mcp__figma__figma-get-node" in allowed and "mcp__figma__figma-render-image" in allowed

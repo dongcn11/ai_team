@@ -447,6 +447,8 @@ export interface RunStep {
   /** Agent pipeline chạy bước này (null = Claude headless / bạn chạy tay) */
   agent: { key: string; name: string; tool: string; model: string } | null;
   result: string;
+  /** Bước trigger: nội dung tin chat đã kích hoạt lần chạy (null = chạy tay) */
+  request?: string | null;
   started_at: string | null;
   finished_at: string | null;
   duration_s: number | null;

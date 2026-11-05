@@ -18,11 +18,12 @@ khác — hỏng thật, không phải phiền nhẹ.
 import re
 import threading
 from dataclasses import dataclass
+from types import SimpleNamespace
 from typing import Callable, Optional
 
 from sqlalchemy.orm import Session
 
-from models import AgentQuestion, ChatBot, Workflow
+from models import AgentQuestion, ChatBot, Workflow, WorkflowRun
 
 
 # ── Phạm vi của bot ───────────────────────────────────────────────────────
@@ -99,6 +100,10 @@ class Fmt:
     def i(cls, s) -> str:
         raise NotImplementedError
 
+    @classmethod
+    def link(cls, url: str, text: str = "") -> str:
+        raise NotImplementedError
+
 
 class HtmlFmt(Fmt):
     @staticmethod
@@ -116,6 +121,10 @@ class HtmlFmt(Fmt):
     @classmethod
     def i(cls, s) -> str:
         return f"<i>{cls.esc(s)}</i>"
+
+    @classmethod
+    def link(cls, url: str, text: str = "") -> str:
+        return f'<a href="{cls.esc(url)}">{cls.esc(text or url)}</a>'
 
 
 class MrkdwnFmt(Fmt):
@@ -135,6 +144,10 @@ class MrkdwnFmt(Fmt):
     @classmethod
     def i(cls, s) -> str:
         return f"_{cls.esc(s)}_"
+
+    @classmethod
+    def link(cls, url: str, text: str = "") -> str:
+        return f"<{url}|{cls.esc(text)}>" if text else f"<{url}>"
 
 
 # ── Ngữ cảnh 1 tin nhắn đến ───────────────────────────────────────────────
@@ -221,6 +234,11 @@ def handle_text(db: Session, ctx: ChatCtx, text: str, quoted: str = "") -> None:
         answer = parts[1] if len(parts) > 1 else ""
 
     if qid is None and not text.startswith("/"):
+        tq = _thread_question(db, ctx)
+        if tq:
+            qid, answer = tq.id, text
+
+    if qid is None and not text.startswith("/"):
         # Chỉ có đúng 1 câu đang chờ (trong phạm vi bot này) thì tin thường coi như
         # trả lời câu đó — đường đi ít ma sát nhất trên điện thoại. Bot xác nhận rõ
         # đã trả lời câu nào để nếu đoán sai thì thấy ngay.
@@ -263,7 +281,10 @@ def handle_text(db: Session, ctx: ChatCtx, text: str, quoted: str = "") -> None:
                        f"{ctx.chat_name or ctx.chat_id}: {text[:200]}")
     # Địa chỉ để lần chạy trả kết quả ngược về ĐÚNG chat này — thiếu nó thì
     # trigger là đường một chiều.
-    origin = {"bot_id": ctx.bot.id, "chat_id": ctx.chat_id, "thread": ctx.thread}
+    # `text` đủ nguyên văn (trigger_message bị cắt 200 ký tự, chỉ để ghi log) —
+    # nó là yêu cầu của lần chạy, được chèn vào mọi file task.
+    origin = {"bot_id": ctx.bot.id, "chat_id": ctx.chat_id, "thread": ctx.thread,
+              "text": text}
     names = []
     for wf in matched:
         names.append(wf.name)
@@ -272,6 +293,30 @@ def handle_text(db: Session, ctx: ChatCtx, text: str, quoted: str = "") -> None:
         threading.Thread(target=run_workflow_from_trigger,
                          args=(wf.id, trigger_message, origin), daemon=True).start()
     ctx.send("▶️ Đã chạy: " + ", ".join(f.b(n) for n in names))
+
+
+def question_snapshot(q: AgentQuestion) -> SimpleNamespace:
+    """Bản sao các trường question_text cần — gửi chạy ở thread nền, lúc đó phiên DB
+    của q có thể đã commit/đóng (thuộc tính bị expire → DetachedInstanceError)."""
+    return SimpleNamespace(id=q.id, question=q.question, node_label=q.node_label,
+                           node_id=q.node_id, client_folder=q.client_folder)
+
+
+def _thread_question(db: Session, ctx: "ChatCtx") -> Optional[AgentQuestion]:
+    """Câu hỏi đang mở của run được kích hoạt từ CHÍNH thread này.
+
+    Reply trong thread thì người ta trả lời câu bot vừa hỏi trong thread đó, không
+    phải ra lệnh mới — không bắt chỗ này thì tin trả lời lại chạy thêm 1 workflow."""
+    if not ctx.thread:
+        return None
+    return (db.query(AgentQuestion)
+              .join(WorkflowRun, WorkflowRun.id == AgentQuestion.run_id)
+              .filter(AgentQuestion.status == "open",
+                      WorkflowRun.chat_bot_id == ctx.bot.id,
+                      WorkflowRun.chat_id == ctx.chat_id,
+                      WorkflowRun.chat_thread == ctx.thread)
+              .order_by(AgentQuestion.id.desc())
+              .first())
 
 
 def question_text(q: AgentQuestion, fmt: type[Fmt]) -> str:
