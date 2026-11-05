@@ -1580,7 +1580,17 @@ def advance_run(db: Session, run: WorkflowRun, trigger_message: Optional[str] = 
         run.status = "done"
         run.finished_at = datetime.utcnow()
         db.commit()
-        notify_run_finished(run)
+        # Kết quả của bước cuối cùng đã chạy — với workflow kiểu "hỏi gì đáp nấy" thì
+        # đây CHÍNH là câu trả lời; không gửi nó thì chat chỉ thấy "✅ Xong" trống trơn.
+        answer = ""
+        if run.chat_bot_id:
+            for node in reversed(_topological_order(nodes, edges)):
+                if (node_status.get(node["id"]) == "ok"
+                        and not str(node.get("type", "")).startswith(TRIGGER_PREFIX)
+                        and node.get("type") != CONDITION_TYPE):
+                    answer = _read_task_result(_task_file_path(tasks_dir(), wf.id, run.id, node["id"]))
+                    break
+        notify_run_finished(run, answer)
 
 
 # Link PR (GitHub) / MR (GitLab) mà bước Create MR ghi trong '## Kết quả'.
@@ -1621,8 +1631,13 @@ def notify_pr_created(run: WorkflowRun, url: str) -> None:
     chat_router.notify_run(run.id, build)
 
 
-def notify_run_finished(run: WorkflowRun) -> None:
-    """Báo 'chạy xong' về chat đã ra lệnh, kèm tóm tắt từng bước.
+# Slack cắt tin ở ~40k ký tự, Telegram 4096 — giữ gọn, phần đầy đủ xem trên dashboard.
+_ANSWER_MAX_CHARS = 2800
+
+
+def notify_run_finished(run: WorkflowRun, answer: str = "") -> None:
+    """Báo 'chạy xong' về chat đã ra lệnh, kèm tóm tắt từng bước và `answer` —
+    mục '## Kết quả' của bước cuối cùng (câu trả lời, với workflow hỏi-đáp).
 
     Chỉ gửi khi run có địa chỉ trả lời (chat_bot_id) — chạy tay từ dashboard thì
     im lặng, không ai muốn cả nhóm nhận thông báo về thứ mình bấm trên web."""
@@ -1645,6 +1660,11 @@ def notify_run_finished(run: WorkflowRun) -> None:
             if n["id"] in pr_urls:
                 line += f" — {f.link(pr_urls[n['id']], _pr_label(pr_urls[n['id']]))}"
             lines.append(line)
+        text = (answer or "").strip()
+        if text:
+            if len(text) > _ANSWER_MAX_CHARS:
+                text = text[:_ANSWER_MAX_CHARS].rstrip() + "\n…(còn tiếp — xem đủ trên dashboard)"
+            lines.append("\n" + f.esc(text))
         lines.append(f"\nChi tiết: lần chạy {f.b('#' + str(run.id))} trên dashboard")
         return "\n".join(lines)
 

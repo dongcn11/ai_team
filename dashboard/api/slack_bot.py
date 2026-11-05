@@ -290,6 +290,10 @@ def _socket_loop(bot_id: int, app_token: str, name: str, stop: _threading.Event)
                     if event.get("type") != "app_mention" or event.get("bot_id"):
                         continue
                     _mark(bot_id, last_event=_time.time())
+                    # Một dòng cho mỗi lần bị tag — "bot không trả lời" thì nhìn log là
+                    # biết ngay Slack có gửi sự kiện tới hay không.
+                    print(f"[slack:{name}] nhận app_mention ở {event.get('channel')} "
+                          f"từ {event.get('user')}: {_strip_mentions(event.get('text', ''))[:80]!r}")
                     # Thread riêng + session riêng: xử lý có thể mất vài giây, đừng
                     # giữ vòng nhận tin lại.
                     _threading.Thread(target=_process_event, args=(bot_id, event),
