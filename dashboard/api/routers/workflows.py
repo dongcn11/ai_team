@@ -273,9 +273,18 @@ def _upsert_question(db: Session, wf: Workflow, run: WorkflowRun, node: dict,
     db.add(q)
     db.commit()
     db.refresh(q)
-    # Đẩy câu hỏi ra các kênh chat đã khai. Import tại chỗ để tránh vòng import:
-    # telegram_bot/slack_bot cần find_workflows_for_chat + apply_question_answer ở
-    # file này. Gửi lỗi thì kệ — vòng poll workflow không được chết vì một cái chat.
+    # Run khởi nguồn từ chat → hỏi ngay trong THREAD của tin đã ra lệnh, không rải
+    # ra kênh: người ra lệnh đang nhìn thread đó, và nhiều run song song thì câu
+    # hỏi nằm lẫn ở kênh không biết của lệnh nào.
+    if run.chat_bot_id and run.chat_id:
+        import chat_router
+        snap = chat_router.question_snapshot(q)
+        chat_router.notify_run(run.id, lambda f: chat_router.question_text(snap, f))
+        return q
+    # Run chạy tay/lịch: không có thread nào, đẩy ra các kênh chat đã khai. Import
+    # tại chỗ để tránh vòng import: telegram_bot/slack_bot cần
+    # find_workflows_for_chat + apply_question_answer ở file này. Gửi lỗi thì kệ —
+    # vòng poll workflow không được chết vì một cái chat.
     for mod in ("telegram_bot", "slack_bot"):
         try:
             __import__(mod).notify_question(q)
@@ -698,13 +707,24 @@ def _client_tasks_dir(db: Session, wf: Workflow, run: Optional[WorkflowRun] = No
 def _task_context(db: Session, run: WorkflowRun) -> str:
     """Mô tả task đã kích hoạt run — chèn vào đầu mỗi file task để người
     chạy Claude có đủ ngữ cảnh mà không phải mở lại dashboard."""
+    lines: List[str] = []
+    chat = (getattr(run, "trigger_text", None) or "").strip()
+    if chat:
+        # Run từ chat không có task — tin nhắn là yêu cầu DUY NHẤT. Nói thẳng điều
+        # đó ra: không nói thì agent thấy "## Yêu cầu" chung chung của node rồi tự
+        # đi mò file task cũ trong _tasks/ và làm lại việc của lần chạy trước.
+        lines += ["## Yêu cầu từ chat (việc chính của lần chạy này)", "",
+                  "\n".join("> " + ln for ln in chat.splitlines()), "",
+                  "Đây là việc cần làm. Mục `## Yêu cầu` của bước bên dưới chỉ là cách làm "
+                  "(branch, commit…) áp lên việc này. Các file task khác trong `_tasks/` là "
+                  "của lần chạy cũ — **đừng làm lại việc trong đó**. Yêu cầu quá mơ hồ để "
+                  "làm thì hỏi lại theo mục `## Cần xác nhận`, đừng tự chọn việc khác.", ""]
+
     task_id = getattr(run, "task_id", None)
-    if not task_id:
-        return ""
-    t = db.query(ProjectTask).filter(ProjectTask.id == task_id).first()
+    t = db.query(ProjectTask).filter(ProjectTask.id == task_id).first() if task_id else None
     if not t:
-        return ""
-    lines = [f"## Task: {t.name}", ""]
+        return "\n".join(lines) + "\n" if lines else ""
+    lines += [f"## Task: {t.name}", ""]
     if t.description:
         lines += [t.description.strip(), ""]
     if t.acceptance_criteria:
@@ -892,6 +912,8 @@ def _workspace_section(wf: Workflow, node: dict) -> str:
         "",
         f"Spec thì ngược lại — vẫn ở `clients/{wf.client_folder}/`: `prd.md` (yêu cầu dự án) và "
         f"`_tasks/` (các file task như file này). Đọc thoải mái nhưng **đừng ghi code vào đó**.",
+        "File task KHÁC trong `_tasks/` là lịch sử các lần chạy trước, chỉ để tham khảo — "
+        "việc của bước này là việc ghi trong CHÍNH file này.",
     ]
     lines += _project_docs_lines(wf)
     lines.append("")
@@ -934,6 +956,21 @@ def _project_docs_lines(wf: Workflow) -> list:
     if len(files) <= _DOCS_LIST_LIMIT:
         return head + [f"- `{shown}/{f.relative_to(real).as_posix()}`" for f in files]
     return head + [f"- {len(files)} file trong thư mục đó — tự liệt kê rồi đọc cái liên quan."]
+
+
+def _trigger_request(run: WorkflowRun, log_msg: str) -> Optional[str]:
+    """Nội dung yêu cầu hiện ở bước trigger trên dashboard.
+
+    Ưu tiên `trigger_text` (nguyên văn tin chat), kèm dòng nguồn lấy từ log
+    ("[slack] @U… trong #kênh"). Run cũ chưa có cột đó thì dùng chính dòng log —
+    đã bị cắt 200 ký tự nhưng còn hơn không thấy gì. Trigger chạy tay chỉ có
+    câu "Trigger '…' đã kích hoạt" → không phải yêu cầu, trả None."""
+    text = (getattr(run, "trigger_text", None) or "").strip()
+    from_chat = log_msg.startswith("[")      # chat_router: "[slack] @U.. trong #x: <tin>"
+    if text:
+        source = log_msg.split(": ", 1)[0] if from_chat else ""
+        return text + (f"\n\n— {source}" if source else "")
+    return log_msg if from_chat else None
 
 
 def _task_file_path(tasks_dir: Path, workflow_id: int, run_id: int, node_id: str) -> Path:
@@ -1074,6 +1111,37 @@ def _effective_skills(node: dict) -> List[str]:
     return cats + ids
 
 
+# Node Code Review: kết quả phải nằm TRÊN PR, gắn vào từng dòng code — chỗ dev đọc
+# và sửa. Không nói rõ thì agent chỉ viết báo cáo vào file task (hoặc tệ hơn, thả
+# một file report vào repo), dev phải tự dò lại dòng nào đang bị chê.
+_REVIEW_POST_SECTION = (
+    "## Đăng review lên PR (bắt buộc)\n"
+    "Kết quả review phải được đăng lên PR thành **comment gắn vào từng dòng code**. "
+    "Chỉ ghi báo cáo vào file này là chưa xong. **Đừng tạo file báo cáo trong repo**, "
+    "không sửa code, không push.\n\n"
+    "1. **Tìm PR**: lấy link PR trong mục `## Kết quả các bước trước` (bước Create MR). "
+    "Không có PR nào thì ghi `## Cần xác nhận`, đổi sang `status: blocked` rồi dừng.\n"
+    "2. **Đọc diff**: `gh pr diff <số> --repo <owner>/<repo>`. Lấy commit đầu PR bằng "
+    "`gh pr view <số> --repo <owner>/<repo> --json headRefOid`.\n"
+    "3. **Mỗi vấn đề là 1 comment**: `path` (đường dẫn trong repo), `line` (số dòng ở file "
+    "MỚI và phải nằm trong 1 hunk của diff), `side: \"RIGHT\"`, `body` (mức "
+    "[high]/[medium]/[low], vấn đề, cách sửa; sửa được ngay thì kèm khối ```suggestion```). "
+    "Vấn đề không gắn được vào dòng nào trong diff thì đưa vào phần tóm tắt.\n"
+    "4. **Gửi thành MỘT review**: ghi file JSON nằm cạnh file task này (cùng tên, thêm đuôi "
+    "`.review.json`) với nội dung `{\"commit_id\": \"<headRefOid>\", \"event\": \"COMMENT\", "
+    "\"body\": \"<tóm tắt + kết luận>\", \"comments\": [...]}`, rồi chạy "
+    "`gh api repos/<owner>/<repo>/pulls/<số>/reviews --method POST --input <file json>`. "
+    "Luôn dùng `event: \"COMMENT\"`, vì GitHub không cho APPROVE/REQUEST_CHANGES trên PR "
+    "của chính tài khoản đang đăng nhập.\n"
+    "5. GitHub báo **422** (thường do có dòng nằm ngoài diff) thì chuyển comment đó vào "
+    "phần tóm tắt rồi gửi lại. Đừng bỏ cả review.\n"
+    "6. Ghi vào `## Kết quả`: link review (`html_url` trong phản hồi), số comment đã gắn "
+    "dòng, kết luận (merge được / cần sửa).\n"
+    "PR trên GitLab thì làm tương tự bằng `glab api` (discussion có `position`). Bị chặn "
+    "quyền chạy `gh`/`glab` thì ghi `## Cần xác nhận`, đừng lùi về chỉ viết báo cáo.\n\n"
+)
+
+
 def _task_body(node: dict) -> str:
     ntype = node.get("type", "")
     data = node.get("data", {}) or {}
@@ -1084,11 +1152,15 @@ def _task_body(node: dict) -> str:
         who = (f"{agent['name']} — {agent['tool']} · {agent['model']}" if agent
                else "Claude headless (hoặc bạn chạy tay)")
         skill_cats, skill_ids = _effective_skill_refs(node)
+        is_review = ntype == "action.code_review"
+        prompt = data.get("prompt", "") or (
+            "Review code của PR do bước trước tạo." if is_review else "(chưa có nội dung)")
         return (
             f"# {label}\n\n"
             f"> Người thực thi: {who}\n\n"
-            f"## Yêu cầu\n{data.get('prompt', '') or '(chưa có nội dung)'}\n\n"
-            f"{_skill_section(skill_cats, skill_ids)}"
+            f"## Yêu cầu\n{prompt}\n\n"
+            + (_REVIEW_POST_SECTION if is_review else "")
+            + f"{_skill_section(skill_cats, skill_ids)}"
         )
 
     if ntype == "action.create_mr":
@@ -1119,9 +1191,23 @@ def _task_body(node: dict) -> str:
 RESULT_HEADING = "## Kết quả"
 
 
+def _upstream_section(parts: List[tuple]) -> str:
+    """Mục '## Kết quả các bước trước' từ [(nhãn, kết quả)] của các node ngay trước.
+
+    Mỗi bước là một phiên CLI mới, không nhớ gì. Thiếu mục này thì Code Review không
+    biết PR nào, Create MR không biết branch nào, agent phải đi lục file task cũ."""
+    parts = [(label, text) for label, text in parts if text]
+    if not parts:
+        return ""
+    out = ["## Kết quả các bước trước", ""]
+    for label, text in parts:
+        out += [f"### {label}", "", text, ""]
+    return "\n".join(out) + "\n"
+
+
 def _write_task_file(path: Path, workflow_id: int, run_id: int, node: dict,
                      context: str = "", task_id: Optional[int] = None,
-                     workspace: str = "") -> None:
+                     workspace: str = "", upstream: str = "") -> None:
     is_condition = node.get("type") == CONDITION_TYPE
     content = (
         "---\n"
@@ -1135,6 +1221,7 @@ def _write_task_file(path: Path, workflow_id: int, run_id: int, node: dict,
         "---\n\n"
         f"{context}"
         f"{workspace}"
+        f"{upstream}"
         f"{_task_body(node)}\n"
         f"{RESULT_HEADING}\n"
         "<!-- Ghi tóm tắt kết quả vào đây (file đã sửa, MR link, ghi chú...). "
@@ -1156,7 +1243,9 @@ def _write_task_file(path: Path, workflow_id: int, run_id: int, node: dict,
 _STATUS_RE = re.compile(r"^status:\s*(\w+)", re.MULTILINE)
 CONFIRM_HEADING = "## Cần xác nhận"
 ANSWER_HEADING  = "## Trả lời của dev"
-_CONFIRM_RE = re.compile(r"^## Cần xác nhận\s*$(.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL)
+# Agent hay thêm mục mới thay vì sửa mục cũ: "## Cần xác nhận (lần 2)", "(lần 3)"…,
+# và đánh dấu mục cũ "(đã giải quyết …)". Bắt mọi tiêu đề bắt đầu bằng chữ này.
+_CONFIRM_RE = re.compile(r"^## Cần xác nhận([^\n]*)$(.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL)
 _RESULT_RE = re.compile(r"^## Kết quả\s*$(.*?)(?=^## |\Z)", re.MULTILINE | re.DOTALL)
 _COMMENT_RE = re.compile(r"<!--.*?-->", re.DOTALL)
 
@@ -1169,13 +1258,30 @@ def _read_task_status(path: Path) -> Optional[str]:
 
 
 def _read_task_question(path: Path) -> str:
-    """Nội dung mục '## Cần xác nhận' — thứ agent muốn dev chốt trước khi làm tiếp."""
+    """Nội dung mục '## Cần xác nhận' MỚI NHẤT — thứ agent muốn dev chốt trước khi
+    làm tiếp. Lấy mục đầu tiên thì dashboard cứ hiện câu hỏi của lần đầu dù agent đã
+    hỏi sang chuyện khác (run #76: hiện mãi lỗi ENOENT đã sửa xong)."""
     if not path.exists():
         return ""
-    m = _CONFIRM_RE.search(path.read_text(encoding="utf-8", errors="replace"))
-    if not m:
+    sections = [m for m in _CONFIRM_RE.finditer(path.read_text(encoding="utf-8", errors="replace"))
+                if "đã giải quyết" not in m.group(1).lower()]
+    if not sections:
         return ""
-    return _COMMENT_RE.sub("", m.group(1)).strip()
+    return _strip_task_footer(_COMMENT_RE.sub("", sections[-1].group(2))).strip()
+
+
+_FOOTER_RE = re.compile(r"^-{3,}\s*\n(?=\*\*Khi hoàn thành\*\*)", re.MULTILINE)
+
+
+def _strip_task_footer(text: str) -> str:
+    """Bỏ khối hướng dẫn cuối file task ('---' + '**Khi hoàn thành**…'). Agent hay
+    chèn '## Cần xác nhận' ngay trên khối đó nên regex mục nuốt luôn phần hướng
+    dẫn, rồi nó bị đẩy nguyên ra chat như một phần câu hỏi."""
+    m = _FOOTER_RE.search(text)
+    if m:
+        return text[:m.start()]
+    i = text.find("**Khi hoàn thành**")
+    return text[:i] if i >= 0 else text
 
 
 def _read_task_result(path: Path) -> str:
@@ -1185,10 +1291,8 @@ def _read_task_result(path: Path) -> str:
     m = _RESULT_RE.search(path.read_text(encoding="utf-8", errors="replace"))
     if not m:
         return ""
-    body = _COMMENT_RE.sub("", m.group(1))
-    # bỏ separator '---' và dòng hướng dẫn cuối file
-    lines = [ln for ln in body.splitlines() if ln.strip() != "---" and not ln.startswith("**Khi hoàn thành**")]
-    return "\n".join(lines).strip()
+    # bỏ khối hướng dẫn cuối file ('---', 'Khi hoàn thành', 'Khi vướng…')
+    return _strip_task_footer(_COMMENT_RE.sub("", m.group(1))).strip()
 
 
 _DECISION_RE = re.compile(r"^decision:\s*(\S+)", re.MULTILINE)
@@ -1289,15 +1393,22 @@ def advance_run(db: Session, run: WorkflowRun, trigger_message: Optional[str] = 
             context_holder[0] = _task_context(db, run)
         return context_holder[0]
 
-    def upstream_result(nid: str) -> str:
-        """Gộp phần '## Kết quả' của các node ngay trước — dữ liệu để đánh giá điều kiện."""
+    def upstream_parts(nid: str) -> List[tuple]:
+        """[(nhãn, '## Kết quả')] của các node ngay trước, bỏ trigger và nhánh bị bỏ qua."""
         parts = []
         for e in incoming_edges.get(nid, []):
             src = e.get("source")
-            if not src or str(node_by_id.get(src, {}).get("type", "")).startswith(TRIGGER_PREFIX):
+            src_node = node_by_id.get(src or "", {})
+            if (not src or str(src_node.get("type", "")).startswith(TRIGGER_PREFIX)
+                    or node_status.get(src) == "skipped"):
                 continue
-            parts.append(_read_task_result(_task_file_path(tasks_dir(), wf.id, run.id, src)))
-        return "\n".join(p for p in parts if p)
+            label = (src_node.get("data", {}) or {}).get("label") or src
+            parts.append((label, _read_task_result(_task_file_path(tasks_dir(), wf.id, run.id, src))))
+        return parts
+
+    def upstream_result(nid: str) -> str:
+        """Gộp phần '## Kết quả' của các node ngay trước — dữ liệu để đánh giá điều kiện."""
+        return "\n".join(text for _, text in upstream_parts(nid) if text)
 
     def branch_of(nid: str) -> Optional[bool]:
         """Nhánh mà node điều kiện đã chọn (None = chưa quyết định)."""
@@ -1393,7 +1504,8 @@ def advance_run(db: Session, run: WorkflowRun, trigger_message: Optional[str] = 
             path = _task_file_path(tasks_dir(), wf.id, run.id, nid)
             _write_task_file(path, wf.id, run.id, node,
                              context=task_context(), task_id=run.task_id,
-                             workspace=_workspace_section(wf, node))
+                             workspace=_workspace_section(wf, node),
+                             upstream=_upstream_section(upstream_parts(nid)))
             node_status[nid] = "running"
             log.append({
                 "node_id": nid,
@@ -1451,6 +1563,12 @@ def advance_run(db: Session, run: WorkflowRun, trigger_message: Optional[str] = 
             else:
                 node_status[nid] = "ok"
                 log.append({"node_id": nid, "message": f"[task] Xác nhận hoàn thành: {path}", "ts": datetime.utcnow().isoformat()})
+                if node.get("type") == "action.create_mr":
+                    url = _pr_url(_read_task_result(path))
+                    if url:
+                        log.append({"node_id": nid, "message": f"{PR_LOG_PREFIX}{url}",
+                                    "ts": datetime.utcnow().isoformat()})
+                        notify_pr_created(run, url)
             changed = True
 
     if changed:
@@ -1465,6 +1583,44 @@ def advance_run(db: Session, run: WorkflowRun, trigger_message: Optional[str] = 
         notify_run_finished(run)
 
 
+# Link PR (GitHub) / MR (GitLab) mà bước Create MR ghi trong '## Kết quả'.
+_PR_URL_RE = re.compile(r"https?://[^\s<>()`'\"\]\[|]+/(?:pull|merge_requests)/\d+")
+PR_LOG_PREFIX = "[PR] "
+
+
+def _pr_url(text: str) -> Optional[str]:
+    m = _PR_URL_RE.search(text or "")
+    return m.group(0) if m else None
+
+
+def _pr_label(url: str) -> str:
+    """'PR #7' / 'MR !12' — ngắn gọn cho tin chat, link vẫn bấm được."""
+    num = url.rstrip("/").rsplit("/", 1)[-1]
+    return f"MR !{num}" if "/merge_requests/" in url else f"PR #{num}"
+
+
+def _pr_urls_from_log(run: WorkflowRun) -> Dict[str, str]:
+    """{node_id: link PR} lấy lại từ log — tin 'Xong' gửi ở thread nền, không đọc file."""
+    out: Dict[str, str] = {}
+    for e in run.log or []:
+        msg = e.get("message") or ""
+        if e.get("node_id") and msg.startswith(PR_LOG_PREFIX):
+            out[e["node_id"]] = msg[len(PR_LOG_PREFIX):].strip()
+    return out
+
+
+def notify_pr_created(run: WorkflowRun, url: str) -> None:
+    """Báo link PR ngay khi bước Create MR xong — người ra lệnh muốn mở PR liền,
+    không phải đợi Code Review chạy thêm vài phút mới thấy tin 'Xong'."""
+    label = _pr_label(url)
+
+    def build(f):
+        return f"🔀 {f.b('Đã tạo ' + label)}: {f.link(url)}"
+
+    import chat_router
+    chat_router.notify_run(run.id, build)
+
+
 def notify_run_finished(run: WorkflowRun) -> None:
     """Báo 'chạy xong' về chat đã ra lệnh, kèm tóm tắt từng bước.
 
@@ -1477,6 +1633,7 @@ def notify_run_finished(run: WorkflowRun) -> None:
     status  = run.node_status or {}
     labels  = {n["id"]: (n.get("data") or {}).get("label") or n["id"] for n in nodes}
     icon    = {"ok": "✅", "skipped": "⤼", "error": "❌"}
+    pr_urls = _pr_urls_from_log(run)
 
     def build(f):
         lines = [f"✅ {f.b('Xong: ' + wf_name)}"]
@@ -1484,7 +1641,10 @@ def notify_run_finished(run: WorkflowRun) -> None:
             st = status.get(n["id"], "pending")
             if st == "pending":
                 continue
-            lines.append(f"{icon.get(st, '•')} {f.esc(labels.get(n['id'], n['id']))}")
+            line = f"{icon.get(st, '•')} {f.esc(labels.get(n['id'], n['id']))}"
+            if n["id"] in pr_urls:
+                line += f" — {f.link(pr_urls[n['id']], _pr_label(pr_urls[n['id']]))}"
+            lines.append(line)
         lines.append(f"\nChi tiết: lần chạy {f.b('#' + str(run.id))} trên dashboard")
         return "\n".join(lines)
 
@@ -1581,10 +1741,12 @@ def get_run_steps(run_id: int, db: Session = Depends(get_db)) -> dict:
     started: Dict[str, str] = {}
     finished: Dict[str, str] = {}
     branch: Dict[str, str] = {}
+    trigger_log: Dict[str, str] = {}
     for entry in (run.log or []):
         nid, msg, ts = entry.get("node_id"), entry.get("message", ""), entry.get("ts")
         if not nid:
             continue
+        trigger_log.setdefault(nid, msg)
         if "Đã tạo file" in msg or "đã kích hoạt" in msg or "[điều kiện]" in msg or "[nhánh]" in msg:
             started.setdefault(nid, ts)
         if ("Xác nhận hoàn thành" in msg or "đã kích hoạt" in msg
@@ -1632,6 +1794,7 @@ def get_run_steps(run_id: int, db: Session = Depends(get_db)) -> dict:
             "agent": (lambda a: {"key": a["key"], "name": a["name"], "tool": a["tool"], "model": a["model"]}
                       if a else None)(_node_agent(node)),
             "result": _read_task_result(path) if path else "",
+            "request": _trigger_request(run, trigger_log.get(nid, "")) if is_trigger else None,
             "started_at": started.get(nid),
             "finished_at": finished.get(nid),
             "duration_s": duration_s,
@@ -1834,6 +1997,7 @@ def run_workflow_from_trigger(workflow_id: int, trigger_message: str,
             run.chat_bot_id = origin.get("bot_id")
             run.chat_id     = origin.get("chat_id")
             run.chat_thread = origin.get("thread")
+            run.trigger_text = origin.get("text") or None
             db.commit()
         advance_run(db, run, trigger_message=trigger_message)
     finally:

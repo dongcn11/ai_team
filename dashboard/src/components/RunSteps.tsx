@@ -124,9 +124,11 @@ function ActionCard({ step, runId, onChanged }: { step: RunStep; runId: number; 
 
 /** Hàng gọn trong danh sách — chỉ để nhìn tiến độ; chi tiết bung ra khi bấm. */
 export function StepRow({ step }: { step: RunStep }) {
-  const [open, setOpen] = useState(false);
+  // Bước trigger có yêu cầu thì mở sẵn: đó là thứ người xem cần đọc đầu tiên để
+  // biết lần chạy này làm việc gì.
+  const [open, setOpen] = useState(Boolean(step.request));
   const meta = STATUS_META[step.status] ?? STATUS_META.pending;
-  const hasDetail = Boolean(step.result || step.command);
+  const hasDetail = Boolean(step.result || step.command || step.request);
 
   return (
     <div style={{ display: "flex", gap: 8 }}>
@@ -179,6 +181,16 @@ export function StepRow({ step }: { step: RunStep }) {
               {step.started_at && <>bắt đầu {fmtTime(step.started_at)}</>}
               {step.finished_at && <> · xong {fmtTime(step.finished_at)}</>}
             </div>
+            {step.request && (
+              <div style={{ marginTop: 5 }}>
+                <div style={{ fontSize: 10, color: "#9ca3af", marginBottom: 3 }}>Nội dung yêu cầu</div>
+                <pre style={{
+                  margin: 0, fontSize: 12, color: "#e2e8f0", background: "#0b1220",
+                  border: "1px solid #1e3a5f", borderRadius: 5, padding: 8,
+                  maxHeight: 160, overflow: "auto", whiteSpace: "pre-wrap",
+                }}>{step.request}</pre>
+              </div>
+            )}
             {step.command && (
               <code style={{
                 display: "block", marginTop: 5, fontSize: 11, color: "#93c5fd", background: "#0b1220",

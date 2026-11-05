@@ -299,6 +299,10 @@ class WorkflowRun(Base):
     chat_bot_id = Column(Integer, nullable=True)   # ChatBot.id
     chat_id     = Column(String, nullable=True)    # chat / kênh đã gửi lệnh
     chat_thread = Column(String, nullable=True)    # Slack thread_ts · Telegram message_id
+    # NỘI DUNG tin chat đã kích hoạt run — đây chính là yêu cầu của lần chạy (run
+    # từ chat không có task_id nên không có mô tả nào khác). Thiếu nó thì file task
+    # chỉ còn prompt chung của node, agent tự đi đoán việc từ file task cũ.
+    trigger_text = Column(Text, nullable=True)
     # Run do lịch tự tạo (xem models.Schedule). Cùng cơ chế chống bắn trùng với
     # run_jobs: một mốc lịch chỉ đẻ đúng 1 run; NULL không vi phạm UNIQUE.
     schedule_id = Column(Integer, nullable=True)
@@ -310,6 +314,10 @@ class WorkflowRun(Base):
 
     workflow = relationship("Workflow", back_populates="runs")
     task     = relationship("ProjectTask", back_populates="workflow_runs")
+    # Xoá run (kéo theo khi xoá workflow/feature) phải xoá cả job & câu hỏi của nó —
+    # 2 bảng này có FK tới workflow_runs, thiếu cascade là DELETE gãy khoá ngoại (500).
+    step_jobs = relationship("WorkflowStepJob", cascade="all, delete-orphan")
+    questions = relationship("AgentQuestion", cascade="all, delete-orphan")
 
 
 class AgentQuestion(Base):
