@@ -7,6 +7,7 @@ Cấu trúc skills/:
   shared/     ← tất cả agents đọc
   be/         ← BE Agent 1, BE Agent 2
   fe/         ← FE Agent 1, FE Agent 2
+  fs/         ← Fullstack Agent 1, 2 (kèm be/ + fe/)
   pm/         ← PM Agent
   scrum/      ← Scrum Master
   analyst/    ← Analyst
@@ -36,6 +37,8 @@ ROLE_SKILL_DIRS: dict[str, list[str]] = {
     "BE Agent 2":   ["shared", "be"],
     "FE Agent 1":   ["shared", "fe"],
     "FE Agent 2":   ["shared", "fe"],
+    "Fullstack Agent 1": ["shared", "be", "fe", "fs"],
+    "Fullstack Agent 2": ["shared", "be", "fe", "fs"],
     "Leader Agent": ["shared", "leader"],
 }
 

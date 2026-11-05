@@ -1296,7 +1296,11 @@ export default function WorkflowsPage() {
   };
 
   const handleDelete = async (id: number) => {
-    await fetch(`/api/workflows/${id}`, { method: "DELETE" });
+    const res = await fetch(`/api/workflows/${id}`, { method: "DELETE" });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      alert(`Không xoá được workflow: ${err.detail || res.status}`);
+    }
     refetch();
   };
 
