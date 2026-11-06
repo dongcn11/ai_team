@@ -24,7 +24,7 @@ def set_output_dir(output_dir: str | Path):
     base             = Path(output_dir)
     TASKS_FILE        = base / "tasks.json"
     _CURRENT_RUN_FILE = base / "_dashboard_run.json"
-_API_URL          = os.getenv("DASHBOARD_API_URL", "http://localhost:8100")
+_API_URL          = os.getenv("DASHBOARD_API_URL", "http://127.0.0.1:8100")  # không dùng localhost: ::1 qua Docker Desktop hay treo (xem worker.py)
 _WORKER_TOKEN     = os.getenv("WORKER_TOKEN", "").strip()   # xem dashboard/api/auth.py
 
 _run_id: int | None = None

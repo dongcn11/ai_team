@@ -74,7 +74,10 @@ for _stream in (sys.stdout, sys.stderr):
     except Exception:
         pass
 
-API   = os.getenv("DASHBOARD_API_URL", "http://localhost:8100")
+# 127.0.0.1 chứ không phải localhost: trên Windows "localhost" ra ::1 trước, và
+# cổng IPv6 Docker Desktop forward hay treo từng đợt → claim "timed out" 15s liền,
+# chat chờ cả phút, Dashboard báo worker chưa chạy. IPv4 cùng lúc vẫn trả ~10ms.
+API   = os.getenv("DASHBOARD_API_URL", "http://127.0.0.1:8100")
 WORKER_TOKEN = os.getenv("WORKER_TOKEN", "").strip()
 ROOT  = Path(__file__).resolve().parent
 POLL  = int(os.getenv("WORKER_POLL_S", "3"))
