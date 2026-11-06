@@ -1700,9 +1700,100 @@ def _run_step_job(job: dict):
 # khung chat coi như chết.
 
 CHAT_POLL_S    = float(os.getenv("CHAT_POLL_S", "2"))
+# grok -p không stream được → vẫn cắt cứng theo tổng thời gian.
 CHAT_TIMEOUT_S = int(os.getenv("CHAT_TIMEOUT_S", "300"))
+# Câu có thể phải viết script tạo file (API đặt `makes_file`) — script dài, cần lâu hơn.
+CHAT_FILE_TIMEOUT_S = int(os.getenv("CHAT_FILE_TIMEOUT_S", "600"))
+# claude -p chạy stream-json: còn sự kiện đổ về (chữ, thinking, tool) là còn sống —
+# chỉ cắt khi im lặng quá CHAT_IDLE_S. CHAT_MAX_S là trần tuyệt đối, phải < _STALE
+# (15 phút) bên API + thời gian sandbox chạy script, không thì tin bị coi là kẹt.
+CHAT_IDLE_S = int(os.getenv("CHAT_IDLE_S", "120"))
+CHAT_MAX_S  = int(os.getenv("CHAT_MAX_S", "780"))
 # cwd trống: chạy trong repo thì Claude nạp CLAUDE.md/settings của repo vào mỗi câu chat.
 CHAT_CWD = Path(os.getenv("CHAT_CWD", str(Path(os.getenv("TEMP") or "/tmp") / "ai_team_chat")))
+
+
+def _chat_timeout(job: dict) -> int:
+    return max(CHAT_TIMEOUT_S, CHAT_FILE_TIMEOUT_S) if job.get("makes_file") else CHAT_TIMEOUT_S
+
+
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """Windows: claude là shim .CMD → proc là cmd.exe, node chạy thật là con của nó.
+    proc.kill() chỉ giết cmd.exe, node vẫn chạy tiếp và giữ pipe — giết cả cây."""
+    if os.name == "nt":
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                       capture_output=True, check=False)
+    try:
+        proc.kill()
+    except OSError:
+        pass
+
+
+def _run_chat_stream(cmd: list[str], prompt: str, env: dict, cwd: Path,
+                     idle_s: int = None, max_s: int = None) -> tuple[int, dict, str, str | None]:
+    """Chạy `claude -p --output-format stream-json`, prompt qua stdin.
+    Trả (exit code, sự kiện `result`, stderr, lý do bị cắt hoặc None).
+    Cắt khi im lặng quá idle_s (không dòng nào trên stdout/stderr) hoặc quá max_s."""
+    idle_s = idle_s or CHAT_IDLE_S
+    max_s = max_s or CHAT_MAX_S
+    proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                            stderr=subprocess.PIPE, text=True, encoding="utf-8",
+                            errors="replace", env=env, cwd=str(cwd), bufsize=1)
+    last = [time.time()]
+    result: dict = {}
+    err: list[str] = []
+
+    def write_in():            # thread riêng: prompt lớn hơn bộ đệm pipe thì write chặn
+        try:
+            proc.stdin.write(prompt)
+            proc.stdin.close()
+        except (OSError, ValueError):
+            pass
+
+    def read_out():
+        for raw in proc.stdout:
+            last[0] = time.time()
+            line = raw.strip()
+            if not line.startswith("{"):
+                continue
+            try:
+                ev = json.loads(line)
+            except ValueError:
+                continue
+            if ev.get("type") == "result":
+                result.clear()
+                result.update(ev)
+
+    def read_err():
+        for raw in proc.stderr:
+            last[0] = time.time()
+            err.append(raw)
+
+    threads = [threading.Thread(target=f, daemon=True) for f in (write_in, read_out, read_err)]
+    for t in threads:
+        t.start()
+    started, why = time.time(), None
+    while True:
+        try:
+            proc.wait(timeout=1)
+            break
+        except subprocess.TimeoutExpired:
+            now = time.time()
+            if now - started > max_s:
+                why = f"Quá {max_s}s chưa trả lời xong — đã dừng."
+            elif now - last[0] > idle_s:
+                why = (f"Claude im lặng quá {idle_s}s (không có chữ hay bước nào mới) — "
+                       "có thể bị treo, đã dừng.")
+            if why:
+                _kill_tree(proc)
+                try:
+                    proc.wait(timeout=10)
+                except subprocess.TimeoutExpired:
+                    pass
+                break
+    for t in threads[1:]:
+        t.join(5)
+    return proc.returncode, result, "".join(err).strip(), why
 
 
 def _chat_reply(job: dict) -> dict:
@@ -1721,7 +1812,10 @@ def _chat_reply(job: dict) -> dict:
     project = job.get("project") or None
     files_dir = job.get("files_dir")     # file đính kèm của request API (_llm_cli_loop)
     tools = "Read,Grep,Glob" if project else ("Read,Glob" if files_dir else "")
-    cmd = [binary, "-p", "--output-format", "json", "--tools", tools,
+    # stream-json + partial: có sự kiện đổ về liên tục → biết Claude còn sống (xem
+    # _run_chat_stream) thay vì cắt cứng theo tổng thời gian.
+    cmd = [binary, "-p", "--output-format", "stream-json", "--verbose",
+           "--include-partial-messages", "--tools", tools,
            "--strict-mcp-config", "--no-session-persistence",
            "--system-prompt-file", str(sys_file)]
     if files_dir:
@@ -1742,22 +1836,16 @@ def _chat_reply(job: dict) -> dict:
                 "error": f"Không còn tài khoản Claude nào sẵn sàng{_reset_txt(ACCOUNTS.earliest_reset())}."}
     env = {**os.environ, **(account.env() if account else {})}
     try:
-        p = subprocess.run(cmd, input=job.get("prompt") or "", capture_output=True, text=True,
-                           encoding="utf-8", errors="replace", env=env, cwd=str(CHAT_CWD),
-                           timeout=CHAT_TIMEOUT_S)
-    except subprocess.TimeoutExpired:
-        return {"status": "error", "error": f"Quá {CHAT_TIMEOUT_S}s chưa trả lời xong."}
+        code, ev, stderr, cut = _run_chat_stream(cmd, job.get("prompt") or "", env, CHAT_CWD)
     except OSError as e:
         return {"status": "error", "error": f"Không chạy được '{binary}': {e}"}
+    if cut:
+        return {"status": "error", "error": cut}
 
-    try:
-        ev = json.loads((p.stdout or "").strip().splitlines()[-1])
-    except (ValueError, IndexError):
-        ev = {}
     m = _metrics_from_result(ev) if ev else {}
     text = ev.get("result") if isinstance(ev.get("result"), str) else ""
-    if p.returncode != 0 or ev.get("is_error") or not text.strip():
-        why = text or (p.stderr or "").strip() or f"claude exit code {p.returncode}"
+    if code != 0 or ev.get("is_error") or not text.strip():
+        why = text or stderr or f"claude exit code {code}"
         low = why.lower()
         if account and ("limit" in low or "quota" in low):
             ACCOUNTS.cool(account.name, None)
@@ -1827,7 +1915,29 @@ def _write_api_files(job_id, files: list[dict]) -> Path:
     return d
 
 
-def _files_note(d: Path) -> str:
+_FILE_ORIGINS = (("new", "Người dùng gửi kèm tin MỚI NHẤT"),
+                 ("earlier", "Người dùng gửi ở các tin trước"),
+                 ("generated", "Trợ lý đã tạo"))
+
+
+def _files_note(d: Path, files: list[dict] | None = None) -> str:
+    if files and all(f.get("origin") for f in files):
+        # Khung chat: chia nhóm theo nguồn gốc để Claude không đọc tràn lan cả thread.
+        parts = []
+        for key, label in _FILE_ORIGINS:
+            group = [Path(f["name"]).name for f in files if f["origin"] == key]
+            if not group:
+                continue
+            lines = []
+            for n in group:
+                txt = d / (n + ".txt")
+                lines.append(f"- {d / n}" + (f" (bản chữ: {txt})" if txt.exists() else ""))
+            parts.append(f"{label}:\n" + "\n".join(lines))
+        return ("\n\n---\nFile của cuộc trò chuyện (các dấu [Đính kèm: …]/[Đã tạo file: …] ở "
+                f"trên) nằm trong thư mục {d}:\n\n" + "\n\n".join(parts) +
+                "\n\nCHỈ đọc file mà tin mới nhất thật sự cần — thường là file gửi kèm tin mới "
+                "nhất, hoặc file người dùng nhắc tên; đừng đọc lần lượt hết. Câu hỏi không cần "
+                "file thì không đọc file nào. File Word/PowerPoint/Excel: đọc bản chữ .txt.")
     names = sorted(p.name for p in d.iterdir())
     return ("\n\n---\nFile đính kèm (các dấu [Đính kèm: …] ở trên) nằm trong thư mục "
             f"{d}:\n" + "\n".join(f"- {d / n}" for n in names) +
@@ -1870,10 +1980,10 @@ def _grok_reply(job: dict) -> dict:
         cmd += ["--model", job["model"]]
     try:
         p = subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8",
-                           errors="replace", cwd=str(cwd), timeout=CHAT_TIMEOUT_S,
+                           errors="replace", cwd=str(cwd), timeout=_chat_timeout(job),
                            stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:
-        return {"status": "error", "error": f"Quá {CHAT_TIMEOUT_S}s chưa trả lời xong."}
+        return {"status": "error", "error": f"Quá {_chat_timeout(job)}s chưa trả lời xong."}
     except OSError as e:
         return {"status": "error", "error": f"Không chạy được '{binary}': {e}"}
     finally:
@@ -1938,7 +2048,7 @@ def _chat_loop():
             if files:
                 files_dir = _write_api_files(f"chat-{job['id']}", files)
                 job["files_dir"] = str(files_dir)
-                job["prompt"] = (job.get("prompt") or "") + _files_note(files_dir)
+                job["prompt"] = (job.get("prompt") or "") + _files_note(files_dir, files)
             # Model chọn ở khung chat: Claude (mặc định) hoặc alias gateway chạy grok -p.
             body = _grok_reply(job) if job.get("cli") == "grok" else _chat_reply(job)
         except Exception as e:         # đừng để tin kẹt 'running' vì worker vấp

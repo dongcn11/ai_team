@@ -67,7 +67,8 @@ SYSTEM_PROMPT = (
 _HISTORY_N = 20
 _HISTORY_CHARS = 24000
 # Worker chết giữa chừng thì tin kẹt "running" mãi — quá hạn này coi như lỗi.
-_STALE = timedelta(minutes=10)
+# Phải dài hơn CHAT_FILE_TIMEOUT_S của worker (600s) + thời gian sandbox chạy script.
+_STALE = timedelta(minutes=15)
 # File đính kèm: mỗi file ≤ 15MB (nginx /api/ cho body 20MB), mỗi tin ≤ 10 file.
 # Mỗi câu trả lời worker nhận lại file của cả thread → chặn tổng theo thread.
 _FILE_MAX = 15 * 1024 * 1024
@@ -761,21 +762,58 @@ def claim_reply(db: Session = Depends(get_db)) -> Optional[dict]:
             "Khi câu hỏi liên quan tới dự án, hãy đọc tài liệu/code thật trước rồi mới trả lời, "
             "nêu rõ file đã xem. Chỉ đọc những gì cần — đừng quét cả repo. Câu hỏi không liên "
             "quan tới dự án thì cứ trả lời bình thường.")
-    # File của cả thread (đã gửi trước tin đang trả lời): worker ghi ra thư mục tạm
-    # và mở quyền đọc cho Claude — câu sau vẫn hỏi lại được file gửi từ trước.
-    files = [{"name": f.name, "mime": f.mime, "data": base64.b64encode(f.data).decode()}
-             for f in (db.query(AssistantFile)
-                         .filter(AssistantFile.thread_id == m.thread_id,
-                                 AssistantFile.message_id.isnot(None),
-                                 AssistantFile.message_id < m.id)
-                         .order_by(AssistantFile.id).all())] if m.thread_id is not None else []
+    # File của thread: worker ghi ra thư mục tạm và mở quyền đọc cho Claude — câu
+    # sau vẫn hỏi lại được file gửi từ trước. Chỉ gửi bản trợ lý tạo gần nhất.
+    files, ask = _reply_files(db, m) if m.thread_id is not None else ([], "")
     if spec.get("system_prompt"):            # system prompt của alias gateway
         system = spec["system_prompt"] + "\n\n" + system
     prefs = _claude_prefs(db)
     return {"id": m.id, "prompt": _build_prompt(db, m), "system": system,
             "project": project, "files": files, **prefs,
+            # Câu có thể phải viết script tạo file (dài) → worker cho thêm thời gian.
+            "makes_file": bool(files) or bool(_MAKE_FILE.search(ask)),
             # worker: cli = claude | grok; model None = mặc định của CLI (assistant_model nếu có)
             "cli": spec["cli"], "model": spec["model"] or prefs["model"]}
+
+
+_MAKE_FILE = re.compile(r"file|tệp|word|excel|powerpoint|pdf|csv|docx|xlsx|pptx|slide|"
+                        r"biểu đồ|báo cáo|tài liệu", re.I)
+
+
+def _reply_files(db: Session, m: AssistantMessage) -> tuple:
+    """(file gửi cho worker, chữ tin người dùng mới nhất). Mỗi file kèm `origin`:
+    new = gửi kèm tin mới nhất, earlier = người dùng gửi từ trước, generated =
+    trợ lý tạo. File trợ lý tạo chỉ gửi bản gần nhất — các lần tạo cũ hơn chỉ gửi
+    khi tin mới nhất nhắc đúng tên, để Claude khỏi đọc lại cả chồng bản cũ."""
+    last_user = (db.query(AssistantMessage)
+                   .filter(AssistantMessage.thread_id == m.thread_id,
+                           AssistantMessage.role == "user",
+                           AssistantMessage.id < m.id)
+                   .order_by(desc(AssistantMessage.id)).first())
+    ask = (last_user.text or "") if last_user else ""
+    low = ask.lower()
+    rows = (db.query(AssistantFile, AssistantMessage.role)
+              .join(AssistantMessage, AssistantMessage.id == AssistantFile.message_id)
+              .filter(AssistantFile.thread_id == m.thread_id,
+                      AssistantFile.message_id < m.id)
+              .order_by(AssistantFile.id).all())
+    latest_gen = max((f.message_id for f, role in rows if role == "assistant"), default=None)
+
+    def named(name: str) -> bool:
+        stem = name.rsplit(".", 1)[0].lower()
+        return name.lower() in low or (len(stem) >= 4 and stem in low)
+
+    out = []
+    for f, role in rows:
+        if role == "user":
+            origin = "new" if last_user and f.message_id == last_user.id else "earlier"
+        elif f.message_id == latest_gen or named(f.name):
+            origin = "generated"
+        else:
+            continue
+        out.append({"name": f.name, "mime": f.mime, "origin": origin,
+                    "data": base64.b64encode(f.data).decode()})
+    return out, ask
 
 
 def _project_ctx(db: Session, slug: str) -> Optional[dict]:
